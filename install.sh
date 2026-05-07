@@ -7,12 +7,37 @@
 #   ./install.sh --list                # print available skill names and exit
 #   ./install.sh -h | --help           # this help
 #
-# Idempotent: re-running is safe. Existing real dirs / mismatched symlinks are warned about,
+# Idempotent: re-running is safe. Existing real dirs / mismatched links are warned about,
 # never overwritten. Remove them manually if you want this script to manage them.
 #
-# To uninstall a skill, remove its symlinks under ~/.agents/skills/<name>,
-# ~/.claude/skills/<name>, ~/.codex/skills/<name> — they are plain symlinks.
+# Linking mechanism:
+#   - macOS / Linux: POSIX symlinks via `ln -s`.
+#   - Windows + Git Bash / MSYS2 / Cygwin: NTFS directory junctions via `cmd //c mklink /J`.
+#     Junctions behave like a directory symlink for read access and do NOT require admin
+#     rights or Developer Mode (which is the failure mode of plain `ln -s` on Windows —
+#     it silently copies the directory contents instead of linking, leaving the install
+#     out of sync with the source repo). Junctions are local-NTFS only; if `$HOME` is on
+#     a UNC share or non-NTFS volume, junction creation will fail and install.sh exits
+#     with an error rather than silently degrading to a copy.
+#
+# To uninstall a skill, remove its links under ~/.agents/skills/<name>,
+# ~/.claude/skills/<name>, ~/.codex/skills/<name> — `rm -rf` works for both POSIX
+# symlinks and Windows junctions.
 set -euo pipefail
+
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;;
+  *)                    IS_WINDOWS=0 ;;
+esac
+
+if [ "$IS_WINDOWS" = "1" ]; then
+  command -v cygpath >/dev/null 2>&1 || {
+    echo "error: cygpath not found — required on Windows for path conversion" >&2
+    echo "       cygpath ships with Git for Windows / MSYS2 / Cygwin by default;" >&2
+    echo "       check that you are running install.sh from one of those shells." >&2
+    exit 1
+  }
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_SRC="$REPO_ROOT/skills"
@@ -63,14 +88,35 @@ if [ ${#HARNESSES[@]} -eq 0 ]; then
   echo "warning: no harness dirs (~/.claude, ~/.codex) found; wiring ~/.agents/skills/ only" >&2
 fi
 
+# resolve_phys <path>: print the physical (symlink/junction-followed) absolute path
+# in POSIX form. Used to compare "where does this link actually point" without parsing
+# `dir /AL` (locale-dependent) or `readlink` (does not see Windows junctions).
+resolve_phys() {
+  ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null
+}
+
 # ensure_symlink <target> <link-path>
-# - if link exists and points at target: noop ("ok")
-# - if link exists pointing elsewhere: warn, return 1
-# - if link path is a real file/dir: warn, return 1
-# - else: create symlink
+# Creates a directory link at <link-path> pointing at <target>. Uses POSIX symlinks on
+# macOS/Linux and NTFS directory junctions on Windows (Git Bash / MSYS2 / Cygwin).
+#
+# Idempotency check is by resolved physical path comparison rather than `readlink`,
+# because junctions are invisible to `readlink` / `[ -L ]` in Git Bash but the linked
+# directory's contents still resolve correctly via `cd … && pwd -P`.
+#
+# Behavior:
+#   - if link exists and resolves to <target>: noop ("ok")
+#   - if link exists and resolves elsewhere: warn, return 1
+#   - if link path is a real file or stale-copy directory (resolves to itself): warn
+#     with stale-copy hint on Windows, return 1
+#   - else: create the link
 ensure_symlink() {
   local target="$1" link="$2"
+  local target_phys link_phys
+  target_phys="$(resolve_phys "$target")"
+
   if [ -L "$link" ]; then
+    # POSIX symlink path (also catches symlinks created on Windows when Developer Mode
+    # was on at install time).
     if [ "$(readlink "$link")" = "$target" ]; then
       printf '  ok   %s\n' "$link"
       return 0
@@ -78,12 +124,49 @@ ensure_symlink() {
     printf '  WARN %s -> %s (expected %s) — skipping\n' "$link" "$(readlink "$link")" "$target" >&2
     return 1
   fi
+
   if [ -e "$link" ]; then
-    printf '  WARN %s exists and is not a symlink — skipping\n' "$link" >&2
+    # Could be: (a) Windows junction (invisible to -L), (b) real dir / stale copy, (c) file.
+    if [ -d "$link" ]; then
+      link_phys="$(resolve_phys "$link")"
+      if [ -n "$link_phys" ] && [ "$link_phys" = "$target_phys" ]; then
+        # Junction (or bind mount) already pointing at target — idempotent ok.
+        printf '  ok   %s (junction)\n' "$link"
+        return 0
+      fi
+      if [ "$IS_WINDOWS" = "1" ]; then
+        printf '  WARN %s exists as a real directory (likely a stale copy from a previous install) — skipping\n' "$link" >&2
+        printf '       to fix: rm -rf "%s" && re-run install.sh\n' "$link" >&2
+      else
+        printf '  WARN %s exists and is not a symlink — skipping\n' "$link" >&2
+      fi
+      return 1
+    fi
+    printf '  WARN %s exists and is not a directory — skipping\n' "$link" >&2
     return 1
   fi
-  ln -s "$target" "$link"
-  printf '  +    %s -> %s\n' "$link" "$target"
+
+  # Create the link.
+  if [ "$IS_WINDOWS" = "1" ]; then
+    local target_win link_win
+    target_win="$(cygpath -w "$target")"
+    link_win="$(cygpath -w "$link")"
+    # MSYS2_ARG_CONV_EXCL='*' disables MSYS path-conversion of arguments — required so
+    # `cmd /c mklink /J ...` sees the Windows paths verbatim. Without it, MSYS rewrites
+    # `\` to `/` in arguments and `mklink` fails parsing. `cmd /c` (single slash) is the
+    # form that works here; `cmd //c` does not.
+    if ! MSYS2_ARG_CONV_EXCL='*' cmd /c mklink /J "$link_win" "$target_win" >/dev/null 2>&1; then
+      printf '  WARN failed to create junction: %s -> %s\n' "$link" "$target" >&2
+      printf '       `mklink /J` requires the link path to be on a local NTFS volume.\n' >&2
+      printf '       UNC shares (\\\\server\\share\\...), redirected home dirs, or non-NTFS\n' >&2
+      printf '       filesystems are not supported by junctions.\n' >&2
+      return 1
+    fi
+    printf '  +    %s -> %s (junction)\n' "$link" "$target"
+  else
+    ln -s "$target" "$link"
+    printf '  +    %s -> %s\n' "$link" "$target"
+  fi
 }
 
 warnings=0

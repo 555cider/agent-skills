@@ -42,7 +42,7 @@ Clone this repo anywhere on your machine, then run:
 ./install.sh --list                # print available skill names
 ```
 
-The script wires the selected skills via two symlink layers:
+The script wires the selected skills via two link layers:
 
 1. `~/.agents/skills/<skill-name>/` → this clone's `skills/<skill-name>/`
    (the [agentskills.io](https://agentskills.io/specification) runtime
@@ -54,13 +54,23 @@ The script wires the selected skills via two symlink layers:
 Edits to a `SKILL.md` here are visible to every wired harness immediately.
 
 The script is idempotent — safe to re-run after pulling new skills.
-Existing real directories or mismatched symlinks are reported as warnings
+Existing real directories or mismatched links are reported as warnings
 and left untouched; remove them manually if you want the script to manage
 them.
 
-To uninstall a skill, remove its symlinks under `~/.agents/skills/<name>/`,
-`~/.claude/skills/<name>/`, `~/.codex/skills/<name>/` — they are plain
-symlinks created by this script.
+**Linking mechanism — POSIX vs Windows.** On macOS and Linux, the script uses
+POSIX symlinks (`ln -s`). On Windows + Git Bash / MSYS2 / Cygwin, it uses
+NTFS directory junctions (`mklink /J`) instead — junctions behave like a
+directory symlink for read access and, unlike `ln -s`, do **not** require
+admin rights or Developer Mode. The default `ln -s` on Windows silently
+copies the directory contents when those privileges are missing, leaving
+the install out of sync; junctions sidestep that. Junctions are local-NTFS
+only, so installs from a UNC share or non-NTFS volume will fail with a
+clear error rather than silently degrading to a copy.
+
+To uninstall a skill, remove its links under `~/.agents/skills/<name>/`,
+`~/.claude/skills/<name>/`, `~/.codex/skills/<name>/` — `rm -rf` works for
+both POSIX symlinks and Windows junctions.
 
 ## Why this layout
 
