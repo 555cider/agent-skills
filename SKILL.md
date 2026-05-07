@@ -23,20 +23,48 @@ adapt headers/labels to match.
 /peer-review <path-to-plan>                        # review a plan file
 /peer-review --focus=<area>                        # narrow focus
 /peer-review --reviewer=<r>[,<r>...]               # pick reviewer(s); multiple → parallel
+/peer-review --reviewer=0                          # self-review (host CLI reviews its own plan, fresh context)
 /peer-review --reviewer=2                          # 2nd profile from JSON config (1-based)
 /peer-review --reviewer=1-3                        # first three profiles
 /peer-review --reviewer=1,3,my-claude              # mix indexes, ranges, and names
-/peer-review --list                      # show the index map (no review run)
+/peer-review list                        # show available reviewers + self row (no review run)
 /peer-review <path> --focus=<area> --reviewer=...  # combine
 ```
 
 `--reviewer` values: `codex`, `claude`, `gemini`, `qwen`, `opencode`, `all`,
-any **profile name** defined in a JSON config, or — when a config is loaded —
-a **1-based index** (`2`) or **range** (`1-3`) into the profile list
-(default: `codex`). Pass a comma-separated mix (e.g. `1,3,my-claude`) to run
-several in parallel. `all` is a shortcut: from a slash command, the host
-model is auto-excluded (see step 3). Run `--list` to see the index
-map.
+`0` (self — the host CLI itself), any **profile name** defined in a JSON
+config, or — when a config is loaded — a **1-based index** (`2`) or **range**
+(`1-3`) into the profile list (default: `codex`). Pass a comma-separated mix
+(e.g. `1,3,my-claude`) to run several in parallel. `all` is a shortcut:
+from a slash command, the host model is auto-excluded (see step 3).
+Run `list` to see the index map.
+
+**Self-review (`0`).** `--reviewer=0` deliberately runs the **host CLI** as
+the reviewer — same CLI, fresh session, no chat history, no anchoring on
+the current conversation. The model isn't pinned to the host session: the
+CLI runs with whatever model it defaults to (or what its profile pins, if
+configured), which may or may not match the host session's model. Useful
+as a "look at this with fresh eyes" pass; weaker signal than a different
+vendor when models do overlap (shared training = shared blind spots).
+Treat the result like any other review; do not weight it as if it came
+from an independent reviewer.
+
+**Listing reviewers (`list` subcommand).** Prints two sections and exits
+without running a review:
+- **Special** — the `0 self <host>` row, with PATH status, when `--host`
+  is provided.
+- **Reviewer CLIs** — when a config defines profiles, the index map plus a
+  status column (so you can see which profile's backing CLI is actually
+  installed). Without a config, a discovery table of all five known CLIs
+  with their PATH status; the leading numbers there are display-only and
+  cannot be passed as `--reviewer=N`.
+
+When the user asks for the list — `/peer-review list`, `/peer-review 목록`,
+"리뷰어 목록 보여줘", "what reviewers do I have", or similar natural-language
+requests — invoke the script with the positional `list` subcommand and
+**always pass `--host=<your-cli>`** so the Special row shows up. No plan
+file, no `--source` flag, and no `--list` flag — only `list` as a positional
+argument is accepted.
 
 **Profiles (optional).** A JSON config can name multiple "profiles" — each
 binds a label to a CLI plus optional `model` / `effort`. This lets the same
@@ -89,17 +117,35 @@ If no file path:
   - **Plan-shaped:** an ExitPlanMode block, a numbered design proposal, or a clearly-marked plan/spec section (headers like `## Plan`, `## Design`, `## 설계`).
   - **Choice-shaped:** a recent message presenting alternatives — `Option A / B / C`, `선택지 1 / 2 / 3`, headers like `## Options` / `## 선택지` / `## Choices`, or any "여기 N가지 방법이 있습니다" listing. If `--focus=choice` was passed and no plan-shape candidate exists, prefer the most recent choice-shape candidate.
 - **Confidence check:** if the candidate is unambiguous (single recent block, clearly plan- or choice-shaped, no competing candidates), proceed silently. Otherwise show a 5-line preview and ask the user to confirm or supply a different path. Wait for confirmation.
-- If confirmed, write the plan content verbatim to a file via `mktemp -t peer-review-input-XXXXXX.md`. Pass that path to the script with `--source=chat`.
+- If confirmed, write the plan content verbatim to a temp file located **inside the repo's review tree** — never under `/tmp` or system temp. Resolve the path as follows (do NOT use `mktemp` — its `/tmp` resolution differs between Bash and the Write tool on Windows, which silently produces an empty input file):
+  1. Determine repo root via `git rev-parse --show-toplevel`. On Windows + Git Bash this typically returns a forward-slash Windows path like `C:/foo/bar` — that form is shared by Bash and the harness Write tool. If the result is in any other form (`/c/foo/bar`, `/cygdrive/c/foo/bar`, `\\?\C:\foo\bar`, or starts with `/` but not a Windows drive letter), normalize to `C:/...` form first (`cygpath -m "$root"` if available, otherwise hand-fix `^/([a-zA-Z])/` → `\1:/`). Use the normalized string verbatim in `mkdir`/`Write` calls and the script invocation — do not mix slash styles.
+  2. Pick the temp directory using the **same 3-tier resolution as the script**, with one extra fallback to keep the workflow unblocked when the repo tree is not writable:
+     - `<repo>/docs/reviews/.tmp/` if `<repo>/docs/` exists, else
+     - `<repo>/reviews/.tmp/` if in a repo, else
+     - `<cwd>/reviews/.tmp/` outside a repo, else (any failure — mkdir, Write, or permission — falls through to the next tier)
+     - `<cwd>/.peer-review-tmp/` as a last-resort fallback. Note this tier is **not** covered by the script's `.git/info/exclude` registration; out-of-repo cwds may want to add it to a personal gitignore. Never fall back to `/tmp` or `%TEMP%`.
+  3. File name: prefer `mktemp "<temp-dir>/peer-review-input-XXXXXX.md"` — explicit-template form keeps creation in the chosen directory and gives atomic uniqueness. (This is *not* `mktemp -t`, which is the form that resolves `/tmp` differently between Bash and the Write tool on Windows. The explicit-template form is safe.) If `mktemp` is unavailable, fall back to `peer-review-input-<pid>-<epoch-ms>.md`.
+  4. `mkdir -p` the temp directory, then write the plan content with the Write tool using the same absolute path. If either step fails, retry on the next tier (do not surface the failure to the user unless all four tiers fail).
+  5. Pass the absolute path to the script with `--source=chat`.
+  6. After the script finishes (success or failure, before reporting to the user), delete the temp file.
 - If no candidate at all: tell the user no plan was found in chat and ask for a file path. Stop.
 
 ### 3. Invoke the script
 
 ```bash
-~/.agents/skills/peer-review/scripts/run-peer-review.sh <plan-file> [--reviewer=<list>] [--focus=<v>] --source=<file|chat>
+~/.agents/skills/peer-review/scripts/run-peer-review.sh <plan-file> [--reviewer=<list>] [--focus=<v>] --source=<file|chat> --host=<cli>
 ```
 
-Reviewer defaults to `codex`. **Avoid self-review** — exclude the host model
-from the list:
+Pass `--host=<your-cli>` (`--host=claude` from Claude Code,
+`--host=codex` from Codex CLI) **whenever `--reviewer=0` is in the list** —
+the script needs it to resolve `0` to the host CLI and exits with an error
+if it's missing. For `all`-expansion you still pass `--exclude-cli=<host>`
+(see below) — `--host` does not double as that filter today. Passing
+`--host` in other cases is harmless and recommended for consistency.
+
+Reviewer defaults to `codex`. **Avoid accidental self-review** — exclude
+the host model from the list unless the user explicitly opts in via `0`
+or by name:
 - Inside Claude Code: keep `codex` (default), exclude `claude`. Add others
   freely (`--reviewer=codex,gemini,opencode`).
 - Inside Codex CLI: exclude `codex`. Prefer `--reviewer=claude` (single) or
@@ -107,6 +153,10 @@ from the list:
 - Reviewers sharing a backing model give weaker signal when paired
   (e.g. `codex` + `opencode` if opencode is configured to a GPT-family model).
   Mix vendors when in doubt.
+
+**Self-review opt-in.** If the user passes `--reviewer=0` (or names the
+host CLI directly, e.g. `--reviewer=claude` from Claude Code), forward it
+verbatim — do not strip it. Self-review is a deliberate choice.
 
 **Handling `all`:** when the user passes `--reviewer=all` from a slash
 command (or natural language equivalent), pass `--exclude-cli=<host>` to

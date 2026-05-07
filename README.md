@@ -17,13 +17,14 @@ for the wiring model — `install.sh` symlinks this directory into
 
 ## Used by
 
-Each harness's skill dir symlinks both `SKILL.md` and `scripts/` to here so
-the canonical implementation stays in one place. Edit the canonical files
-and both harnesses pick up the change immediately.
+Each harness's skill dir links to this directory (POSIX symlink on
+macOS/Linux, NTFS directory junction on Windows — see the root README for
+the mechanism) so the canonical implementation stays in one place. Edit
+the canonical files and both harnesses pick up the change immediately.
 
 - **Claude Code:** `~/.claude/skills/peer-review/{SKILL.md,scripts}` →
-  symlinks here. Slash command: `/peer-review`. Defaults `--reviewer=codex`.
-- **Codex CLI:** `~/.codex/skills/peer-review/{SKILL.md,scripts}` → symlinks
+  links here. Slash command: `/peer-review`. Defaults `--reviewer=codex`.
+- **Codex CLI:** `~/.codex/skills/peer-review/{SKILL.md,scripts}` → links
   here. Wire up via `~/.codex/AGENTS.md` or codex's skill/plugin mechanism.
   The SKILL.md instructs codex to exclude itself from the reviewer list
   (codex reviewing codex defeats the purpose).
@@ -31,8 +32,8 @@ and both harnesses pick up the change immediately.
 ## Porting to a new harness
 
 1. Create the harness skill dir (e.g. `~/.cursor/skills/peer-review/`).
-2. Symlink `SKILL.md` → `~/.agents/skills/peer-review/SKILL.md`.
-3. Symlink `scripts` → `~/.agents/skills/peer-review/scripts`.
+2. Link `SKILL.md` → `~/.agents/skills/peer-review/SKILL.md`.
+3. Link `scripts` → `~/.agents/skills/peer-review/scripts`.
 4. If the harness has its own behavioral policy (e.g. allows proactive
    self-invocation), add a paragraph for it under "When to self-invoke" in
    the canonical SKILL.md — the model picks the branch matching its harness.
@@ -43,6 +44,7 @@ and both harnesses pick up the change immediately.
 run-peer-review.sh <plan-file> \
   [--reviewer=<list>]         # default: codex; comma-separated list runs in parallel
                               #   choices: codex, claude, gemini, qwen, opencode, all,
+                              #            0 (self — host CLI; requires --host),
                               #            any profile name from JSON config, or
                               #            1-based index / range when a config is loaded
                               #            (e.g., 2 / 1-3 / 1,3,my-claude)
@@ -50,8 +52,71 @@ run-peer-review.sh <plan-file> \
   [--focus=all|feasibility|correctness|assumptions|repo-fit|choice]   # default: all
   [--source=file|chat]        # default: file (chat means caller wrote a temp file from chat content)
   [--exclude-cli=<cli>]       # filter `all` expansion by backing CLI (used to avoid self-review)
-  [--list]          # print the index map for the loaded config and exit
+  [--host=<cli>]              # identify the host CLI; required when --reviewer=0 (self-review)
+
+run-peer-review.sh list [--host=<cli>]
+                              # subcommand: print available reviewers
+                              #   (config index map or PATH discovery) and exit
 ```
+
+### Listing available reviewers (`list` subcommand)
+
+Prints two sections and exits without running a review.
+
+With a config loaded:
+
+```
+config: <repo>/.peer-review.json
+
+Special:
+  #    token        cli        status
+  0    self         claude     on PATH
+
+Reviewer CLIs (from config — index callable as --reviewer=N):
+  #    profile              cli        model                     effort   status
+  1    codex-deep           codex      gpt-5                     high    on PATH
+  2    qwen-test            qwen       qwen-3                            not found
+  3    claude-opus          claude     claude-opus-4-7                   on PATH
+```
+
+Without a config:
+
+```
+config: <none>
+
+Special:
+  #    token        cli        status
+  0    self         claude     on PATH
+
+Reviewer CLIs (no config — names callable as --reviewer=<cli>; numbers display-only):
+  display # cli        status
+  1         codex      on PATH
+  2         claude     on PATH
+  3         gemini     on PATH
+  -         qwen       not found
+  4         opencode   on PATH
+
+to use indexed selection (--reviewer=N), define a JSON config (see below).
+```
+
+The Special row only renders when `--host=<cli>` is passed (the slash
+command auto-forwards it). PATH-mode numbers are display-only — same
+number can mean different CLIs across machines, so indexed invocation
+requires a config.
+
+### Self-review (`--reviewer=0`)
+
+`0` resolves to the host CLI named via `--host=<cli>` — e.g. from Claude
+Code, the slash command passes `--host=claude --reviewer=0` to ask Claude
+to review its own plan. Same CLI, fresh session: no conversation history,
+no in-context anchoring on the chat that produced the plan. The model is
+not pinned to the host session — the CLI runs with whatever model it
+defaults to (or what its profile pins, if a config defines one), which may
+not match the model the host session is using. Useful when no other
+reviewer is available, or as a quick "look at this fresh" pass; signal is
+weaker than cross-vendor review when models do overlap (shared training →
+shared blind spots). The script does not flag the output as self-review;
+the caller surfaces the source verbatim.
 
 ## Optional config
 
@@ -82,7 +147,7 @@ Define named profiles in JSON, search order:
   to avoid clashing with index/range notation.
 - Profiles are listed in the order they appear in the JSON file; `--reviewer=N`
   refers to the N-th entry (1-based), `--reviewer=L-H` to a contiguous range.
-  Use `--list` to see the current index map.
+  Use `list` to see the current index map.
 
 Requires `python3` to parse. Without it, the script logs a warning and falls
 back to the no-config behavior.
@@ -138,6 +203,18 @@ missing, 4 filename claim failed, 5 empty response (single-reviewer mode),
 - **No auto-cleanup** of old review files. **No automated tests** against the
   script (TODO: bats fixtures for slug derivation, collision retry, exclude
   update, delimiter collision).
+- **Chat-sourced plan input:** SKILL.md writes the input file under
+  `<out>/.tmp/` (same 3-tier resolution as `<out>` itself), with a
+  `<cwd>/.peer-review-tmp/` last-resort fallback if the repo tree is not
+  writable. Filenames come from `mktemp` with an explicit repo-local
+  template; `mktemp -t` is deliberately avoided because on Windows + Git
+  Bash it resolves `/tmp` to a different physical directory than the
+  harness Write tool, silently producing an empty input file. The script
+  side is unchanged — it still reads a regular file path passed
+  positionally. The tier-4 fallback (`<cwd>/.peer-review-tmp/`) is **not**
+  auto-registered in `.git/info/exclude` (the script only registers
+  `<out>/`); invocations from a cwd inside another git repo should add
+  it to a personal gitignore if the fallback ever triggers there.
 
 ## Why `.agents/`
 
