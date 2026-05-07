@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # run-peer-review.sh — send a plan or set of choices to one or more reviewer LLMs, save the reviews.
 # Usage: run-peer-review.sh <plan-file>
-#          [--reviewer=<profile|cli|all|<index>|<lo>-<hi>>[,...]]
+#          [--reviewer=<profile|cli|all|0|<index>|<lo>-<hi>>[,...]]
 #          [--focus=all|feasibility|correctness|assumptions|repo-fit|choice]
 #          [--source=file|chat]
 #          [--exclude-cli=<cli>]
-#        run-peer-review.sh --list
+#          [--host=<cli>]
+#        run-peer-review.sh list [--host=<cli>]
 #
 # Default reviewer: codex. Pass a comma-separated list to run multiple reviewers in parallel.
 # (e.g., --reviewer=codex,claude,gemini)
 # Indexes (1-based) and ranges are accepted when a config defines profiles —
 # e.g., --reviewer=2 (second profile), --reviewer=1-3 (first three),
-# --reviewer=1,3,my-claude (mix). Run --list to see the index map.
+# --reviewer=1,3,my-claude (mix). Run `list` to see available reviewers.
+#
+# Self-review token: --reviewer=0 expands to the host CLI itself (the harness
+# the user is in). Requires --host=<cli> to identify the host. Used to
+# deliberately ask the same model for a fresh-context second look.
 #
 # Profiles via JSON config:
 #   <repo>/.peer-review.json (project-local, takes precedence)
@@ -39,6 +44,7 @@ FOCUS="all"
 SOURCE="file"
 REVIEWER_ARG="codex"
 EXCLUDE_CLI=""
+HOST_CLI=""
 LIST_MODE=0
 for arg in "$@"; do
   case "$arg" in
@@ -46,14 +52,15 @@ for arg in "$@"; do
     --source=*)      SOURCE="${arg#--source=}" ;;
     --reviewer=*)    REVIEWER_ARG="${arg#--reviewer=}" ;;
     --exclude-cli=*) EXCLUDE_CLI="${arg#--exclude-cli=}" ;;
-    --list) LIST_MODE=1 ;;
+    --host=*)        HOST_CLI="${arg#--host=}" ;;
     --*)             echo "unknown flag: $arg" >&2; exit 2 ;;
+    list)            LIST_MODE=1 ;;
     *)               if [ -z "$PLAN_FILE" ]; then PLAN_FILE="$arg"; else echo "extra arg: $arg" >&2; exit 2; fi ;;
   esac
 done
 
 if [ "$LIST_MODE" -eq 0 ]; then
-  [ -n "$PLAN_FILE" ] || { echo "usage: $0 <plan-file> [--reviewer=...] [--focus=...] [--source=file|chat] [--exclude-cli=<cli>]" >&2; exit 2; }
+  [ -n "$PLAN_FILE" ] || { echo "usage: $0 <plan-file> [--reviewer=...] [--focus=...] [--source=file|chat] [--exclude-cli=<cli>] [--host=<cli>]" >&2; echo "       $0 list [--host=<cli>]" >&2; exit 2; }
   [ -f "$PLAN_FILE" ] || { echo "plan file not found: $PLAN_FILE" >&2; exit 2; }
 fi
 case "$FOCUS" in
@@ -67,6 +74,10 @@ esac
 case "$EXCLUDE_CLI" in
   ""|codex|claude|gemini|qwen|opencode) ;;
   *) echo "invalid --exclude-cli: $EXCLUDE_CLI (use: codex|claude|gemini|qwen|opencode)" >&2; exit 2 ;;
+esac
+case "$HOST_CLI" in
+  ""|codex|claude|gemini|qwen|opencode) ;;
+  *) echo "invalid --host: $HOST_CLI (use: codex|claude|gemini|qwen|opencode)" >&2; exit 2 ;;
 esac
 
 # Determine REPO_ROOT early — config search uses it.
@@ -208,24 +219,62 @@ profile_slug() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-30 | sed 's/-$//'
 }
 
-# --- --list: print the index map and exit ---
-if [ "$LIST_MODE" -eq 1 ]; then
-  if [ ${#PROFILE_NAMES[@]} -eq 0 ]; then
-    echo "no JSON config found — index notation requires defined profiles."
-    echo "without a config, --reviewer accepts: codex, claude, gemini, qwen, opencode, all"
-    exit 0
+# cli_status <cli>: print "on PATH" if the CLI is callable, "not found" otherwise.
+# Single source of truth for PATH discovery — used by `list` and `all` expansion.
+cli_status() {
+  if command -v "$1" >/dev/null 2>&1; then
+    printf 'on PATH'
+  else
+    printf 'not found'
   fi
+}
+
+# --- list subcommand: print special tokens + reviewer table, then exit ---
+# Mode pivots on whether profiles were loaded, not on whether a config file
+# exists — empty/invalid configs fall through to PATH-discovery mode.
+if [ "$LIST_MODE" -eq 1 ]; then
   echo "config: ${CONFIG_PATH:-<none>}"
   echo
-  printf '  %-3s %-20s %-10s %-25s %s\n' '#' 'profile' 'cli' 'model' 'effort'
-  i=1
-  for p in "${PROFILE_NAMES[@]}"; do
-    cli="$(profile_cli_for "$p")"
-    model="${PROFILE_MODEL[$p]:-}"
-    effort="${PROFILE_EFFORT[$p]:-}"
-    printf '  %-3s %-20s %-10s %-25s %s\n' "$i" "$p" "$cli" "$model" "$effort"
-    i=$((i+1))
-  done
+
+  # Special section: self-review token. Renders only when --host is given.
+  if [ -n "$HOST_CLI" ]; then
+    echo "Special:"
+    printf '  %-4s %-12s %-10s %s\n' '#' 'token' 'cli' 'status'
+    printf '  %-4s %-12s %-10s %s\n' '0' 'self' "$HOST_CLI" "$(cli_status "$HOST_CLI")"
+    echo
+  else
+    echo "(re-run with --host=<cli> to see the self-review row)"
+    echo
+  fi
+
+  # Reviewer CLIs section.
+  if [ ${#PROFILE_NAMES[@]} -gt 0 ]; then
+    echo "Reviewer CLIs (from config — index callable as --reviewer=N):"
+    printf '  %-4s %-20s %-10s %-25s %-8s %s\n' '#' 'profile' 'cli' 'model' 'effort' 'status'
+    i=1
+    for p in "${PROFILE_NAMES[@]}"; do
+      cli="$(profile_cli_for "$p")"
+      model="${PROFILE_MODEL[$p]:-}"
+      effort="${PROFILE_EFFORT[$p]:-}"
+      printf '  %-4s %-20s %-10s %-25s %-8s %s\n' "$i" "$p" "$cli" "$model" "$effort" "$(cli_status "$cli")"
+      i=$((i+1))
+    done
+  else
+    echo "Reviewer CLIs (no config — names callable as --reviewer=<cli>; numbers display-only):"
+    printf '  %-9s %-10s %s\n' 'display #' 'cli' 'status'
+    i=1
+    for c in "${ALL_CLIS[@]}"; do
+      st="$(cli_status "$c")"
+      if [ "$st" = "on PATH" ]; then
+        printf '  %-9s %-10s %s\n' "$i" "$c" "$st"
+        i=$((i+1))
+      else
+        printf '  %-9s %-10s %s\n' '-' "$c" "$st"
+      fi
+    done
+    echo
+    echo "to use indexed selection (--reviewer=N), define a JSON config (see README)."
+  fi
   exit 0
 fi
 
@@ -246,11 +295,11 @@ add_unique() {
 resolve_index() {
   local idx="$1"
   if [ ${#PROFILE_NAMES[@]} -eq 0 ]; then
-    echo "index $idx requires a JSON config with profiles defined (run with --list)" >&2
+    echo "index $idx requires a JSON config with profiles defined (run \`list\` to see available reviewers)" >&2
     exit 2
   fi
   if [ "$idx" -lt 1 ] || [ "$idx" -gt ${#PROFILE_NAMES[@]} ]; then
-    echo "index $idx out of range (1..${#PROFILE_NAMES[@]}); run --list" >&2
+    echo "index $idx out of range (1..${#PROFILE_NAMES[@]}); run \`list\` to see available reviewers" >&2
     exit 2
   fi
   add_unique "${PROFILE_NAMES[$((idx-1))]}"
@@ -261,6 +310,19 @@ for r in "${_RAW[@]}"; do
   r="$(printf '%s' "$r" | tr -d '[:space:]')"
   [ -n "$r" ] || continue
 
+  # Self-review token: --reviewer=0 expands to the host CLI itself. Requires
+  # --host=<cli> so the script knows which CLI to run. This is the explicit
+  # opt-in for same-model review (fresh context = different blind spots even
+  # when the reviewer shares weights with the host).
+  if [ "$r" = "0" ]; then
+    if [ -z "$HOST_CLI" ]; then
+      echo "--reviewer=0 requires --host=<cli> (host CLI not provided)" >&2
+      exit 2
+    fi
+    add_unique "$HOST_CLI"
+    continue
+  fi
+
   # Index notation: --reviewer=2 picks the 2nd profile from config.
   if [[ "$r" =~ ^[0-9]+$ ]]; then
     resolve_index "$r"
@@ -270,6 +332,9 @@ for r in "${_RAW[@]}"; do
   if [[ "$r" =~ ^([0-9]+)-([0-9]+)$ ]]; then
     _lo="${BASH_REMATCH[1]}"
     _hi="${BASH_REMATCH[2]}"
+    if [ "$_lo" = "0" ] || [ "$_hi" = "0" ]; then
+      echo "invalid range: $r — '0' is reserved for self-review and cannot appear in a range; use --reviewer=0,<rest> instead" >&2; exit 2
+    fi
     if [ "$_lo" -gt "$_hi" ]; then
       echo "invalid range: $r ($_lo > $_hi)" >&2; exit 2
     fi
