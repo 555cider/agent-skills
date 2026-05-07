@@ -46,21 +46,40 @@ REVIEWER_ARG="codex"
 EXCLUDE_CLI=""
 HOST_CLI=""
 LIST_MODE=0
-for arg in "$@"; do
-  case "$arg" in
-    --focus=*)       FOCUS="${arg#--focus=}" ;;
-    --source=*)      SOURCE="${arg#--source=}" ;;
-    --reviewer=*)    REVIEWER_ARG="${arg#--reviewer=}" ;;
-    --exclude-cli=*) EXCLUDE_CLI="${arg#--exclude-cli=}" ;;
-    --host=*)        HOST_CLI="${arg#--host=}" ;;
-    --*)             echo "unknown flag: $arg" >&2; exit 2 ;;
-    list)            LIST_MODE=1 ;;
-    *)               if [ -z "$PLAN_FILE" ]; then PLAN_FILE="$arg"; else echo "extra arg: $arg" >&2; exit 2; fi ;;
-  esac
-done
 
-if [ "$LIST_MODE" -eq 0 ]; then
-  [ -n "$PLAN_FILE" ] || { echo "usage: $0 <plan-file> [--reviewer=...] [--focus=...] [--source=file|chat] [--exclude-cli=<cli>] [--host=<cli>]" >&2; echo "       $0 list [--host=<cli>]" >&2; exit 2; }
+usage() {
+  echo "usage: $0 <plan-file> [--reviewer=...] [--focus=...] [--source=file|chat] [--exclude-cli=<cli>] [--host=<cli>]" >&2
+  echo "       $0 list [--host=<cli>]" >&2
+}
+
+# Subcommand dispatch (first positional arg only). `list` is a reserved word —
+# `list` as a plan file path is rejected; pass `./list` if needed. Each subcommand
+# accepts only its own flags, so a typo like `list --reviewer=codex` errors out
+# instead of silently ignoring `--reviewer`.
+if [ $# -gt 0 ] && [ "$1" = "list" ]; then
+  LIST_MODE=1
+  shift
+  for arg in "$@"; do
+    case "$arg" in
+      --host=*) HOST_CLI="${arg#--host=}" ;;
+      *)        echo "list: unexpected argument: $arg (only --host=<cli> is allowed)" >&2; usage; exit 2 ;;
+    esac
+  done
+else
+  for arg in "$@"; do
+    case "$arg" in
+      --focus=*)       FOCUS="${arg#--focus=}" ;;
+      --source=*)      SOURCE="${arg#--source=}" ;;
+      --reviewer=*)    REVIEWER_ARG="${arg#--reviewer=}" ;;
+      --exclude-cli=*) EXCLUDE_CLI="${arg#--exclude-cli=}" ;;
+      --host=*)        HOST_CLI="${arg#--host=}" ;;
+      --*)             echo "unknown flag: $arg" >&2; usage; exit 2 ;;
+      list)            echo "'list' is a subcommand and must be the first argument; pass './list' to review a file literally named 'list'" >&2; exit 2 ;;
+      *)               if [ -z "$PLAN_FILE" ]; then PLAN_FILE="$arg"; else echo "extra arg: $arg" >&2; usage; exit 2; fi ;;
+    esac
+  done
+
+  [ -n "$PLAN_FILE" ] || { usage; exit 2; }
   [ -f "$PLAN_FILE" ] || { echo "plan file not found: $PLAN_FILE" >&2; exit 2; }
 fi
 case "$FOCUS" in

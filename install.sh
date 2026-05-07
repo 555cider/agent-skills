@@ -4,7 +4,7 @@
 # Usage:
 #   ./install.sh                       # install every skill under skills/
 #   ./install.sh <name> [<name>...]    # install only the named skill(s)
-#   ./install.sh --list                # print available skill names and exit
+#   ./install.sh list                  # print available skill names and exit
 #   ./install.sh -h | --help           # this help
 #
 # Idempotent: re-running is safe. Existing real dirs / mismatched links are warned about,
@@ -44,16 +44,22 @@ SKILLS_SRC="$REPO_ROOT/skills"
 
 [ -d "$SKILLS_SRC" ] || { echo "error: $SKILLS_SRC not found" >&2; exit 1; }
 
-# Parse args: --help / --list / positional skill names.
+# Subcommand dispatch (first positional arg). Subcommands are reserved words and cannot
+# also be skill names — `list` would shadow a skill called "list". The default action
+# (no first arg, or first arg is a skill name) is install.
+if [ $# -gt 0 ] && [ "$1" = "list" ]; then
+  shift
+  [ $# -eq 0 ] || { echo "error: 'list' takes no arguments" >&2; exit 2; }
+  for d in "$SKILLS_SRC"/*/; do basename "$d"; done
+  exit 0
+fi
+
+# Parse args: --help / positional skill names.
 SELECTED=()
 for arg in "$@"; do
   case "$arg" in
     -h|--help)
       sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
-      exit 0
-      ;;
-    --list)
-      for d in "$SKILLS_SRC"/*/; do basename "$d"; done
       exit 0
       ;;
     --*)

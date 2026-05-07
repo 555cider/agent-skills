@@ -39,7 +39,7 @@ Clone this repo anywhere on your machine, then run:
 ./install.sh                       # every skill
 ./install.sh peer-review           # one specific skill
 ./install.sh peer-review other     # multiple specific skills
-./install.sh --list                # print available skill names
+./install.sh list                  # print available skill names
 ```
 
 The script wires the selected skills via two link layers:
