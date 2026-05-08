@@ -42,21 +42,36 @@ Clone this repo anywhere on your machine, then run:
 ./install.sh list                  # print available skill names
 ```
 
-The script wires the selected skills via two link layers:
+The script wires each selected skill in two steps:
 
-1. `~/.agents/skills/<skill-name>/` → this clone's `skills/<skill-name>/`
-   (the [agentskills.io](https://agentskills.io/specification) runtime
-   aggregation path; tool-neutral).
-2. `~/.claude/skills/<skill-name>/`, `~/.codex/skills/<skill-name>/` → the
-   `~/.agents/skills/<skill-name>/` link above. Each harness is auto-
-   detected; missing harnesses are skipped.
+1. `git clone -b split/<skill-name> --single-branch <this-repo>` into
+   `~/.agents/skills/<skill-name>/` — that directory is itself a small git
+   repo whose history contains only commits that touched this skill.
+   `~/.agents/skills/` is the [agentskills.io](https://agentskills.io/specification)
+   runtime aggregation path; tool-neutral.
+2. `~/.claude/skills/<skill-name>/`, `~/.codex/skills/<skill-name>/` →
+   symlink (or NTFS junction on Windows) to `~/.agents/skills/<skill-name>/`.
+   Each harness is auto-detected; missing harnesses are skipped.
 
-Edits to a `SKILL.md` here are visible to every wired harness immediately.
+Update an installed skill with:
 
-The script is idempotent — safe to re-run after pulling new skills.
-Existing real directories or mismatched links are reported as warnings
-and left untouched; remove them manually if you want the script to manage
-them.
+```bash
+cd ~/.agents/skills/<skill-name> && git pull
+```
+
+The harness links pick up the new content automatically.
+
+The `split/<skill-name>` branches are produced by
+[`.github/workflows/split.yml`](.github/workflows/split.yml) on every push
+to `main` that touches `skills/`, using `git subtree split`. Maintainers
+edit only `main` in this monorepo — the split branches are derived
+artifacts and must never be committed to directly.
+
+The script is idempotent — safe to re-run after pulling new skills into
+the monorepo. If `~/.agents/skills/<name>/` is already a clone, it's
+left alone (run `git pull` there yourself). Mismatched directories or
+links are reported as warnings and left untouched; remove them manually
+if you want the script to manage them.
 
 **Linking mechanism — POSIX vs Windows.** On macOS and Linux, the script uses
 POSIX symlinks (`ln -s`). On Windows + Git Bash / MSYS2 / Cygwin, it uses
@@ -74,9 +89,14 @@ both POSIX symlinks and Windows junctions.
 
 ## Why this layout
 
-- **Single source of truth:** edit one file, all harnesses see it. No
-  cross-harness drift.
+- **Single source of truth for maintainers:** all skills live in one
+  monorepo. Cross-cutting changes (frontmatter conventions, shared
+  scripts, lint rules) land in one PR.
+- **Per-skill independence for users:** each user's
+  `~/.agents/skills/<name>/` is its own git clone with that skill's
+  history only — small, no monorepo overhead, and `git pull` updates
+  just that one skill.
 - **Tool-neutral:** `~/.agents/skills/` is the converging convention; any
   agent that reads it finds the skill without per-tool config.
-- **Portable:** clone anywhere on a new machine, run `install.sh`, all
-  harnesses are wired.
+- **No symlink chains:** harness dirs link directly to
+  `~/.agents/skills/<name>/`. One hop, no intermediate.

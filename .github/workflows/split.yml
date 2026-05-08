@@ -1,0 +1,55 @@
+name: split-skills
+
+# Each directory under skills/ is published as its own branch named
+# split/<skill-name>, containing only that skill's history. Users
+# `git clone -b split/<name> --single-branch <repo>` into
+# ~/.agents/skills/<name>/ and run `git pull` there to update.
+#
+# This workflow runs `git subtree split` for every skill on every push to
+# main that touches skills/, and force-pushes the result. The split
+# branches are derived artifacts — never commit to them directly.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'skills/**'
+      - '.github/workflows/split.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: split-skills
+  cancel-in-progress: false
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Split each skill into split/<name>
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for dir in skills/*/; do
+            name="$(basename "$dir")"
+            branch="split/$name"
+            echo "::group::$name"
+            # subtree split rebuilds history of skills/<name>/ as if that
+            # dir had always been the repo root. -b creates/updates a local
+            # branch ref at the synthesized tip.
+            git subtree split --prefix="skills/$name" -b "$branch"
+            git push --force origin "$branch"
+            git branch -D "$branch"
+            echo "::endgroup::"
+          done
