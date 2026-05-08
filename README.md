@@ -33,9 +33,13 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 
 ## Install
 
-Clone this repo anywhere on your machine, then run:
+Clone this monorepo just to get `install.sh` — the script then clones
+each selected skill into its own location (you can `rm -rf` this
+monorepo afterwards if you only want to use skills, not edit them).
 
 ```bash
+git clone https://github.com/555cider/agent-skills.git
+cd agent-skills
 ./install.sh                       # every skill
 ./install.sh peer-review           # one specific skill
 ./install.sh peer-review other     # multiple specific skills
@@ -83,9 +87,30 @@ the install out of sync; junctions sidestep that. Junctions are local-NTFS
 only, so installs from a UNC share or non-NTFS volume will fail with a
 clear error rather than silently degrading to a copy.
 
-To uninstall a skill, remove its links under `~/.agents/skills/<name>/`,
-`~/.claude/skills/<name>/`, `~/.codex/skills/<name>/` — `rm -rf` works for
-both POSIX symlinks and Windows junctions.
+To uninstall a skill, `rm -rf` its harness links and its clone:
+
+```bash
+rm -rf ~/.claude/skills/<name>     # symlink / junction
+rm -rf ~/.codex/skills/<name>      # symlink / junction
+rm -rf ~/.agents/skills/<name>     # the git clone itself
+```
+
+`rm -rf` works for POSIX symlinks, Windows junctions, and the real
+clone directory. Nothing here is shared state — re-running `install.sh`
+will clone `split/<name>` again from origin.
+
+## Adding a new skill (maintainers)
+
+1. Create `skills/<new-skill>/SKILL.md` with the
+   [agentskills.io](https://agentskills.io/specification) frontmatter.
+2. Commit and push to `main`.
+3. [`.github/workflows/split.yml`](.github/workflows/split.yml) runs
+   `git subtree split --prefix=skills/<new-skill>` and force-pushes the
+   result to `split/<new-skill>`. This takes ~30 s.
+4. Users get the skill via `./install.sh <new-skill>`.
+
+The split branches are derived artifacts. Never commit to them
+directly — your work will be overwritten on the next `main` push.
 
 ## Why this layout
 
