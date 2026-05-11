@@ -5,7 +5,7 @@
 # Usage:
 #   ./install.sh                       # install every skill
 #   ./install.sh <name> [<name>...]    # install only the named skill(s)
-#   ./install.sh list                  # print available skill names and exit
+#   ./install.sh --list                # print available skill names and exit
 #   ./install.sh -h | --help           # this help
 #
 # Mechanism:
@@ -52,12 +52,11 @@ SKILLS_SRC="$REPO_ROOT/skills"
 REMOTE_URL="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
 [ -n "$REMOTE_URL" ] || { echo "error: no 'origin' remote configured in $REPO_ROOT" >&2; exit 1; }
 
-# Subcommand dispatch (first positional arg). Subcommands are reserved words and
-# cannot also be skill names — `list` would shadow a skill called "list". The
-# default action (no first arg, or first arg is a skill name) is install.
-if [ $# -gt 0 ] && [ "$1" = "list" ]; then
+# List mode is a flag so every positional argument remains available as a skill
+# name, including a skill literally named "list".
+if [ $# -gt 0 ] && [ "$1" = "--list" ]; then
   shift
-  [ $# -eq 0 ] || { echo "error: 'list' takes no arguments" >&2; exit 2; }
+  [ $# -eq 0 ] || { echo "error: '--list' takes no arguments" >&2; exit 2; }
   for d in "$SKILLS_SRC"/*/; do basename "$d"; done
   exit 0
 fi
@@ -123,7 +122,7 @@ clone_skill() {
       return 0
     fi
     if [ -L "$dest" ]; then
-      printf '  WARN %s is a symlink (legacy install) — remove with `rm -rf %s` and re-run\n' "$dest" "$dest" >&2
+      printf '  WARN %s is a symlink — remove with `rm -rf %s` and re-run\n' "$dest" "$dest" >&2
       return 1
     fi
     printf '  WARN %s exists but is not a git clone — remove with `rm -rf %s` and re-run\n' "$dest" "$dest" >&2

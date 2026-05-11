@@ -28,6 +28,7 @@ adapt headers/labels to match.
 /peer-review --reviewer=1-3                        # first three profiles
 /peer-review --reviewer=1,3,my-claude              # mix indexes, ranges, and names
 /peer-review list                        # show available reviewers + self row (no review run)
+/peer-review --help                      # show usage; no review run
 /peer-review <path> --focus=<area> --reviewer=...  # combine
 ```
 
@@ -56,8 +57,8 @@ without running a review:
 - **Reviewer CLIs** — when a config defines profiles, the index map plus a
   status column (so you can see which profile's backing CLI is actually
   installed). Without a config, a discovery table of all five known CLIs
-  with their PATH status; the leading numbers there are display-only and
-  cannot be passed as `--reviewer=N`.
+  with their PATH status; on-PATH numbered rows can be passed as
+  `--reviewer=N`.
 
 When the user asks for the list — `/peer-review list`, `/peer-review 목록`,
 "리뷰어 목록 보여줘", "what reviewers do I have", or similar natural-language
@@ -65,6 +66,10 @@ requests — invoke the script with the positional `list` subcommand and
 **always pass `--host=<your-cli>`** so the Special row shows up. No plan
 file, no `--source` flag, and no `--list` flag — only `list` as a positional
 argument is accepted.
+
+When the user asks for usage — `/peer-review --help`, `/peer-review help`,
+"peer-review 사용법", or similar natural-language requests — invoke the script
+with `--help`. Do not look for a plan-shaped message and do not run a review.
 
 **Profiles (optional).** A JSON config can name multiple "profiles" — each
 binds a label to a CLI plus optional `model` / `effort`. This lets the same
@@ -105,6 +110,7 @@ reasoning, lists trade-offs per option, and flags any missed option.
 
 - Positional non-flag arg → plan file path
 - `--focus=<v>` → focus value (the script validates and errors out on unknowns)
+- `--help` / `help` usage request → run script `--help`, report the output, stop
 - No focus given → omit the flag (script defaults to `all`)
 
 ### 2. Resolve the plan input
@@ -117,23 +123,23 @@ If no file path:
   - **Plan-shaped:** an ExitPlanMode block, a numbered design proposal, or a clearly-marked plan/spec section (headers like `## Plan`, `## Design`, `## 설계`).
   - **Choice-shaped:** a recent message presenting alternatives — `Option A / B / C`, `선택지 1 / 2 / 3`, headers like `## Options` / `## 선택지` / `## Choices`, or any "여기 N가지 방법이 있습니다" listing. If `--focus=choice` was passed and no plan-shape candidate exists, prefer the most recent choice-shape candidate.
 - **Confidence check:** if the candidate is unambiguous (single recent block, clearly plan- or choice-shaped, no competing candidates), proceed silently. Otherwise show a 5-line preview and ask the user to confirm or supply a different path. Wait for confirmation.
-- If confirmed, write the plan content verbatim to a temp file located **inside the repo's review tree** — never under `/tmp` or system temp. Resolve the path as follows (do NOT use `mktemp` — its `/tmp` resolution differs between Bash and the Write tool on Windows, which silently produces an empty input file):
-  1. Determine repo root via `git rev-parse --show-toplevel`. On Windows + Git Bash this typically returns a forward-slash Windows path like `C:/foo/bar` — that form is shared by Bash and the harness Write tool. If the result is in any other form (`/c/foo/bar`, `/cygdrive/c/foo/bar`, `\\?\C:\foo\bar`, or starts with `/` but not a Windows drive letter), normalize to `C:/...` form first (`cygpath -m "$root"` if available, otherwise hand-fix `^/([a-zA-Z])/` → `\1:/`). Use the normalized string verbatim in `mkdir`/`Write` calls and the script invocation — do not mix slash styles.
-  2. Pick the temp directory using the **same 3-tier resolution as the script**, with one extra fallback to keep the workflow unblocked when the repo tree is not writable:
-     - `<repo>/docs/reviews/.tmp/` if `<repo>/docs/` exists, else
-     - `<repo>/reviews/.tmp/` if in a repo, else
-     - `<cwd>/reviews/.tmp/` outside a repo, else (any failure — mkdir, Write, or permission — falls through to the next tier)
-     - `<cwd>/.peer-review-tmp/` as a last-resort fallback. Note this tier is **not** covered by the script's `.git/info/exclude` registration; out-of-repo cwds may want to add it to a personal gitignore. Never fall back to `/tmp` or `%TEMP%`.
-  3. File name: prefer `mktemp "<temp-dir>/peer-review-input-XXXXXX.md"` — explicit-template form keeps creation in the chosen directory and gives atomic uniqueness. (This is *not* `mktemp -t`, which is the form that resolves `/tmp` differently between Bash and the Write tool on Windows. The explicit-template form is safe.) If `mktemp` is unavailable, fall back to `peer-review-input-<pid>-<epoch-ms>.md`.
-  4. `mkdir -p` the temp directory, then write the plan content with the Write tool using the same absolute path. If either step fails, retry on the next tier (do not surface the failure to the user unless all four tiers fail).
-  5. Pass the absolute path to the script with `--source=chat`.
-  6. After the script finishes (success or failure, before reporting to the user), delete the temp file.
+- If confirmed, pass the plan content to the script over stdin using
+  `--stdin-plan`. The script implies `--source=chat`, owns repo-local temp
+  file creation and cleanup, and validates reviewer arguments before consuming
+  stdin. Never create a chat temp file yourself unless the script lacks
+  `--stdin-plan`.
 - If no candidate at all: tell the user no plan was found in chat and ask for a file path. Stop.
 
 ### 3. Invoke the script
 
 ```bash
-~/.agents/skills/peer-review/scripts/run-peer-review.sh <plan-file> [--reviewer=<list>] [--focus=<v>] --source=<file|chat> --host=<cli>
+~/.agents/skills/peer-review/scripts/run-peer-review.sh <plan-file> [--reviewer=<list>] [--focus=<v>] --source=file --host=<cli>
+```
+
+For chat-sourced input, pipe the exact plan content to:
+
+```bash
+~/.agents/skills/peer-review/scripts/run-peer-review.sh --stdin-plan [--reviewer=<list>] [--focus=<v>] --host=<cli>
 ```
 
 Pass `--host=<your-cli>` (`--host=claude` from Claude Code,
@@ -176,6 +182,7 @@ successful reviewer:
 REVIEW=<reviewer-name> <absolute-path-to-saved-review>
 REVIEW=<reviewer-name> <absolute-path-to-saved-review>
 EXCLUDE_NOTE=<optional one-line message about .git/info/exclude update>
+WARN=<optional machine-readable warning>
 ```
 
 Failures (per reviewer) go to stderr as `ERROR=<reviewer> <message>`.
@@ -188,13 +195,14 @@ Capture the script's stdout, stderr, and exit code. Parse stdout for
 `REVIEW=<reviewer> <path>` lines; parse stderr for `ERROR=<reviewer> <msg>`
 lines. Then:
 
-- **Exit non-zero (all reviewers failed):** show stderr inline. Do not invent a summary. Stop.
+- **Exit non-zero (all reviewers failed):** surface any `WARN=` lines from stdout verbatim, then show stderr inline. Do not invent a summary. Stop.
 - **Exit 0, single REVIEW line, review content size < 200 bytes (`wc -c < <path>`):** inline the full content to chat.
 - **Exit 0, single REVIEW line, otherwise:** read the review file, extract 3-5 most critical bullets (numbered/bulleted issues, severity language). Report as:
 
 ```
 <reviewer> review complete → <path relative to repo or cwd> (<source: file|chat>)
 [+ EXCLUDE_NOTE if present, on its own line]
+[+ for each WARN= on stdout: show the line verbatim]
 
 Key issues:
 - <bullet 1>
@@ -207,6 +215,7 @@ Key issues:
 ```
 Peer review complete (<source: file|chat>)
 [+ EXCLUDE_NOTE if present, on its own line]
+[+ for each WARN= on stdout: show the line verbatim]
 [+ for each ERROR= on stderr: "<reviewer> failed: <msg>" line]
 
 <reviewer-1> → <path-1>

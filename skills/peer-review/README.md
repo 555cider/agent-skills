@@ -1,7 +1,7 @@
 # peer-review
 
 Tool-neutral peer-review skill. Sends a plan/spec to a reviewer LLM and saves
-the response to `<repo>/docs/reviews/` (or `./reviews/` outside a repo).
+the response to a repo-local reviews directory.
 
 One skill within the `agent-skills` repo. See [root README](../../README.md)
 for the wiring model — `install.sh` symlinks this directory into
@@ -54,10 +54,34 @@ run-peer-review.sh <plan-file> \
   [--exclude-cli=<cli>]       # filter `all` expansion by backing CLI (used to avoid self-review)
   [--host=<cli>]              # identify the host CLI; required when --reviewer=0 (self-review)
 
+run-peer-review.sh --stdin-plan \
+  [--reviewer=<list>]         # read chat-sourced plan content from stdin
+  [--focus=all|feasibility|correctness|assumptions|repo-fit|choice]
+  [--source=chat]             # implied by --stdin-plan; --source=file is rejected
+  [--exclude-cli=<cli>]
+  [--host=<cli>]
+
 run-peer-review.sh list [--host=<cli>]
                               # subcommand: print available reviewers
                               #   (config index map or PATH discovery) and exit
+
+run-peer-review.sh --help      # print usage and exit without running a review
 ```
+
+`--help` / `-h` must be the only argument. `run-peer-review.sh foo --help`
+is treated as an invalid review invocation, not as help. `list --help` and
+`list -h` print the general script help.
+
+## Maintainer tests
+
+```bash
+bash tests/peer-review/run-tests.sh
+```
+
+Maintainer-only tests live outside `skills/peer-review/`, so they do not ship
+in the split skill artifact. They use fake reviewer CLIs and cover help/list,
+self-review, host warnings, stdin input, profile expansion, and reviewer
+success/failure contracts.
 
 ### Listing available reviewers (`list` subcommand)
 
@@ -88,21 +112,19 @@ Special:
   #    token        cli        status
   0    self         claude     on PATH
 
-Reviewer CLIs (no config — names callable as --reviewer=<cli>; numbers display-only):
-  display # cli        status
+Reviewer CLIs (no config — on-PATH numbers callable as --reviewer=N):
+  #    cli        status
   1         codex      on PATH
   2         claude     on PATH
   3         gemini     on PATH
   -         qwen       not found
   4         opencode   on PATH
-
-to use indexed selection (--reviewer=N), define a JSON config (see below).
 ```
 
 The Special row only renders when `--host=<cli>` is passed (the slash
-command auto-forwards it). PATH-mode numbers are display-only — same
-number can mean different CLIs across machines, so indexed invocation
-requires a config.
+command auto-forwards it). Without a config, numbered selection maps to the
+on-PATH CLI rows shown by `list`; unavailable CLIs render as `-` and cannot be
+selected by number. Names (`--reviewer=claude`) remain portable across machines.
 
 ### Self-review (`--reviewer=0`)
 
@@ -117,6 +139,18 @@ reviewer is available, or as a quick "look at this fresh" pass; signal is
 weaker than cross-vendor review when models do overlap (shared training →
 shared blind spots). The script does not flag the output as self-review;
 the caller surfaces the source verbatim.
+
+When any non-`0` reviewer token resolves to the host CLI, the script emits a
+stdout warning before the review lines:
+
+```
+WARN=reviewer_matches_host reviewer=<reviewer> host=<host> self_opt_in=0
+```
+
+`--reviewer=0` is explicit self-review and does not emit this warning.
+Current warning codes:
+
+- `reviewer_matches_host` — a non-`0` reviewer token resolves to the host CLI.
 
 ## Optional config
 
@@ -160,6 +194,7 @@ Stdout (one line per successful reviewer):
 ```
 REVIEW=<reviewer-name> <absolute path to saved review>
 EXCLUDE_NOTE=<optional message about .git/info/exclude update>
+WARN=<optional machine-readable warning>
 ```
 
 Stderr (one line per failed reviewer):
@@ -200,21 +235,18 @@ missing, 4 filename claim failed, 5 empty response (single-reviewer mode),
   data, not instructions. Nonce regenerated if it collides with plan text.
 - **Timeout:** reviewer call bounded to 600s via `timeout` / `gtimeout` if
   available; runs unbounded otherwise.
-- **No auto-cleanup** of old review files. **No automated tests** against the
-  script (TODO: bats fixtures for slug derivation, collision retry, exclude
-  update, delimiter collision).
-- **Chat-sourced plan input:** SKILL.md writes the input file under
-  `<out>/.tmp/` (same 3-tier resolution as `<out>` itself), with a
-  `<cwd>/.peer-review-tmp/` last-resort fallback if the repo tree is not
-  writable. Filenames come from `mktemp` with an explicit repo-local
-  template; `mktemp -t` is deliberately avoided because on Windows + Git
-  Bash it resolves `/tmp` to a different physical directory than the
-  harness Write tool, silently producing an empty input file. The script
-  side is unchanged — it still reads a regular file path passed
-  positionally. The tier-4 fallback (`<cwd>/.peer-review-tmp/`) is **not**
-  auto-registered in `.git/info/exclude` (the script only registers
-  `<out>/`); invocations from a cwd inside another git repo should add
-  it to a personal gitignore if the fallback ever triggers there.
+- Maintainer tests live under `tests/peer-review/`; installed skill clones do
+  not include them.
+- **Chat-sourced plan input:** `--stdin-plan` reads the plan from stdin, stores
+  it in a repo-local temporary file, builds the prompt, then deletes the temp
+  plan before reviewer subprocesses run. It rejects empty stdin, positional
+  plan files, and `--source=file`; reviewer/profile validation runs before
+  stdin is consumed. Temp dirs follow the review tree with
+  `<cwd>/.peer-review-tmp/` as a final local fallback.
+- **Temp path boundary:** repo/content temp files use explicit-template
+  `mktemp "$dir/..."` so paths stay under the chosen review tree. Config
+  parsing uses `mktemp -t` only for files consumed by the same shell process,
+  not for paths passed between harness tools.
 
 ## Why `.agents/`
 
