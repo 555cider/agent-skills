@@ -6,7 +6,14 @@
 #          [--source=file|chat]
 #          [--exclude-cli=<cli>]
 #          [--host=<cli>]
+#        run-peer-review.sh --stdin-plan
+#          [--reviewer=<profile|cli|all|0|<index>|<lo>-<hi>>[,...]]
+#          [--focus=all|feasibility|correctness|assumptions|repo-fit|choice]
+#          [--source=chat]
+#          [--exclude-cli=<cli>]
+#          [--host=<cli>]
 #        run-peer-review.sh list [--host=<cli>]
+#        run-peer-review.sh --help
 #
 # Default reviewer: codex. Pass a comma-separated list to run multiple reviewers in parallel.
 # (e.g., --reviewer=codex,claude,gemini)
@@ -42,6 +49,9 @@ set -euo pipefail
 PLAN_FILE=""
 FOCUS="all"
 SOURCE="file"
+SOURCE_EXPLICIT=0
+STDIN_PLAN=0
+STDIN_PLAN_FILE=""
 REVIEWER_ARG="codex"
 EXCLUDE_CLI=""
 HOST_CLI=""
@@ -49,8 +59,39 @@ LIST_MODE=0
 
 usage() {
   echo "usage: $0 <plan-file> [--reviewer=...] [--focus=...] [--source=file|chat] [--exclude-cli=<cli>] [--host=<cli>]" >&2
+  echo "       $0 --stdin-plan [--reviewer=...] [--focus=...] [--source=chat] [--exclude-cli=<cli>] [--host=<cli>]" >&2
   echo "       $0 list [--host=<cli>]" >&2
+  echo "       $0 --help" >&2
 }
+
+help_full() {
+  local prog
+  prog="$(basename "$0")"
+  cat <<EOF
+usage:
+  $prog <plan-file> [--reviewer=<list>] [--focus=<value>] [--source=file] [--exclude-cli=<cli>] [--host=<cli>]
+  $prog --stdin-plan [--reviewer=<list>] [--focus=<value>] [--source=chat] [--exclude-cli=<cli>] [--host=<cli>]
+  $prog list [--host=<cli>]
+  $prog --help
+
+reviewers: <cli>, profile, index/range, all, or 0 with --host=<cli>
+focus: all, feasibility, correctness, assumptions, repo-fit, choice
+stdout: REVIEW=<reviewer> <absolute-path>, WARN=<code> ..., EXCLUDE_NOTE=<message>
+stderr: ERROR=<reviewer> <message>
+EOF
+}
+
+# Help is a top-level command. It must not fall through to plan discovery or
+# reviewer execution.
+if [ $# -gt 0 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
+  if [ $# -ne 1 ]; then
+    echo "help must be used as the only argument" >&2
+    usage
+    exit 2
+  fi
+  help_full
+  exit 0
+fi
 
 # Subcommand dispatch (first positional arg only). `list` is a reserved word —
 # `list` as a plan file path is rejected; pass `./list` if needed. Each subcommand
@@ -59,6 +100,15 @@ usage() {
 if [ $# -gt 0 ] && [ "$1" = "list" ]; then
   LIST_MODE=1
   shift
+  if [ $# -gt 0 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
+    if [ $# -ne 1 ]; then
+      echo "help must be used as the only argument" >&2
+      usage
+      exit 2
+    fi
+    help_full
+    exit 0
+  fi
   for arg in "$@"; do
     case "$arg" in
       --host=*) HOST_CLI="${arg#--host=}" ;;
@@ -69,18 +119,17 @@ else
   for arg in "$@"; do
     case "$arg" in
       --focus=*)       FOCUS="${arg#--focus=}" ;;
-      --source=*)      SOURCE="${arg#--source=}" ;;
+      --source=*)      SOURCE="${arg#--source=}"; SOURCE_EXPLICIT=1 ;;
+      --stdin-plan)    STDIN_PLAN=1 ;;
       --reviewer=*)    REVIEWER_ARG="${arg#--reviewer=}" ;;
       --exclude-cli=*) EXCLUDE_CLI="${arg#--exclude-cli=}" ;;
       --host=*)        HOST_CLI="${arg#--host=}" ;;
+      --help|-h)        echo "help must be used as the only argument" >&2; usage; exit 2 ;;
       --*)             echo "unknown flag: $arg" >&2; usage; exit 2 ;;
       list)            echo "'list' is a subcommand and must be the first argument; pass './list' to review a file literally named 'list'" >&2; exit 2 ;;
       *)               if [ -z "$PLAN_FILE" ]; then PLAN_FILE="$arg"; else echo "extra arg: $arg" >&2; usage; exit 2; fi ;;
     esac
   done
-
-  [ -n "$PLAN_FILE" ] || { usage; exit 2; }
-  [ -f "$PLAN_FILE" ] || { echo "plan file not found: $PLAN_FILE" >&2; exit 2; }
 fi
 case "$FOCUS" in
   all|feasibility|correctness|assumptions|repo-fit|choice) ;;
@@ -101,6 +150,73 @@ esac
 
 # Determine REPO_ROOT early — config search uses it.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+stdin_tmp_dir() {
+  local dir
+  if [ -n "$REPO_ROOT" ] && [ -d "$REPO_ROOT/docs" ]; then
+    set -- "$REPO_ROOT/docs/reviews/.tmp" "$REPO_ROOT/reviews/.tmp" "$PWD/.peer-review-tmp"
+  elif [ -n "$REPO_ROOT" ]; then
+    set -- "$REPO_ROOT/reviews/.tmp" "$PWD/.peer-review-tmp"
+  else
+    set -- "$PWD/reviews/.tmp" "$PWD/.peer-review-tmp"
+  fi
+
+  for dir in "$@"; do
+    if mkdir -p "$dir" 2>/dev/null; then
+      printf '%s' "$dir"
+      return 0
+    fi
+  done
+  echo "could not create stdin plan temp directory" >&2
+  exit 2
+}
+
+create_stdin_plan_file() {
+  local dir nonws
+  if [ -t 0 ]; then
+    echo "--stdin-plan requires piped stdin (got terminal)" >&2
+    exit 2
+  fi
+  dir="$(stdin_tmp_dir)"
+  STDIN_PLAN_FILE="$(mktemp "$dir/peer-review-input-XXXXXX.md")" || {
+    echo "could not create stdin plan temp file" >&2
+    exit 2
+  }
+  trap cleanup_stdin_plan EXIT INT TERM HUP
+  cat > "$STDIN_PLAN_FILE"
+  nonws="$(tr -d '[:space:]' < "$STDIN_PLAN_FILE" 2>/dev/null | wc -c)"
+  if [ "$nonws" -eq 0 ]; then
+    cleanup_stdin_plan
+    echo "stdin plan is empty" >&2
+    exit 2
+  fi
+}
+
+cleanup_stdin_plan() {
+  [ -n "$STDIN_PLAN_FILE" ] || return 0
+  local dir
+  dir="$(dirname "$STDIN_PLAN_FILE")"
+  rm -f "$STDIN_PLAN_FILE" 2>/dev/null || true
+  rmdir "$dir" 2>/dev/null || true
+  STDIN_PLAN_FILE=""
+}
+
+if [ "$LIST_MODE" -eq 0 ]; then
+  if [ "$STDIN_PLAN" -eq 1 ]; then
+    if [ -n "$PLAN_FILE" ]; then
+      echo "--stdin-plan cannot be combined with a plan file" >&2
+      exit 2
+    fi
+    if [ "$SOURCE_EXPLICIT" -eq 1 ] && [ "$SOURCE" = "file" ]; then
+      echo "--stdin-plan cannot be combined with --source=file" >&2
+      exit 2
+    fi
+    SOURCE="chat"
+  else
+    [ -n "$PLAN_FILE" ] || { usage; exit 2; }
+    [ -f "$PLAN_FILE" ] || { echo "plan file not found: $PLAN_FILE" >&2; exit 2; }
+  fi
+fi
 
 ALL_CLIS=(codex claude gemini qwen opencode)
 
@@ -279,20 +395,18 @@ if [ "$LIST_MODE" -eq 1 ]; then
       i=$((i+1))
     done
   else
-    echo "Reviewer CLIs (no config — names callable as --reviewer=<cli>; numbers display-only):"
-    printf '  %-9s %-10s %s\n' 'display #' 'cli' 'status'
+    echo "Reviewer CLIs (no config — on-PATH numbers callable as --reviewer=N):"
+    printf '  %-4s %-10s %s\n' '#' 'cli' 'status'
     i=1
     for c in "${ALL_CLIS[@]}"; do
       st="$(cli_status "$c")"
       if [ "$st" = "on PATH" ]; then
-        printf '  %-9s %-10s %s\n' "$i" "$c" "$st"
+        printf '  %-4s %-10s %s\n' "$i" "$c" "$st"
         i=$((i+1))
       else
-        printf '  %-9s %-10s %s\n' '-' "$c" "$st"
+        printf '  %-4s %-10s %s\n' '-' "$c" "$st"
       fi
     done
-    echo
-    echo "to use indexed selection (--reviewer=N), define a JSON config (see README)."
   fi
   exit 0
 fi
@@ -300,6 +414,7 @@ fi
 # --- parse reviewer list (comma-separated, deduped, validated) ---
 declare -a REVIEWERS_LIST=()
 declare -A SEEN=()
+declare -A HOST_WARNING=()
 
 add_unique() {
   local p="$1"
@@ -309,19 +424,44 @@ add_unique() {
   fi
 }
 
-# resolve_index <n>: map a 1-based index into the profile list to a profile name
-# and append it. Errors if no config is loaded or the index is out of range.
+mark_host_warning() {
+  local p="$1"
+  local cli
+  [ -n "$HOST_CLI" ] || return 0
+  cli="$(profile_cli_for "$p")"
+  if [ "$cli" = "$HOST_CLI" ]; then
+    # Mark even if add_unique was a no-op: --reviewer=0,claude --host=claude
+    # should still warn about the explicit non-opt-in claude token.
+    HOST_WARNING[$p]=1
+  fi
+}
+
+# resolve_index <n>: map a 1-based index into profiles, or into the on-PATH
+# built-in CLI list when no profiles are configured.
 resolve_index() {
   local idx="$1"
   if [ ${#PROFILE_NAMES[@]} -eq 0 ]; then
-    echo "index $idx requires a JSON config with profiles defined (run \`list\` to see available reviewers)" >&2
+    local c i=1
+    for c in "${ALL_CLIS[@]}"; do
+      command -v "$c" >/dev/null 2>&1 || continue
+      if [ "$i" -eq "$idx" ]; then
+        add_unique "$c"
+        mark_host_warning "$c"
+        return 0
+      fi
+      i=$((i+1))
+    done
+    echo "index $idx out of range for on-PATH reviewer CLIs; run \`list\` to see available reviewers" >&2
     exit 2
   fi
   if [ "$idx" -lt 1 ] || [ "$idx" -gt ${#PROFILE_NAMES[@]} ]; then
     echo "index $idx out of range (1..${#PROFILE_NAMES[@]}); run \`list\` to see available reviewers" >&2
     exit 2
   fi
-  add_unique "${PROFILE_NAMES[$((idx-1))]}"
+  local profile
+  profile="${PROFILE_NAMES[$((idx-1))]}"
+  add_unique "$profile"
+  mark_host_warning "$profile"
 }
 
 IFS=',' read -ra _RAW <<< "$REVIEWER_ARG"
@@ -373,6 +513,7 @@ for r in "${_RAW[@]}"; do
         if [ -n "$EXCLUDE_CLI" ] && [ "$cli" = "$EXCLUDE_CLI" ]; then continue; fi
         if command -v "$cli" >/dev/null 2>&1; then
           add_unique "$p"
+          mark_host_warning "$p"
         else
           echo "all: skipping $p (cli=$cli not on PATH)" >&2
         fi
@@ -382,6 +523,7 @@ for r in "${_RAW[@]}"; do
         [ "$c" = "$EXCLUDE_CLI" ] && continue
         if command -v "$c" >/dev/null 2>&1; then
           add_unique "$c"
+          mark_host_warning "$c"
         else
           echo "all: skipping $c (not on PATH)" >&2
         fi
@@ -394,10 +536,12 @@ for r in "${_RAW[@]}"; do
   # CLI names (in which case no config entry is needed — current default behavior).
   if [ -n "${PROFILE_CLI[$r]:-}" ]; then
     add_unique "$r"
+    mark_host_warning "$r"
   else
     case "$r" in
       codex|claude|gemini|qwen|opencode)
         add_unique "$r"
+        mark_host_warning "$r"
         ;;
       *)
         echo "unknown profile: $r" >&2
@@ -419,6 +563,17 @@ done
 for p in "${REVIEWERS_LIST[@]}"; do
   cli="$(profile_cli_for "$p")"
   command -v "$cli" >/dev/null 2>&1 || { echo "$cli CLI (for profile $p) not found on PATH" >&2; exit 3; }
+done
+
+if [ "$STDIN_PLAN" -eq 1 ]; then
+  create_stdin_plan_file
+  PLAN_FILE="$STDIN_PLAN_FILE"
+fi
+
+for p in "${REVIEWERS_LIST[@]}"; do
+  if [ -n "${HOST_WARNING[$p]:-}" ]; then
+    echo "WARN=reviewer_matches_host reviewer=$p host=$HOST_CLI self_opt_in=0"
+  fi
 done
 
 MULTI=0
@@ -499,6 +654,7 @@ PROMPT_FILE="$(mktemp "$OUT_DIR/.peer-review-prompt-XXXXXX.md")"
 # --- cleanup on any exit ---
 declare -A FINALIZED=()
 cleanup() {
+  cleanup_stdin_plan
   rm -f "$PROMPT_FILE" 2>/dev/null || true
   for p in "${REVIEWERS_LIST[@]}"; do
     rm -f "${TMP_OUTS[$p]:-}" "${TMP_ERRS[$p]:-}" 2>/dev/null || true
@@ -571,6 +727,12 @@ FOCUS_BODY="$FOCUS_BODY$CONVENTION_BODY"
   cat "$PLAN_FILE"
   printf '\n%s\n' "$CLOSE"
 } > "$PROMPT_FILE"
+
+if [ -n "$STDIN_PLAN_FILE" ]; then
+  # Reviewer subprocesses only need PROMPT_FILE; remove the chat temp plan
+  # early to reduce the time it sits in the repo tree.
+  cleanup_stdin_plan
+fi
 
 # --- 10-minute wall-clock cap if available ---
 TIMEOUT_CMD=()
