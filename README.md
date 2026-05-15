@@ -1,7 +1,7 @@
 # peer-review
 
 Tool-neutral peer-review skill. Sends a plan/spec to a reviewer LLM and saves
-the response to a repo-local reviews directory.
+the response to a repo-local temporary reviews directory.
 
 One skill within the `agent-skills` repo. See [root README](../../README.md)
 for the wiring model — `install.sh` symlinks this directory into
@@ -42,7 +42,9 @@ the canonical files and both harnesses pick up the change immediately.
 
 ```
 run-peer-review.sh <plan-file> \
-  [--reviewer=<list>]         # default: codex; comma-separated list runs in parallel
+  [--reviewer=<list>]         # default: codex, unless --host would make that
+                              #   accidental self-review and another reviewer is available;
+                              #   comma-separated list runs in parallel
                               #   choices: codex, claude, gemini, qwen, opencode, all,
                               #            0 (self — host CLI; requires --host),
                               #            any profile name from JSON config, or
@@ -53,6 +55,7 @@ run-peer-review.sh <plan-file> \
   [--source=file|chat]        # default: file (chat means caller wrote a temp file from chat content)
   [--exclude-cli=<cli>]       # filter `all` expansion by backing CLI (used to avoid self-review)
   [--host=<cli>]              # identify the host CLI; required when --reviewer=0 (self-review)
+  [--timeout=<seconds>]       # per-reviewer timeout; default 300 or PEER_REVIEW_TIMEOUT_SECONDS
 
 run-peer-review.sh --stdin-plan \
   [--reviewer=<list>]         # read chat-sourced plan content from stdin
@@ -60,6 +63,7 @@ run-peer-review.sh --stdin-plan \
   [--source=chat]             # implied by --stdin-plan; --source=file is rejected
   [--exclude-cli=<cli>]
   [--host=<cli>]
+  [--timeout=<seconds>]
 
 run-peer-review.sh list [--host=<cli>]
                               # subcommand: print available reviewers
@@ -71,17 +75,6 @@ run-peer-review.sh --help      # print usage and exit without running a review
 `--help` / `-h` must be the only argument. `run-peer-review.sh foo --help`
 is treated as an invalid review invocation, not as help. `list --help` and
 `list -h` print the general script help.
-
-## Maintainer tests
-
-```bash
-bash tests/peer-review/run-tests.sh
-```
-
-Maintainer-only tests live outside `skills/peer-review/`, so they do not ship
-in the split skill artifact. They use fake reviewer CLIs and cover help/list,
-self-review, host warnings, stdin input, profile expansion, and reviewer
-success/failure contracts.
 
 ### Listing available reviewers (`list` subcommand)
 
@@ -204,15 +197,15 @@ ERROR=<reviewer-name> <message>
 
 Exit codes: 0 ok (at least one reviewer succeeded), 2 usage, 3 reviewer CLI
 missing, 4 filename claim failed, 5 empty response (single-reviewer mode),
-6 every reviewer failed (multi-reviewer mode), * reviewer's own exit
-(single-reviewer mode).
+6 every reviewer failed (multi-reviewer mode), 124 timeout
+(single-reviewer mode), * reviewer's own exit (single-reviewer mode).
 
 ## Implementation notes
 
-- **Output dir:** 3-tier resolution — `<repo>/docs/reviews/` if `<repo>/docs/`
-  exists, else `<repo>/reviews/`, else `./reviews/`. Falls back to
+- **Output dir:** repo-local temporary state — `<repo>/.peer-review/reviews/`
+  when inside a git repo, else `./.peer-review/reviews/`. Falls back to
   `/tmp/peer-review/` if mkdir fails.
-- **Per-clone exclude:** review outputs are added to `.git/info/exclude` (not
+- **Per-clone exclude:** `.peer-review/` is added to `.git/info/exclude` (not
   `.gitignore`), worktree-safe via `git rev-parse --git-path`. Avoids
   committing review files while not polluting shared `.gitignore`.
 - **Atomic filename claim:** `set -C` (noclobber) + retry-on-collision (5
@@ -233,18 +226,22 @@ missing, 4 filename claim failed, 5 empty response (single-reviewer mode),
 - **Prompt injection guard:** plan content wrapped in `<PLAN-{nonce}>` markers
   with a random 12-byte hex nonce; reviewer instructed to treat content as
   data, not instructions. Nonce regenerated if it collides with plan text.
-- **Timeout:** reviewer call bounded to 600s via `timeout` / `gtimeout` if
-  available; runs unbounded otherwise.
-- Maintainer tests live under `tests/peer-review/`; installed skill clones do
-  not include them.
+- **Timeout:** each reviewer call is bounded by a configurable timeout. Default
+  is 300s, override with `--timeout=<seconds>` or
+  `PEER_REVIEW_TIMEOUT_SECONDS`. Uses `timeout` / `gtimeout` when available
+  and falls back to a shell watchdog otherwise. Timed-out reviewers report
+  `timed out after Ns` instead of silently waiting for the old long cap.
+- **Path migration:** earlier versions wrote to `<repo>/docs/reviews/` or
+  `<repo>/reviews/`. Those paths are no longer used. Existing files and any
+  stale `.git/info/exclude` entries can be removed manually if desired.
 - **Chat-sourced plan input:** `--stdin-plan` reads the plan from stdin, stores
   it in a repo-local temporary file, builds the prompt, then deletes the temp
   plan before reviewer subprocesses run. It rejects empty stdin, positional
   plan files, and `--source=file`; reviewer/profile validation runs before
-  stdin is consumed. Temp dirs follow the review tree with
-  `<cwd>/.peer-review-tmp/` as a final local fallback.
+  stdin is consumed. Temp dirs prefer the repo-local `.peer-review/` state
+  tree and fall back to local or `/tmp/peer-review/` when needed.
 - **Temp path boundary:** repo/content temp files use explicit-template
-  `mktemp "$dir/..."` so paths stay under the chosen review tree. Config
+  `mktemp "$dir/..."` so paths stay under the chosen review/temp tree. Config
   parsing uses `mktemp -t` only for files consumed by the same shell process,
   not for paths passed between harness tools.
 

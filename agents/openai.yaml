@@ -1,0 +1,4 @@
+interface:
+  display_name: "Peer Review"
+  short_description: "Get second opinions on plans and specs."
+  default_prompt: "Use $peer-review to get a second opinion on a plan, spec, or design choice."

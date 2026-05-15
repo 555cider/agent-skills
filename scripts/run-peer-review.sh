@@ -6,17 +6,20 @@
 #          [--source=file|chat]
 #          [--exclude-cli=<cli>]
 #          [--host=<cli>]
+#          [--timeout=<seconds>]
 #        run-peer-review.sh --stdin-plan
 #          [--reviewer=<profile|cli|all|0|<index>|<lo>-<hi>>[,...]]
 #          [--focus=all|feasibility|correctness|assumptions|repo-fit|choice]
 #          [--source=chat]
 #          [--exclude-cli=<cli>]
 #          [--host=<cli>]
+#          [--timeout=<seconds>]
 #        run-peer-review.sh list [--host=<cli>]
 #        run-peer-review.sh --help
 #
-# Default reviewer: codex. Pass a comma-separated list to run multiple reviewers in parallel.
-# (e.g., --reviewer=codex,claude,gemini)
+# Default reviewer: codex, unless --host would make that accidental self-review;
+# then the first available non-host reviewer is used. Pass a comma-separated list
+# to run multiple reviewers in parallel (e.g., --reviewer=codex,claude,gemini).
 # Indexes (1-based) and ranges are accepted when a config defines profiles —
 # e.g., --reviewer=2 (second profile), --reviewer=1-3 (first three),
 # --reviewer=1,3,my-claude (mix). Run `list` to see available reviewers.
@@ -44,6 +47,7 @@
 #   4  filename claim failed
 #   5  reviewer returned empty/whitespace-only output (only when single reviewer)
 #   6  all reviewers failed (multi-reviewer)
+#   124 reviewer timed out (single-reviewer mode)
 set -euo pipefail
 
 PLAN_FILE=""
@@ -53,13 +57,15 @@ SOURCE_EXPLICIT=0
 STDIN_PLAN=0
 STDIN_PLAN_FILE=""
 REVIEWER_ARG="codex"
+REVIEWER_EXPLICIT=0
 EXCLUDE_CLI=""
 HOST_CLI=""
 LIST_MODE=0
+REVIEW_TIMEOUT="${PEER_REVIEW_TIMEOUT_SECONDS:-300}"
 
 usage() {
-  echo "usage: $0 <plan-file> [--reviewer=...] [--focus=...] [--source=file|chat] [--exclude-cli=<cli>] [--host=<cli>]" >&2
-  echo "       $0 --stdin-plan [--reviewer=...] [--focus=...] [--source=chat] [--exclude-cli=<cli>] [--host=<cli>]" >&2
+  echo "usage: $0 <plan-file> [--reviewer=...] [--focus=...] [--source=file|chat] [--exclude-cli=<cli>] [--host=<cli>] [--timeout=<seconds>]" >&2
+  echo "       $0 --stdin-plan [--reviewer=...] [--focus=...] [--source=chat] [--exclude-cli=<cli>] [--host=<cli>] [--timeout=<seconds>]" >&2
   echo "       $0 list [--host=<cli>]" >&2
   echo "       $0 --help" >&2
 }
@@ -69,13 +75,14 @@ help_full() {
   prog="$(basename "$0")"
   cat <<EOF
 usage:
-  $prog <plan-file> [--reviewer=<list>] [--focus=<value>] [--source=file] [--exclude-cli=<cli>] [--host=<cli>]
-  $prog --stdin-plan [--reviewer=<list>] [--focus=<value>] [--source=chat] [--exclude-cli=<cli>] [--host=<cli>]
+  $prog <plan-file> [--reviewer=<list>] [--focus=<value>] [--source=file] [--exclude-cli=<cli>] [--host=<cli>] [--timeout=<seconds>]
+  $prog --stdin-plan [--reviewer=<list>] [--focus=<value>] [--source=chat] [--exclude-cli=<cli>] [--host=<cli>] [--timeout=<seconds>]
   $prog list [--host=<cli>]
   $prog --help
 
 reviewers: <cli>, profile, index/range, all, or 0 with --host=<cli>
 focus: all, feasibility, correctness, assumptions, repo-fit, choice
+timeout: seconds per reviewer, default ${PEER_REVIEW_TIMEOUT_SECONDS:-300} (override with --timeout or PEER_REVIEW_TIMEOUT_SECONDS)
 stdout: REVIEW=<reviewer> <absolute-path>, WARN=<code> ..., EXCLUDE_NOTE=<message>
 stderr: ERROR=<reviewer> <message>
 EOF
@@ -121,9 +128,10 @@ else
       --focus=*)       FOCUS="${arg#--focus=}" ;;
       --source=*)      SOURCE="${arg#--source=}"; SOURCE_EXPLICIT=1 ;;
       --stdin-plan)    STDIN_PLAN=1 ;;
-      --reviewer=*)    REVIEWER_ARG="${arg#--reviewer=}" ;;
+      --reviewer=*)    REVIEWER_ARG="${arg#--reviewer=}"; REVIEWER_EXPLICIT=1 ;;
       --exclude-cli=*) EXCLUDE_CLI="${arg#--exclude-cli=}" ;;
       --host=*)        HOST_CLI="${arg#--host=}" ;;
+      --timeout=*)     REVIEW_TIMEOUT="${arg#--timeout=}" ;;
       --help|-h)        echo "help must be used as the only argument" >&2; usage; exit 2 ;;
       --*)             echo "unknown flag: $arg" >&2; usage; exit 2 ;;
       list)            echo "'list' is a subcommand and must be the first argument; pass './list' to review a file literally named 'list'" >&2; exit 2 ;;
@@ -147,18 +155,20 @@ case "$HOST_CLI" in
   ""|codex|claude|gemini|qwen|opencode) ;;
   *) echo "invalid --host: $HOST_CLI (use: codex|claude|gemini|qwen|opencode)" >&2; exit 2 ;;
 esac
+if ! [[ "$REVIEW_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid --timeout: $REVIEW_TIMEOUT (use a positive integer number of seconds)" >&2
+  exit 2
+fi
 
 # Determine REPO_ROOT early — config search uses it.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 
 stdin_tmp_dir() {
   local dir
-  if [ -n "$REPO_ROOT" ] && [ -d "$REPO_ROOT/docs" ]; then
-    set -- "$REPO_ROOT/docs/reviews/.tmp" "$REPO_ROOT/reviews/.tmp" "$PWD/.peer-review-tmp"
-  elif [ -n "$REPO_ROOT" ]; then
-    set -- "$REPO_ROOT/reviews/.tmp" "$PWD/.peer-review-tmp"
+  if [ -n "$REPO_ROOT" ]; then
+    set -- "$REPO_ROOT/.peer-review/tmp" "$PWD/.peer-review/tmp" "/tmp/peer-review/tmp"
   else
-    set -- "$PWD/reviews/.tmp" "$PWD/.peer-review-tmp"
+    set -- "$PWD/.peer-review/tmp" "/tmp/peer-review/tmp"
   fi
 
   for dir in "$@"; do
@@ -416,6 +426,32 @@ declare -a REVIEWERS_LIST=()
 declare -A SEEN=()
 declare -A HOST_WARNING=()
 
+pick_default_reviewer() {
+  local c p cli
+  if [ "$REVIEWER_EXPLICIT" -eq 1 ] || [ -z "$HOST_CLI" ] || [ "$REVIEWER_ARG" != "$HOST_CLI" ]; then
+    return 0
+  fi
+
+  if [ ${#PROFILE_NAMES[@]} -gt 0 ]; then
+    for p in "${PROFILE_NAMES[@]}"; do
+      cli="$(profile_cli_for "$p")"
+      if [ "$cli" != "$HOST_CLI" ] && command -v "$cli" >/dev/null 2>&1; then
+        REVIEWER_ARG="$p"
+        return 0
+      fi
+    done
+  else
+    for c in "${ALL_CLIS[@]}"; do
+      if [ "$c" != "$HOST_CLI" ] && command -v "$c" >/dev/null 2>&1; then
+        REVIEWER_ARG="$c"
+        return 0
+      fi
+    done
+  fi
+}
+
+pick_default_reviewer
+
 add_unique() {
   local p="$1"
   if [ -z "${SEEN[$p]:-}" ]; then
@@ -579,33 +615,35 @@ done
 MULTI=0
 [ ${#REVIEWERS_LIST[@]} -gt 1 ] && MULTI=1
 
-# --- output directory (3-tier, anchored to repo or cwd) ---
-if [ -n "$REPO_ROOT" ] && [ -d "$REPO_ROOT/docs" ]; then
-  OUT_DIR="$REPO_ROOT/docs/reviews"
-elif [ -n "$REPO_ROOT" ]; then
-  OUT_DIR="$REPO_ROOT/reviews"
+# --- output directory (temporary, anchored to repo or cwd) ---
+if [ -n "$REPO_ROOT" ]; then
+  OUT_DIR="$REPO_ROOT/.peer-review/reviews"
 else
-  OUT_DIR="$PWD/reviews"
+  OUT_DIR="$PWD/.peer-review/reviews"
 fi
 if ! mkdir -p "$OUT_DIR" 2>/dev/null; then
   OUT_DIR="/tmp/peer-review"
   mkdir -p "$OUT_DIR"
-  echo "⚠️  output dir fallback: $OUT_DIR" >&2
+  echo "output dir fallback: $OUT_DIR" >&2
 fi
 
 # --- per-clone exclude (worktree/submodule safe via git-path) ---
 EXCLUDE_NOTE=""
-if [ -n "$REPO_ROOT" ]; then
+if [ -n "$REPO_ROOT" ] && [ "${OUT_DIR#"$REPO_ROOT"/}" != "$OUT_DIR" ]; then
+  EXCLUDE_TARGET="$OUT_DIR"
+  case "$OUT_DIR" in
+    "$REPO_ROOT/.peer-review/"*) EXCLUDE_TARGET="$REPO_ROOT/.peer-review" ;;
+  esac
   if command -v realpath >/dev/null 2>&1; then
-    OUT_REL="$(realpath --relative-to="$REPO_ROOT" "$OUT_DIR" 2>/dev/null || echo "$OUT_DIR")"
+    OUT_REL="$(realpath --relative-to="$REPO_ROOT" "$EXCLUDE_TARGET" 2>/dev/null || echo "$EXCLUDE_TARGET")"
   else
-    OUT_REL="${OUT_DIR#"$REPO_ROOT"/}"
+    OUT_REL="${EXCLUDE_TARGET#"$REPO_ROOT"/}"
   fi
   EXCLUDE_FILE="$(git rev-parse --git-path info/exclude 2>/dev/null || true)"
   if [ -n "$EXCLUDE_FILE" ] && ! grep -qFx "${OUT_REL}/" "$EXCLUDE_FILE" 2>/dev/null; then
     mkdir -p "$(dirname "$EXCLUDE_FILE")"
     printf '\n# peer-review outputs (per-clone, not committed)\n%s/\n' "$OUT_REL" >> "$EXCLUDE_FILE"
-    EXCLUDE_NOTE="📌 ${OUT_REL}/ added to ${EXCLUDE_FILE} (per-clone exclude, not .gitignore)"
+    EXCLUDE_NOTE="${OUT_REL}/ added to ${EXCLUDE_FILE} (per-clone exclude, not .gitignore)"
   fi
 fi
 
@@ -653,9 +691,38 @@ PROMPT_FILE="$(mktemp "$OUT_DIR/.peer-review-prompt-XXXXXX.md")"
 
 # --- cleanup on any exit ---
 declare -A FINALIZED=()
+declare -A PIDS=()
+CLEANED_UP=0
+
+kill_process_tree() {
+  local pid="$1"
+  local signal="${2:-TERM}"
+  local child
+  [ -n "$pid" ] || return 0
+
+  if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r child; do
+      [ -n "$child" ] || continue
+      kill_process_tree "$child" "$signal"
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
+  fi
+
+  kill -s "$signal" "$pid" 2>/dev/null || true
+}
+
 cleanup() {
+  [ "$CLEANED_UP" -eq 0 ] || return 0
+  CLEANED_UP=1
+
+  for p in "${REVIEWERS_LIST[@]}"; do
+    if [ -n "${PIDS[$p]:-}" ]; then
+      kill_process_tree "${PIDS[$p]}"
+    fi
+  done
+
   cleanup_stdin_plan
   rm -f "$PROMPT_FILE" 2>/dev/null || true
+  rm -f "$OUT_DIR"/.peer-review-timeout-* "$OUT_DIR"/.peer-review-prompt-* 2>/dev/null || true
   for p in "${REVIEWERS_LIST[@]}"; do
     rm -f "${TMP_OUTS[$p]:-}" "${TMP_ERRS[$p]:-}" 2>/dev/null || true
     if [ "${FINALIZED[$p]:-0}" -eq 0 ] && [ -n "${OUT_FILES[$p]:-}" ]; then
@@ -663,7 +730,9 @@ cleanup() {
     fi
   done
 }
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM HUP
 
 # --- prompt with random nonce delimiter ---
 gen_nonce() { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -734,13 +803,52 @@ if [ -n "$STDIN_PLAN_FILE" ]; then
   cleanup_stdin_plan
 fi
 
-# --- 10-minute wall-clock cap if available ---
-TIMEOUT_CMD=()
-if command -v timeout >/dev/null 2>&1; then
-  TIMEOUT_CMD=(timeout 600)
-elif command -v gtimeout >/dev/null 2>&1; then
-  TIMEOUT_CMD=(gtimeout 600)
-fi
+# --- per-reviewer wall-clock cap ---
+run_with_timeout() {
+  local seconds="$1"
+  shift
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 5 "$seconds" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -k 5 "$seconds" "$@"
+    return $?
+  fi
+
+  local marker watcher_pid cmd_pid status
+  marker="$(mktemp "$OUT_DIR/.peer-review-timeout-XXXXXX")" || return 2
+  rm -f "$marker"
+
+  "$@" &
+  cmd_pid=$!
+  (
+    sleep "$seconds"
+    if kill -0 "$cmd_pid" 2>/dev/null; then
+      : > "$marker"
+      kill_process_tree "$cmd_pid" TERM
+      sleep 5
+      kill_process_tree "$cmd_pid" KILL
+    fi
+  ) &
+  watcher_pid=$!
+
+  set +e
+  wait "$cmd_pid"
+  status=$?
+  kill "$watcher_pid" 2>/dev/null
+  wait "$watcher_pid" 2>/dev/null
+  set -e
+
+  if [ -f "$marker" ]; then
+    rm -f "$marker"
+    return 124
+  fi
+
+  rm -f "$marker"
+  return "$status"
+}
 
 # Build the headless invocation for the named profile. Looks up the backing CLI
 # and any model/effort settings from the profile registry; appends model/effort
@@ -787,12 +895,11 @@ build_cmd() {
 }
 
 # --- spawn each reviewer in background ---
-declare -A PIDS=()
 for p in "${REVIEWERS_LIST[@]}"; do
   build_cmd "$p"
   (
     cd "${REPO_ROOT:-$PWD}"
-    "${TIMEOUT_CMD[@]}" "${CMD[@]}" > "${TMP_OUTS[$p]}" 2> "${TMP_ERRS[$p]}" < "$PROMPT_FILE"
+    run_with_timeout "$REVIEW_TIMEOUT" "${CMD[@]}" > "${TMP_OUTS[$p]}" 2> "${TMP_ERRS[$p]}" < "$PROMPT_FILE"
   ) &
   PIDS[$p]=$!
 done
@@ -803,6 +910,7 @@ for p in "${REVIEWERS_LIST[@]}"; do
   set +e
   wait "${PIDS[$p]}"
   STATUSES[$p]=$?
+  PIDS[$p]=""
   set -e
 done
 
@@ -818,6 +926,16 @@ ANY_OK=0
 for p in "${REVIEWERS_LIST[@]}"; do
   status="${STATUSES[$p]}"
   if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then
+      if [ "$MULTI" -eq 1 ]; then
+        echo "ERROR=$p timed out after ${REVIEW_TIMEOUT}s" >&2
+        [ -s "${TMP_ERRS[$p]}" ] && { echo "--- $p stderr tail ---" >&2; tail -n 20 "${TMP_ERRS[$p]}" >&2; }
+      else
+        echo "$p timed out after ${REVIEW_TIMEOUT}s" >&2
+        [ -s "${TMP_ERRS[$p]}" ] && cat "${TMP_ERRS[$p]}" >&2
+      fi
+      continue
+    fi
     if [ "$MULTI" -eq 1 ]; then
       echo "ERROR=$p exit $status" >&2
       [ -s "${TMP_ERRS[$p]}" ] && { echo "--- $p stderr tail ---" >&2; tail -n 20 "${TMP_ERRS[$p]}" >&2; }
