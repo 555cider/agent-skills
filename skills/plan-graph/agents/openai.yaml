@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Graph"
+  short_description: "Maintain active plan trees with dependency tracking."
+  default_prompt: "Use $plan-graph to review existing plans, fit work into the active plan tree, prune completed closed trees, and maintain a separate dependency graph."

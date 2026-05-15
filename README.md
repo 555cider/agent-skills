@@ -25,6 +25,9 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 
 ## Skills
 
+- [`skills/plan-graph/`](skills/plan-graph/) - review existing planning
+  documents, then create, revise, or remove connected plans while tracking
+  dependencies.
 - [`skills/peer-review/`](skills/peer-review/) — second-opinion review of
   plans, specs, or design choices via one or more reviewer CLIs (`codex`,
   `claude`, `gemini`, `qwen`, `opencode`). Multiple reviewers run in
