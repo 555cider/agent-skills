@@ -28,7 +28,7 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 - [`skills/peer-review/`](skills/peer-review/) — second-opinion review of
   plans, specs, or design choices via one or more reviewer CLIs (`codex`,
   `claude`, `gemini`, `qwen`, `opencode`). Multiple reviewers run in
-  parallel; saves each review to `<repo>/docs/reviews/`. Invoked by
+  parallel; saves each review to `<repo>/.peer-review/reviews/`. Invoked by
   `/peer-review` in Claude Code or natural-language ask in Codex.
 
 ## Install

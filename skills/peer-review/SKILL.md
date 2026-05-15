@@ -8,8 +8,8 @@ description: Use when the user explicitly asks for a peer review or second opini
 Get a second opinion on an implementation/design plan, or a recommendation
 on a set of options/choices, from one or more reviewer CLIs. Supported:
 `codex`, `claude`, `gemini`, `qwen`, `opencode`. Multiple reviewers run in
-parallel — each writes its own review file. The shell mechanics live in
-`scripts/run-peer-review.sh` next to this SKILL.md.
+parallel — each writes its own temporary review file under `.peer-review/`.
+The shell mechanics live in `scripts/run-peer-review.sh` next to this SKILL.md.
 
 **All user-facing prompts and reports use the user's language** — Korean
 if they speak Korean, English otherwise. Examples below are in English;
@@ -27,6 +27,7 @@ adapt headers/labels to match.
 /peer-review --reviewer=2                          # 2nd profile from JSON config (1-based)
 /peer-review --reviewer=1-3                        # first three profiles
 /peer-review --reviewer=1,3,my-claude              # mix indexes, ranges, and names
+/peer-review --timeout=90                          # per-reviewer timeout in seconds
 /peer-review list                        # show available reviewers + self row (no review run)
 /peer-review --help                      # show usage; no review run
 /peer-review <path> --focus=<area> --reviewer=...  # combine
@@ -104,12 +105,18 @@ names (`codex`, `claude`, ...) still work as before with no config.
 of options rather than a single plan — the reviewer recommends one with
 reasoning, lists trade-offs per option, and flags any missed option.
 
+`--timeout=<seconds>` bounds each reviewer process. Default is 300 seconds,
+or `PEER_REVIEW_TIMEOUT_SECONDS` when set. Forward the user's timeout when
+they provide one. Raise it for known-slow reviewers or large plans; lower it
+when a reviewer has recently hung or the user asks not to wait long.
+
 ## Workflow
 
 ### 1. Parse arguments
 
 - Positional non-flag arg → plan file path
 - `--focus=<v>` → focus value (the script validates and errors out on unknowns)
+- `--timeout=<seconds>` → forward to the script when present
 - `--help` / `help` usage request → run script `--help`, report the output, stop
 - No focus given → omit the flag (script defaults to `all`)
 
@@ -133,13 +140,13 @@ If no file path:
 ### 3. Invoke the script
 
 ```bash
-~/.agents/skills/peer-review/scripts/run-peer-review.sh <plan-file> [--reviewer=<list>] [--focus=<v>] --source=file --host=<cli>
+~/.agents/skills/peer-review/scripts/run-peer-review.sh <plan-file> [--reviewer=<list>] [--focus=<v>] [--timeout=<seconds>] --source=file --host=<cli>
 ```
 
 For chat-sourced input, pipe the exact plan content to:
 
 ```bash
-~/.agents/skills/peer-review/scripts/run-peer-review.sh --stdin-plan [--reviewer=<list>] [--focus=<v>] --host=<cli>
+~/.agents/skills/peer-review/scripts/run-peer-review.sh --stdin-plan [--reviewer=<list>] [--focus=<v>] [--timeout=<seconds>] --host=<cli>
 ```
 
 Pass `--host=<your-cli>` (`--host=claude` from Claude Code,
@@ -149,13 +156,14 @@ if it's missing. For `all`-expansion you still pass `--exclude-cli=<host>`
 (see below) — `--host` does not double as that filter today. Passing
 `--host` in other cases is harmless and recommended for consistency.
 
-Reviewer defaults to `codex`. **Avoid accidental self-review** — exclude
-the host model from the list unless the user explicitly opts in via `0`
-or by name:
+Reviewer defaults to `codex`, except the script avoids an omitted-reviewer
+default that would match `--host` when another reviewer is available.
+**Avoid accidental self-review** — exclude the host model from the list unless
+the user explicitly opts in via `0` or by name:
 - Inside Claude Code: keep `codex` (default), exclude `claude`. Add others
   freely (`--reviewer=codex,gemini,opencode`).
-- Inside Codex CLI: exclude `codex`. Prefer `--reviewer=claude` (single) or
-  `--reviewer=claude,gemini` (broader).
+- Inside Codex CLI: pass `--host=codex`; omit `--reviewer` for the script's
+  best non-host default, or prefer `--reviewer=claude` when available.
 - Reviewers sharing a backing model give weaker signal when paired
   (e.g. `codex` + `opencode` if opencode is configured to a GPT-family model).
   Mix vendors when in doubt.
@@ -186,6 +194,8 @@ WARN=<optional machine-readable warning>
 ```
 
 Failures (per reviewer) go to stderr as `ERROR=<reviewer> <message>`.
+Timeouts are reported as `timed out after Ns`; surface that directly instead
+of waiting, retrying silently, or summarizing it as an ordinary reviewer error.
 The script exits 0 if **at least one** reviewer succeeded; non-zero only
 when all failed.
 
@@ -256,6 +266,14 @@ review is convincing" and pivot to the reviewer's recommendation without
 checking each claim. That is agreement-shape behavior, not analysis — slow
 down and evaluate point by point before changing position.
 
+### 6. Clean up after follow-up work
+
+Review files are temporary working artifacts. If the same session continues
+into implementation or edits based on the review, keep only the needed findings
+in your task notes or final summary, then remove the saved review file(s) after
+they are no longer needed. Never move review outputs into docs or another
+repo-visible path just to preserve them.
+
 ## Failure modes (script exit codes)
 
 | code | meaning | what to tell user |
@@ -265,6 +283,7 @@ down and evaluate point by point before changing position.
 | 4 | filename claim failed | "couldn't claim a unique review filename — concurrent runs?" |
 | 5 | (single reviewer) returned empty/whitespace-only output | "<reviewer> returned empty response — try again or check CLI" |
 | 6 | (multi reviewer) every reviewer failed | summarize the `ERROR=` lines on stderr |
+| 124 | (single reviewer) timed out | "<reviewer> timed out after Ns — try a different reviewer or raise `--timeout`" |
 | other | (single reviewer) reviewer's own error exit | show stderr |
 
 ## When to self-invoke
