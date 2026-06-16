@@ -176,7 +176,7 @@ Capture the script's stdout, stderr, and exit code. Parse stdout for
 lines. Then:
 
 - **Exit non-zero (all reviewers failed):** surface any `WARN=` lines from stdout verbatim, then show stderr inline. Do not invent a summary. Stop.
-- **Exit 0, single REVIEW line, review content size < 200 bytes (`wc -c < <path>`):** inline the full content to chat.
+- **Exit 0, single REVIEW line, review content size < 1000 bytes (`wc -c < <path>`):** inline the full content to chat.
 - **Exit 0, single REVIEW line, otherwise:** read the review file, extract 3-5 most critical bullets (numbered/bulleted issues, severity language). Report as:
 
 ```

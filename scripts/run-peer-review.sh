@@ -305,7 +305,7 @@ for name, p in reviewers.items():
     if not isinstance(model, str) or not isinstance(effort, str):
         print(f"skipping {name!r}: model/effort must be strings", file=sys.stderr)
         continue
-    print(f"{name}\t{cli}\t{model}\t{effort}")
+    print("\x1f".join([name, cli, model, effort]))
 PYEOF
   then
     echo "warning: failed to parse $path:" >&2
@@ -317,7 +317,7 @@ PYEOF
   # Surface non-fatal warnings (skipped profiles, etc.)
   [ -s "$err_tmp" ] && sed 's/^/config: /' "$err_tmp" >&2
 
-  while IFS=$'\t' read -r name cli model effort; do
+  while IFS=$'\037' read -r name cli model effort; do
     [ -n "$name" ] || continue
     PROFILE_NAMES+=("$name")
     PROFILE_CLI[$name]="$cli"
@@ -831,7 +831,10 @@ run_with_timeout() {
   "$@" &
   cmd_pid=$!
   (
-    sleep "$seconds"
+    trap 'kill $sleep_pid 2>/dev/null; exit 0' TERM INT HUP
+    sleep "$seconds" &
+    sleep_pid=$!
+    wait "$sleep_pid"
     if kill -0 "$cmd_pid" 2>/dev/null; then
       : > "$marker"
       kill_process_tree "$cmd_pid" TERM
@@ -920,7 +923,13 @@ done
 strip_ansi() {
   local f="$1"
   local tmp="${f}.clean"
-  sed -E $'s/\x1b\\[[0-9;?]*[A-Za-z]//g' "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import sys, re; sys.stdout.write(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", sys.stdin.read()))' < "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f"
+  else
+    local esc
+    esc="$(printf '\033')"
+    sed "s/${esc}\\[[0-9;?]*[A-Za-z]//g" "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f"
+  fi
 }
 
 # --- process results: emit REVIEW= per success, ERROR= per failure ---
@@ -931,20 +940,20 @@ for p in "${REVIEWERS_LIST[@]}"; do
     if [ "$status" -eq 124 ]; then
       if [ "$MULTI" -eq 1 ]; then
         echo "ERROR=$p timed out after ${REVIEW_TIMEOUT}s" >&2
-        [ -s "${TMP_ERRS[$p]}" ] && { echo "--- $p stderr tail ---" >&2; tail -n 20 "${TMP_ERRS[$p]}" >&2; }
+        [ -s "${TMP_ERRS[$p]}" ] && { echo "--- $p stderr tail ---" >&2; tail -n 20 "${TMP_ERRS[$p]}" | sed 's/^/  /' >&2; }
       else
         echo "$p timed out after ${REVIEW_TIMEOUT}s" >&2
-        [ -s "${TMP_ERRS[$p]}" ] && cat "${TMP_ERRS[$p]}" >&2
+        [ -s "${TMP_ERRS[$p]}" ] && sed 's/^/  /' "${TMP_ERRS[$p]}" >&2
       fi
       continue
     fi
     if [ "$MULTI" -eq 1 ]; then
       echo "ERROR=$p exit $status" >&2
-      [ -s "${TMP_ERRS[$p]}" ] && { echo "--- $p stderr tail ---" >&2; tail -n 20 "${TMP_ERRS[$p]}" >&2; }
+      [ -s "${TMP_ERRS[$p]}" ] && { echo "--- $p stderr tail ---" >&2; tail -n 20 "${TMP_ERRS[$p]}" | sed 's/^/  /' >&2; }
     else
       echo "$p exit $status" >&2
-      [ -s "${TMP_ERRS[$p]}" ] && cat "${TMP_ERRS[$p]}" >&2
-      [ -s "${TMP_OUTS[$p]}" ] && { echo "--- stdout ---" >&2; head -n 20 "${TMP_OUTS[$p]}" >&2; }
+      [ -s "${TMP_ERRS[$p]}" ] && sed 's/^/  /' "${TMP_ERRS[$p]}" >&2
+      [ -s "${TMP_OUTS[$p]}" ] && { echo "--- stdout ---" >&2; head -n 20 "${TMP_OUTS[$p]}" | sed 's/^/  /' >&2; }
     fi
     continue
   fi
@@ -955,7 +964,7 @@ for p in "${REVIEWERS_LIST[@]}"; do
       echo "ERROR=$p empty/whitespace-only response" >&2
     else
       echo "$p returned empty/whitespace-only response" >&2
-      [ -s "${TMP_ERRS[$p]}" ] && { echo "--- stderr tail ---" >&2; tail -n 20 "${TMP_ERRS[$p]}" >&2; }
+      [ -s "${TMP_ERRS[$p]}" ] && { echo "--- stderr tail ---" >&2; tail -n 20 "${TMP_ERRS[$p]}" | sed 's/^/  /' >&2; }
     fi
     STATUSES[$p]=5
     continue
