@@ -164,10 +164,12 @@ Define named profiles in JSON, search order:
 ```
 
 - `cli` — required unless the profile name itself is one of the five known CLI names.
-- `model` (optional) — passed to the CLI's model flag (`--model` or `-m` depending on CLI). Omit to let the CLI use whatever model/provider it's configured to default to.
-- `effort` (optional) — passed where supported: codex (`-c model_reasoning_effort=...`),
-  opencode (`--variant ...`). Silently ignored on claude/gemini/qwen. Omit to use the CLI's default.
+- `model` (optional) — forwarded to the CLI's model flag. Omit to let the CLI use whatever model/provider it's configured to default to.
+- `effort` (optional) — applied where supported (currently codex and opencode); silently ignored elsewhere. Omit to use the CLI's default.
 - A profile entry can be empty (`"opencode": { "cli": "opencode" }`) — that just labels the CLI without overriding anything. Equivalent to `--reviewer=opencode` with no config at all.
+
+Exact flag spellings for `model` and `effort` live in `build_cmd()` in
+`scripts/run-peer-review.sh` — do not duplicate them here.
 - Profile names: `[A-Za-z0-9._-]+`. Can repeat the same `cli` across profiles
   (`codex-deep` + `codex-fast` etc.) — each gets its own review file. Names
   matching `^[0-9]+$` or `^[0-9]+-[0-9]+$` (e.g. `"3"`, `"1-2"`) are rejected

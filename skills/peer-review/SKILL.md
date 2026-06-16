@@ -41,25 +41,13 @@ config, or — when a config is loaded — a **1-based index** (`2`) or **range*
 from a slash command, the host model is auto-excluded (see step 3).
 Run `list` to see the index map.
 
-**Self-review (`0`).** `--reviewer=0` deliberately runs the **host CLI** as
-the reviewer — same CLI, fresh session, no chat history, no anchoring on
-the current conversation. The model isn't pinned to the host session: the
-CLI runs with whatever model it defaults to (or what its profile pins, if
-configured), which may or may not match the host session's model. Useful
-as a "look at this with fresh eyes" pass; weaker signal than a different
-vendor when models do overlap (shared training = shared blind spots).
-Treat the result like any other review; do not weight it as if it came
-from an independent reviewer.
+**Self-review (`0`).** `--reviewer=0` runs the host CLI as a fresh-context
+reviewer. Weaker signal than a cross-vendor review when models overlap.
+> See: references/cli-adapters.md
 
-**Listing reviewers (`list` subcommand).** Prints two sections and exits
-without running a review:
-- **Special** — the `0 self <host>` row, with PATH status, when `--host`
-  is provided.
-- **Reviewer CLIs** — when a config defines profiles, the index map plus a
-  status column (so you can see which profile's backing CLI is actually
-  installed). Without a config, a discovery table of all five known CLIs
-  with their PATH status; on-PATH numbered rows can be passed as
-  `--reviewer=N`.
+**Listing reviewers (`list` subcommand).** Prints a `Special` (self) row
+and a `Reviewer CLIs` table, then exits. Always pass `--host=<your-cli>`.
+> See: references/list-output.md
 
 When the user asks for the list — `/peer-review list`, `/peer-review 목록`,
 "리뷰어 목록 보여줘", "what reviewers do I have", or similar natural-language
@@ -72,28 +60,10 @@ When the user asks for usage — `/peer-review --help`, `/peer-review help`,
 "peer-review 사용법", or similar natural-language requests — invoke the script
 with `--help`. Do not look for a plan-shaped message and do not run a review.
 
-**Profiles (optional).** A JSON config can name multiple "profiles" — each
-binds a label to a CLI plus optional `model` / `effort`. This lets the same
-CLI run with different settings in one review:
-
-```json
-{
-  "reviewers": {
-    "codex-deep":  { "cli": "codex",   "model": "gpt-5",        "effort": "high" },
-    "codex-fast":  { "cli": "codex",   "model": "gpt-5-mini",   "effort": "low"  },
-    "claude-opus": { "cli": "claude",  "model": "claude-opus-4-7" }
-  }
-}
-```
-
-`model` / `effort` are optional — omit them to let the CLI use whatever it's
-configured to default to (e.g. `"opencode": { "cli": "opencode" }` just runs
-plain `opencode run`).
-
-Config search order: `<repo>/.peer-review.json` → `~/.config/peer-review/config.json`
-→ none. Requires `python3` to parse; without it the script ignores the config
-with a stderr warning. Profile names accepted on `--reviewer=...`; built-in CLI
-names (`codex`, `claude`, ...) still work as before with no config.
+**Profiles (optional).** A JSON config (`<repo>/.peer-review.json` or
+`~/.config/peer-review/config.json`) names profiles bound to a CLI plus
+optional `model` / `effort`. Profile names accepted on `--reviewer=...`.
+> See: references/profile-config.md
 
 **Codex CLI (natural language).** User typically says one of:
 - "peer-review docs/path/to/plan.md"
@@ -274,17 +244,10 @@ in your task notes or final summary, then remove the saved review file(s) after
 they are no longer needed. Never move review outputs into docs or another
 repo-visible path just to preserve them.
 
-## Failure modes (script exit codes)
+## Failure modes
 
-| code | meaning | what to tell user |
-|---|---|---|
-| 2 | usage / invalid argument | show stderr |
-| 3 | reviewer CLI not on PATH | "<reviewer> CLI not found — install or check PATH" |
-| 4 | filename claim failed | "couldn't claim a unique review filename — concurrent runs?" |
-| 5 | (single reviewer) returned empty/whitespace-only output | "<reviewer> returned empty response — try again or check CLI" |
-| 6 | (multi reviewer) every reviewer failed | summarize the `ERROR=` lines on stderr |
-| 124 | (single reviewer) timed out | "<reviewer> timed out after Ns — try a different reviewer or raise `--timeout`" |
-| other | (single reviewer) reviewer's own error exit | show stderr |
+The script's exit codes drive how step 4 reports failure to the user.
+> See: references/exit-codes.md
 
 ## When to self-invoke
 
