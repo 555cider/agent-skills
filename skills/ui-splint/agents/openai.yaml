@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Splint"
+  short_description: "Find frontend layout, consistency, column sizing, contrast, affordance, focus, overflow, and state issues before completion."
+  default_prompt: "Use $ui-splint to inspect rendered frontend UI for weird layout, visual drift from shared components or utilities, unstable table column widths, weak theme contrast, unclear clickable affordances, focus leaks, ambiguous disabled states, duplicate pending actions, crowded touch targets, clipped popovers, inconsistent icons, wasted space, unstable sizing, responsive issues, and dynamic-state problems before calling the work complete."
