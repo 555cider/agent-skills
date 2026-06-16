@@ -9,13 +9,12 @@ needs to know when picking or troubleshooting.
 |---|---|---|
 | `codex` | sandbox-enforced read-only | Default reviewer. |
 | `claude` | permission-system gated | Relies on the CLI's interactive permission grants. |
-| `gemini` | plan-mode (read-only) | |
 | `qwen` | plan-mode (read-only) | |
 | `opencode` | permission-default gated | ANSI color codes are stripped from saved output. |
 
-All five accept the prompt over stdin. Exact flag spellings, model selection,
-and effort plumbing live in `build_cmd()` — read the function, do not mirror
-its argv here.
+All supported reviewers accept the prompt over stdin. Exact flag spellings,
+model selection, and effort plumbing live in `build_cmd()` — read the
+function, do not mirror its argv here.
 
 ## Reviewer-selection guidance
 

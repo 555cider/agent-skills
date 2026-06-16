@@ -33,9 +33,8 @@ Reviewer CLIs (no config — on-PATH numbers callable as --reviewer=N):
   #    cli        status
   1         codex      on PATH
   2         claude     on PATH
-  3         gemini     on PATH
   -         qwen       not found
-  4         opencode   on PATH
+  3         opencode   on PATH
 ```
 
 ## Rules

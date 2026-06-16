@@ -45,7 +45,7 @@ run-peer-review.sh <plan-file> \
   [--reviewer=<list>]         # default: codex, unless --host would make that
                               #   accidental self-review and another reviewer is available;
                               #   comma-separated list runs in parallel
-                              #   choices: codex, claude, gemini, qwen, opencode, all,
+                              #   choices: codex, claude, qwen, opencode, all,
                               #            0 (self — host CLI; requires --host),
                               #            any profile name from JSON config, or
                               #            1-based index / range when a config is loaded
@@ -109,9 +109,8 @@ Reviewer CLIs (no config — on-PATH numbers callable as --reviewer=N):
   #    cli        status
   1         codex      on PATH
   2         claude     on PATH
-  3         gemini     on PATH
   -         qwen       not found
-  4         opencode   on PATH
+  3         opencode   on PATH
 ```
 
 The Special row only renders when `--host=<cli>` is passed (the slash
@@ -157,13 +156,12 @@ Define named profiles in JSON, search order:
   "reviewers": {
     "codex-deep":  { "cli": "codex",   "model": "gpt-5",        "effort": "high" },
     "codex-fast":  { "cli": "codex",   "model": "gpt-5-mini",   "effort": "low"  },
-    "claude-opus": { "cli": "claude",  "model": "claude-opus-4-7" },
-    "gemini":      { "cli": "gemini",  "model": "gemini-2.5-pro" }
+    "claude-opus": { "cli": "claude",  "model": "claude-opus-4-7" }
   }
 }
 ```
 
-- `cli` — required unless the profile name itself is one of the five known CLI names.
+- `cli` — required unless the profile name itself is one of the known CLI names.
 - `model` (optional) — forwarded to the CLI's model flag. Omit to let the CLI use whatever model/provider it's configured to default to.
 - `effort` (optional) — applied where supported (currently codex and opencode); silently ignored elsewhere. Omit to use the CLI's default.
 - A profile entry can be empty (`"opencode": { "cli": "opencode" }`) — that just labels the CLI without overriding anything. Equivalent to `--reviewer=opencode` with no config at all.
@@ -216,11 +214,10 @@ missing, 4 filename claim failed, 5 empty response (single-reviewer mode),
 - **Reviewer sandboxing / headless mode:**
   - codex: `codex exec --sandbox read-only` (read-only sandbox)
   - claude: `claude -p` (relies on claude's permission system)
-  - gemini: `gemini --approval-mode plan --output-format text -p ""` (plan mode = read-only)
   - qwen: `qwen --approval-mode plan -p ""` (plan mode = read-only)
   - opencode: `opencode run` (relies on opencode's permission defaults; ANSI
     color codes stripped from saved output)
-  All five accept the prompt over stdin.
+  All supported reviewers accept the prompt over stdin.
 - **Parallel execution:** multiple reviewers spawn as background subprocesses,
   each with its own temp files and claimed `OUT_FILE`. The script waits for
   all, emits one `REVIEW=` per success and one `ERROR=` per failure. Wall
