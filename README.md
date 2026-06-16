@@ -90,17 +90,25 @@ the install out of sync; junctions sidestep that. Junctions are local-NTFS
 only, so installs from a UNC share or non-NTFS volume will fail with a
 clear error rather than silently degrading to a copy.
 
-To uninstall a skill, `rm -rf` its harness links and its clone:
+## Uninstall
 
 ```bash
-rm -rf ~/.claude/skills/<name>     # symlink / junction
-rm -rf ~/.codex/skills/<name>      # symlink / junction
-rm -rf ~/.agents/skills/<name>     # the git clone itself
+./uninstall.sh <name>              # remove one skill
+./uninstall.sh peer-review other   # remove several
+./uninstall.sh --all               # remove every installed skill
+./uninstall.sh --list              # print currently installed skills
 ```
 
-`rm -rf` works for POSIX symlinks, Windows junctions, and the real
-clone directory. Nothing here is shared state — re-running `install.sh`
-will clone `split/<name>` again from origin.
+For each skill, this removes:
+
+- `~/.claude/skills/<name>` (harness link, if present)
+- `~/.codex/skills/<name>` (harness link, if present)
+- `~/.agents/skills/<name>/` (the per-skill git clone, if present)
+
+Idempotent — re-running is safe; already-absent paths are reported and
+skipped. Works on POSIX symlinks, NTFS junctions, and plain
+directories alike. Re-installing later just re-runs `./install.sh
+<name>` and re-clones `split/<name>` from origin.
 
 ## Adding a new skill (maintainers)
 
