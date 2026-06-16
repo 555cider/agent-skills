@@ -5,6 +5,7 @@
 # Usage:
 #   ./install.sh                       # install every skill
 #   ./install.sh <name> [<name>...]    # install only the named skill(s)
+#   ./install.sh --local [<name>...]   # copy local skills into ~/.agents/skills
 #   ./install.sh --list                # print available skill names and exit
 #   ./install.sh -h | --help           # this help
 # --- END USAGE ---
@@ -15,6 +16,9 @@
 #   main. install.sh `git clone`s split/<name> into ~/.agents/skills/<name>/
 #   so that directory IS its own git repo. Update with:
 #       cd ~/.agents/skills/<name> && git pull
+#
+#   For local development, --local skips origin entirely and synchronizes the
+#   current checkout's skills/<name>/ into ~/.agents/skills/<name>/.
 #
 #   Per-harness dirs (~/.claude/skills/<name>, ~/.codex/skills/<name>) are
 #   symlinks (POSIX) or NTFS directory junctions (Windows + Git Bash / MSYS2
@@ -49,10 +53,6 @@ SKILLS_SRC="$REPO_ROOT/skills"
 
 [ -d "$SKILLS_SRC" ] || { echo "error: $SKILLS_SRC not found" >&2; exit 1; }
 
-# Origin URL of this monorepo — split/<name> branches live here.
-REMOTE_URL="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
-[ -n "$REMOTE_URL" ] || { echo "error: no 'origin' remote configured in $REPO_ROOT" >&2; exit 1; }
-
 # List mode is a flag so every positional argument remains available as a skill
 # name, including a skill literally named "list".
 if [ $# -gt 0 ] && [ "$1" = "--list" ]; then
@@ -62,7 +62,8 @@ if [ $# -gt 0 ] && [ "$1" = "--list" ]; then
   exit 0
 fi
 
-# Parse args: --help / positional skill names.
+# Parse args: --help / flags / positional skill names.
+LOCAL_MODE=0
 SELECTED=()
 for arg in "$@"; do
   case "$arg" in
@@ -72,6 +73,9 @@ for arg in "$@"; do
       sed -n '2,/^# --- END USAGE ---$/{/^# --- END USAGE ---$/d;p;}' "${BASH_SOURCE[0]}" \
         | sed 's/^# \?//'
       exit 0
+      ;;
+    --local)
+      LOCAL_MODE=1
       ;;
     --*)
       echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
@@ -93,6 +97,12 @@ if [ ${#SELECTED[@]} -gt 0 ]; then
   done
 fi
 
+if [ "$LOCAL_MODE" = "0" ]; then
+  # Origin URL of this monorepo — split/<name> branches live here.
+  REMOTE_URL="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+  [ -n "$REMOTE_URL" ] || { echo "error: no 'origin' remote configured in $REPO_ROOT" >&2; exit 1; }
+fi
+
 AGENTS_DIR="$HOME/.agents/skills"
 mkdir -p "$AGENTS_DIR"
 
@@ -102,7 +112,7 @@ for h in "$HOME/.claude" "$HOME/.codex"; do
   [ -d "$h" ] && HARNESSES+=("$h/skills")
 done
 if [ ${#HARNESSES[@]} -eq 0 ]; then
-  echo "warning: no harness dirs (~/.claude, ~/.codex) found; cloning to ~/.agents/skills/ only" >&2
+  echo "warning: no harness dirs (~/.claude, ~/.codex) found; installing to ~/.agents/skills/ only" >&2
 fi
 
 # resolve_phys <path>: print the physical (symlink/junction-followed) absolute
@@ -144,6 +154,40 @@ clone_skill() {
     return 1
   fi
   printf '  +    cloned %s into %s\n' "$branch" "$dest"
+}
+
+# sync_local_skill <name>: copy the current checkout's skills/<name>/ into
+# ~/.agents/skills/<name>/. Existing .git metadata is preserved so maintainers
+# can use this against an installed split clone while testing local edits.
+sync_local_skill() {
+  local name="$1"
+  local src="$SKILLS_SRC/$name"
+  local dest="$AGENTS_DIR/$name"
+  local entry base
+
+  if [ -L "$dest" ]; then
+    printf '  WARN %s is a symlink — remove with `rm -rf %s` and re-run\n' "$dest" "$dest" >&2
+    return 1
+  fi
+
+  if [ -e "$dest" ] && [ ! -d "$dest" ]; then
+    printf '  WARN %s exists and is not a directory — skipping\n' "$dest" >&2
+    return 1
+  fi
+
+  mkdir -p "$dest"
+
+  while IFS= read -r -d '' entry; do
+    rm -rf -- "$entry"
+  done < <(find "$dest" -mindepth 1 -maxdepth 1 ! -name .git -print0)
+
+  while IFS= read -r -d '' entry; do
+    base="$(basename "$entry")"
+    [ "$base" = ".git" ] && continue
+    cp -a "$entry" "$dest/"
+  done < <(find "$src" -mindepth 1 -maxdepth 1 -print0)
+
+  printf '  +    synced %s into %s\n' "$src" "$dest"
 }
 
 # ensure_link <target> <link-path>: create a directory link at <link-path>
@@ -222,8 +266,15 @@ for skill_dir in "$SKILLS_SRC"/*/; do
 
   printf '\nskill: %s\n' "$name"
 
-  # Tier 1: clone split/<name> into ~/.agents/skills/<name>/
-  if ! clone_skill "$name"; then
+  # Tier 1: install into ~/.agents/skills/<name>/
+  if [ "$LOCAL_MODE" = "1" ]; then
+    install_ok=1
+    sync_local_skill "$name" || install_ok=0
+  else
+    install_ok=1
+    clone_skill "$name" || install_ok=0
+  fi
+  if [ "$install_ok" = "0" ]; then
     warnings=$((warnings + 1))
     continue
   fi

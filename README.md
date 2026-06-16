@@ -52,6 +52,7 @@ cd agent-skills
 ./install.sh                       # every skill
 ./install.sh peer-review           # one specific skill
 ./install.sh peer-review other     # multiple specific skills
+./install.sh --local peer-review   # apply this checkout's local skill files
 ./install.sh --list                # print available skill names
 ```
 
@@ -73,6 +74,19 @@ cd ~/.agents/skills/<skill-name> && git pull
 ```
 
 The harness links pick up the new content automatically.
+
+For maintainer/dev testing before split branches are published, use local mode:
+
+```bash
+./install.sh --local               # copy every local skill into ~/.agents/skills
+./install.sh --local ui-splint     # copy one local skill into ~/.agents/skills
+```
+
+Local mode does not read `origin` or clone `split/<skill-name>`. It
+synchronizes the current checkout's `skills/<skill-name>/` into
+`~/.agents/skills/<skill-name>/`, removes stale files there, and preserves
+an existing `.git` directory if the target is already an installed split
+clone. Claude/Codex harness links still point at `~/.agents/skills/<skill-name>/`.
 
 The `split/<skill-name>` branches are produced by
 [`.github/workflows/split.yml`](.github/workflows/split.yml) on every push
