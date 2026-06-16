@@ -1,0 +1,613 @@
+#!/usr/bin/env bash
+# Self-contained regression suite for scripts/plan-graph.py.
+#
+# Why a single shell runner (no pytest): the script's only contract is its CLI
+# (exit codes + stdout/stderr lines), so we assert exactly that. Fixtures are
+# generated into a throwaway temp dir rather than committed, because several
+# need bytes/permissions git can't store portably (a UTF-8 BOM, a 0444 file,
+# a stale-mtime lockfile). See README.md for the fixture catalogue.
+#
+# Run:  bash skills/plan-graph/tests/run.sh   (exit 0 = all pass)
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PG="$HERE/../scripts/plan-graph.py"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pg-tests.XXXXXX")"
+# Make everything writable again before deleting (readonly/lock cases chmod down).
+trap 'chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+
+PASS=0
+FAIL=0
+ROOT_USER=0
+[ "$(id -u 2>/dev/null)" = "0" ] && ROOT_USER=1
+
+pass() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
+fail() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n        %s\n' "$1" "$2"; }
+skip() { printf 'SKIP  %s  (%s)\n' "$1" "$2"; }
+
+# pg <root> [args...] -> runs the script against <root>/.agents/plan/graph.yaml
+# with an EXPLICIT --root (default_root() shells out to `git rev-parse`, which
+# inside this repo resolves to the repo root and breaks every file check).
+# Captures stdout->$WORK/out, stderr->$WORK/err, exit code -> $EC.
+pg() {
+  local root="$1"; shift
+  python3 "$PG" "$root/.agents/plan/graph.yaml" --root "$root" "$@" >"$WORK/out" 2>"$WORK/err"
+  EC=$?
+}
+
+assert_exit()    { if [ "$EC" = "$2" ]; then pass "$1 [exit $2]"; else fail "$1" "expected exit $2, got $EC (err: $(head -c 200 "$WORK/err" | tr '\n' '|'))"; fi; }
+assert_grep()    { if grep -qE -- "$3" "$2"; then pass "$1"; else fail "$1" "missing /$3/ in $(basename "$2"): $(head -c 200 "$2" | tr '\n' '|')"; fi; }
+assert_grepF()   { if grep -qF -- "$3" "$2"; then pass "$1"; else fail "$1" "missing literal [$3] in $(basename "$2"): $(head -c 200 "$2" | tr '\n' '|')"; fi; }
+assert_nogrep()  { if grep -qE -- "$3" "$2"; then fail "$1" "unexpected /$3/ -> $(grep -nE -- "$3" "$2" | head -1)"; else pass "$1"; fi; }
+assert_fgrep()   { if grep -qE -- "$3" "$2"; then pass "$1"; else fail "$1" "file $2 missing /$3/"; fi; }
+assert_fnogrep() { if grep -qE -- "$3" "$2"; then fail "$1" "file $2 unexpectedly has /$3/"; else pass "$1"; fi; }
+
+# newcase <name> -> creates $WORK/<name>/.agents/plan and echoes the case root.
+newcase() { local d="$WORK/$1"; mkdir -p "$d/.agents/plan"; printf '%s' "$d"; }
+add_bom() { python3 -c "import sys;p=sys.argv[1];d=open(p,'rb').read();open(p,'wb').write(b'\xef\xbb\xbf'+d)" "$1"; }
+
+# ---------------------------------------------------------------------------
+# normal — SKILL.md golden example: tree shape, roadmap order, critical path.
+# Guards #6 (excluded wording only on real exclusions) and #8 (depth>1 gate),
+# and proves the documented --show output still reproduces byte-for-byte.
+# ---------------------------------------------------------------------------
+D=$(newcase normal)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 8
+
+nodes:
+  1: {p: ".agents/plan/auth.md", s: "Auth/session"}
+  2: {p: ".agents/plan/errors.md", s: "Error strategy"}
+  3: {p: ".agents/plan/checkout.md", s: "Checkout recovery"}
+  4: {p: ".agents/plan/db.md", s: "DB schema"}
+  5: {p: ".agents/plan/migration.md", s: "Migration plan"}
+  6: {p: ".agents/plan/logging.md", s: "Logging plan"}
+  7: {p: ".agents/plan/legacy.md", s: "Legacy approach", x: "dropped"}
+
+deps:
+  3: [1]
+  4: [1, 2]
+  5: [3, 4]
+EOF
+for f in auth errors checkout db migration logging legacy; do printf '# %s\n\nbody\n' "$f" >"$D/.agents/plan/$f.md"; done
+pg "$D" --fix >/dev/null 2>&1   # setup: populate frontmatter so check is clean
+
+pg "$D" --show
+assert_exit  "normal-show" 0
+assert_grepF "normal-show tree root [5]"        "$WORK/out" "[5] Migration plan"
+assert_grepF "normal-show shared-base repeat ↑" "$WORK/out" "[1] Auth/session ↑"
+assert_grepF "normal-show dropped inline"       "$WORK/out" "[7] Legacy approach (dropped)"
+assert_grepF "normal-show critical path"        "$WORK/out" "[1] ➔ [3] ➔ [5]"
+assert_grep  "normal-show roadmap order [5]@5"  "$WORK/out" "5\. \[5\] Migration plan"
+
+pg "$D"
+assert_exit  "normal-check" 0
+assert_grep  "normal-check OK sentinel" "$WORK/out" "OK plan graph"
+assert_nogrep "normal-check no error"   "$WORK/err" "ERROR="
+assert_nogrep "normal-check no warn"    "$WORK/err" "WARN="
+
+pg "$D" --json
+assert_exit "normal-json" 0
+assert_grep "normal-json status OK"   "$WORK/out" '"status": "OK"'
+assert_grep "normal-json empty errors" "$WORK/out" '"errors": \[\]'
+
+pg "$D" --show --json
+assert_exit "normal-show-json" 0
+assert_grep "normal-show-json critical_path" "$WORK/out" '"critical_path"'
+assert_grep "normal-show-json roadmap"       "$WORK/out" '"roadmap"'
+
+# ---------------------------------------------------------------------------
+# single — a lone node must NOT print a Critical Path section (#8 depth>1 gate).
+# ---------------------------------------------------------------------------
+D=$(newcase single)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "a.md", s: "alpha"}
+
+deps:
+EOF
+pg "$D" --show
+assert_exit   "single-show" 0
+assert_grepF  "single-show node"        "$WORK/out" "[1] alpha"
+assert_nogrep "single-show no critical" "$WORK/out" "Critical Path"
+
+# ---------------------------------------------------------------------------
+# cycle — --show must not crash and must list all nodes (#1); plain check errors.
+# ---------------------------------------------------------------------------
+D=$(newcase cycle)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 3
+
+nodes:
+  1: {p: "a.md", s: "alpha"}
+  2: {p: "b.md", s: "beta"}
+
+deps:
+  1: [2]
+  2: [1]
+EOF
+pg "$D" --show
+assert_exit   "cycle-show" 0
+assert_grepF  "cycle-show node 1"      "$WORK/out" "[1] alpha"
+assert_grepF  "cycle-show node 2"      "$WORK/out" "[2] beta"
+assert_grepF  "cycle-show excluded"    "$WORK/out" "(cycle, excluded from roadmap)"
+assert_nogrep "cycle-show no traceback" "$WORK/out" "Traceback"
+assert_nogrep "cycle-show no traceback (err)" "$WORK/err" "Traceback"
+
+pg "$D"
+assert_exit "cycle-check" 1
+assert_grep "cycle-check error"  "$WORK/err" "ERROR=cycle detected: 1 -> 2 -> 1"
+assert_grep "cycle-check FAIL"   "$WORK/err" "FAIL plan graph"
+
+# ---------------------------------------------------------------------------
+# legacy — missing frontmatter is a WARN (exit 0), --fix adds it, recheck clean.
+# This is the backward-compat guard (#2): legacy repos must not insta-fail.
+# ---------------------------------------------------------------------------
+D=$(newcase legacy)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: ".agents/plan/auth.md", s: "Auth plan"}
+
+deps:
+EOF
+printf '# Auth plan\n\nbody text\n' >"$D/.agents/plan/auth.md"
+
+pg "$D"
+assert_exit "legacy-check-pre" 0
+assert_grep "legacy-check-pre WARN"   "$WORK/err" "WARN=missing frontmatter in .agents/plan/auth.md"
+assert_grep "legacy-check-pre OK"     "$WORK/out" "OK plan graph"
+assert_nogrep "legacy-check-pre no err" "$WORK/err" "ERROR="
+
+pg "$D" --fix
+assert_exit  "legacy-fix" 0
+assert_grepF "legacy-fix CHANGE" "$WORK/out" "CHANGE=add-frontmatter 1 .agents/plan/auth.md"
+assert_fgrep "legacy-fix wrote id"      "$D/.agents/plan/auth.md" "^id: 1"
+assert_fgrep "legacy-fix wrote summary" "$D/.agents/plan/auth.md" 'summary: "Auth plan"'
+
+pg "$D"
+assert_exit   "legacy-check-post" 0
+assert_nogrep "legacy-check-post no warn" "$WORK/err" "WARN=missing frontmatter"
+assert_grep   "legacy-check-post OK"      "$WORK/out" "OK plan graph"
+
+# ---------------------------------------------------------------------------
+# comment — inline `# ...` comments in frontmatter must not break the parser
+# (#4 strip), and a `#` INSIDE a quoted value must NOT be stripped.
+# ---------------------------------------------------------------------------
+D=$(newcase comment)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "auth.md", s: "Auth plan", x: "done"}
+
+deps:
+EOF
+cat >"$D/auth.md" <<'EOF'
+---
+id: 1
+summary: "Auth plan"  # human note
+x: "done"  # optional state
+---
+
+body
+EOF
+pg "$D"
+assert_exit   "comment-check" 0
+assert_nogrep "comment-check no mismatch" "$WORK/err" "mismatch"
+assert_nogrep "comment-check no error"    "$WORK/err" "ERROR="
+
+D=$(newcase comment-hash)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "auth.md", s: "a # b", x: "done"}
+
+deps:
+EOF
+cat >"$D/auth.md" <<'EOF'
+---
+id: 1
+summary: "a # b"
+x: "done"
+---
+
+body
+EOF
+pg "$D"
+assert_exit   "comment-hash-check" 0
+assert_nogrep "comment-hash no mismatch (quoted # preserved)" "$WORK/err" "mismatch"
+
+# ---------------------------------------------------------------------------
+# done / dropped — non-active states sync to file frontmatter (#5 scope widen).
+# ---------------------------------------------------------------------------
+D=$(newcase done)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 3
+
+nodes:
+  1: {p: "base.md", s: "Base"}
+  2: {p: "dep.md", s: "Dep", x: "done"}
+
+deps:
+  1: [2]
+EOF
+printf '# base\n\nbody\n' >"$D/base.md"
+printf '# dep\n\nbody\n'  >"$D/dep.md"
+pg "$D" --fix
+assert_exit  "done-fix" 0
+assert_grepF "done-fix CHANGE"   "$WORK/out" "CHANGE=add-frontmatter 2 dep.md"
+assert_fgrep "done-fix wrote x"  "$D/dep.md" 'x: "done"'
+
+D=$(newcase dropped)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "legacy.md", s: "Legacy", x: "dropped"}
+
+deps:
+EOF
+cat >"$D/legacy.md" <<'EOF'
+---
+id: 1
+summary: "Legacy"
+x: "done"
+---
+
+body
+EOF
+pg "$D" --fix
+assert_exit  "dropped-fix" 0
+assert_grep  "dropped-fix CHANGE x" "$WORK/out" "CHANGE=sync-frontmatter 1 legacy.md .*x"
+assert_fgrep "dropped-fix wrote x"  "$D/legacy.md" 'x: "dropped"'
+assert_fnogrep "dropped-fix cleared old x" "$D/legacy.md" 'x: "done"'
+
+# missing node: file absent must NOT become a sync error.
+D=$(newcase missingnode)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "gone.md", s: "Gone", x: "missing"}
+
+deps:
+EOF
+pg "$D"
+assert_exit   "missingnode-check" 0
+assert_grep   "missingnode WARN"          "$WORK/err" "WARN=1 file is missing"
+assert_nogrep "missingnode no sync error" "$WORK/err" "frontmatter mismatch"
+
+# ---------------------------------------------------------------------------
+# sync — CHANGE=sync-frontmatter token format (#10) + blank line preserved (#9).
+# ---------------------------------------------------------------------------
+D=$(newcase sync)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: ".agents/plan/auth.md", s: "New summary", x: "dropped"}
+
+deps:
+EOF
+cat >"$D/.agents/plan/auth.md" <<'EOF'
+---
+id: 1
+summary: "Old summary"
+---
+
+First body line after blank.
+EOF
+pg "$D" --fix
+assert_exit   "sync-fix" 0
+assert_grepF  "sync-fix token format"   "$WORK/out" "CHANGE=sync-frontmatter 1 .agents/plan/auth.md summary,x"
+assert_nogrep "sync-fix no space token" "$WORK/out" "summary, x"
+if python3 -c "import sys;c=open(sys.argv[1]).read();sys.exit(0 if '---\n\nFirst body line' in c else 1)" "$D/.agents/plan/auth.md"; then
+  pass "sync-fix blank line preserved"
+else
+  fail "sync-fix blank line preserved" "blank line after frontmatter was swallowed"
+fi
+
+# ---------------------------------------------------------------------------
+# readonly — a write failure during --fix surfaces as ERROR + exit 1 (#3).
+# (chmod here, not in a committed fixture: git can't store 0444 portably.)
+# ---------------------------------------------------------------------------
+if [ "$ROOT_USER" = "1" ]; then
+  skip "readonly-fix" "running as root: 0444 is still writable"
+else
+  D=$(newcase readonly)
+  cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "auth.md", s: "New"}
+
+deps:
+EOF
+  cat >"$D/auth.md" <<'EOF'
+---
+id: 1
+summary: "Old"
+---
+
+body
+EOF
+  chmod 0444 "$D/auth.md"
+  pg "$D" --fix
+  chmod 0644 "$D/auth.md"
+  assert_exit   "readonly-fix" 1
+  assert_grep   "readonly-fix ERROR"      "$WORK/err" "ERROR=failed to update frontmatter in auth.md"
+  assert_grep   "readonly-fix FAIL"       "$WORK/err" "FAIL plan graph"
+  assert_nogrep "readonly-fix no traceback" "$WORK/err" "Traceback"
+fi
+
+# ---------------------------------------------------------------------------
+# dedup — duplicate bases collapse on --fix and the rewritten graph re-parses
+# (proxy for the atomic write producing valid content).
+# ---------------------------------------------------------------------------
+D=$(newcase dedup)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 3
+
+nodes:
+  1: {p: "a.md", s: "A", x: "done"}
+  2: {p: "b.md", s: "B", x: "done"}
+
+deps:
+  1: [2, 2]
+EOF
+pg "$D" --fix
+assert_exit  "dedup-fix" 0
+assert_grepF "dedup-fix CHANGE" "$WORK/out" "CHANGE=dedup 1"
+assert_fgrep   "dedup-fix collapsed" "$D/.agents/plan/graph.yaml" "1: \[2\]"
+assert_fnogrep "dedup-fix no dup"    "$D/.agents/plan/graph.yaml" "1: \[2, 2\]"
+pg "$D"   # re-parse mutated graph
+assert_exit "dedup-recheck" 0
+
+# ---------------------------------------------------------------------------
+# badparse — a malformed graph is exit 2 and (with --fix) left byte-identical:
+# the one no-mutation guarantee in the Output Contract.
+# ---------------------------------------------------------------------------
+D=$(newcase badparse)
+printf 'next: 2\n\nnodes:\n  1: {p: oops\n' >"$D/.agents/plan/graph.yaml"
+cp "$D/.agents/plan/graph.yaml" "$WORK/badparse.orig"
+pg "$D"
+assert_exit "badparse-check" 2
+assert_grep "badparse-check error" "$WORK/err" "ERROR=parse:"
+pg "$D" --fix
+assert_exit "badparse-fix exit2" 2
+if cmp -s "$D/.agents/plan/graph.yaml" "$WORK/badparse.orig"; then
+  pass "badparse-fix did not touch graph"
+else
+  fail "badparse-fix did not touch graph" "graph was mutated despite parse failure"
+fi
+
+# ---------------------------------------------------------------------------
+# missing-graph — check fails (exit 1), --fix initializes an empty next:1 graph.
+# ---------------------------------------------------------------------------
+D=$(newcase missinggraph); rm -rf "$D/.agents"   # no graph at all
+python3 "$PG" "$D/.agents/plan/graph.yaml" --root "$D" >"$WORK/out" 2>"$WORK/err"; EC=$?
+assert_exit "missinggraph-check" 1
+assert_grep "missinggraph-check msg" "$WORK/err" "graph file does not exist"
+python3 "$PG" "$D/.agents/plan/graph.yaml" --root "$D" --fix >"$WORK/out" 2>"$WORK/err"; EC=$?
+assert_exit  "missinggraph-fix" 0
+assert_fgrep "missinggraph-fix next:1" "$D/.agents/plan/graph.yaml" "next: 1"
+
+# ===========================================================================
+# NEW-BUG GUARDS — RED against the pre-fix script, GREEN after this PR's fixes.
+# ===========================================================================
+
+# BOM on a plan file: --fix must recognize existing frontmatter, NOT prepend a
+# second block (silent corruption). [#1]
+D=$(newcase bomplan)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: ".agents/plan/a.md", s: "Summary one"}
+
+deps:
+EOF
+cat >"$D/.agents/plan/a.md" <<'EOF'
+---
+id: 1
+summary: "Summary one"
+---
+
+body
+EOF
+add_bom "$D/.agents/plan/a.md"
+pg "$D" --fix
+assert_exit   "bomplan-fix" 0
+assert_nogrep "bomplan-fix no dup frontmatter" "$WORK/out" "CHANGE=add-frontmatter 1"
+# exactly one frontmatter block => exactly one 'id: 1' line
+if [ "$(grep -c '^id: 1' "$D/.agents/plan/a.md")" = "1" ]; then
+  pass "bomplan-fix single frontmatter block"
+else
+  fail "bomplan-fix single frontmatter block" "found $(grep -c '^id: 1' "$D/.agents/plan/a.md") id lines (duplicate frontmatter)"
+fi
+
+# BOM on graph.yaml: must parse, not report the whole file unparseable. [#1]
+D=$(newcase bomgraph)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: ".agents/plan/a.md", s: "Alpha"}
+
+deps:
+EOF
+cat >"$D/.agents/plan/a.md" <<'EOF'
+---
+id: 1
+summary: "Alpha"
+---
+
+body
+EOF
+add_bom "$D/.agents/plan/graph.yaml"
+pg "$D"
+assert_exit   "bomgraph-check" 0
+assert_grep   "bomgraph-check OK"       "$WORK/out" "OK plan graph"
+assert_nogrep "bomgraph-check no parse err" "$WORK/err" "ERROR=parse"
+
+# Duplicate base in deps must NOT exclude the dependent from the roadmap as a
+# phantom cycle. [#4]
+D=$(newcase dupbase)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 3
+
+nodes:
+  1: {p: "a.md", s: "alpha"}
+  2: {p: "b.md", s: "beta"}
+
+deps:
+  2: [1, 1]
+EOF
+pg "$D" --show
+assert_exit   "dupbase-show" 0
+assert_grep   "dupbase-show dependent in roadmap" "$WORK/out" "2\. \[2\] beta"
+assert_nogrep "dupbase-show no phantom cycle"     "$WORK/out" "excluded from roadmap"
+# the repeated base must collapse in the tree too (render_tree child set() dedup).
+assert_nogrep "dupbase-show no duplicate child"   "$WORK/out" "\[1\] alpha ↑"
+
+# --fix must NOT write frontmatter to a path that escapes the repo root. [#7]
+D=$(newcase traversal)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "../escape-traversal.md", s: "Evil"}
+
+deps:
+EOF
+printf '# outside, no frontmatter\n' >"$WORK/escape-traversal.md"   # lives OUTSIDE the case root
+pg "$D" --fix
+assert_exit    "traversal-fix exit1" 1
+assert_fnogrep "traversal-fix left outside file untouched" "$WORK/escape-traversal.md" "^---"
+rm -f "$WORK/escape-traversal.md"
+
+# Cycle/forest must not print a node twice (spurious standalone ↑ line). [#5]
+D=$(newcase forestrepeat)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 4
+
+nodes:
+  1: {p: "a.md", s: "alpha"}
+  2: {p: "b.md", s: "beta"}
+  3: {p: "c.md", s: "gamma"}
+
+deps:
+  1: [2]
+  2: [1]
+EOF
+pg "$D" --show
+assert_exit   "forestrepeat-show" 0
+# node 2 must never appear as a top-level (no-prefix) line; only nested or as a child.
+assert_nogrep "forestrepeat no duplicate top-level node" "$WORK/out" "^\[2\] beta"
+
+# ---------------------------------------------------------------------------
+# lock — a fresh foreign lock blocks --fix (exit 1) and survives; a stale lock
+# (>10s) is overtaken and our lock is released afterward (ownership). [#9]
+# ---------------------------------------------------------------------------
+D=$(newcase lockfresh)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "a.md", s: "alpha", x: "done"}
+
+deps:
+EOF
+LOCK="$D/.agents/plan/graph.yaml.lock"
+printf '999999' >"$LOCK"   # foreign, fresh
+pg "$D" --fix              # ~3s: the script retries 3x before giving up
+assert_exit "lockfresh-fix blocked" 1
+assert_grep "lockfresh-fix ERROR" "$WORK/err" "ERROR=graph locked by another process"
+if [ -f "$LOCK" ]; then pass "lockfresh-fix did not delete foreign lock"; else fail "lockfresh-fix did not delete foreign lock" "foreign lock was removed"; fi
+
+D=$(newcase lockstale)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "a.md", s: "alpha", x: "done"}
+
+deps:
+EOF
+LOCK="$D/.agents/plan/graph.yaml.lock"
+printf '999999' >"$LOCK"
+touch -d '1 hour ago' "$LOCK" 2>/dev/null || touch -t 202001010000 "$LOCK"
+pg "$D" --fix
+assert_exit "lockstale-fix overtakes" 0
+assert_grep "lockstale-fix OK" "$WORK/out" "OK plan graph"
+if [ -f "$LOCK" ]; then fail "lockstale-fix released our lock" "lockfile remained after a run we owned"; else pass "lockstale-fix released our lock"; fi
+
+# ---------------------------------------------------------------------------
+# release_lock ownership — must NOT delete a lockfile owned by another pid. [#9]
+# (Drives the function directly; the --fix contention path can't exercise the
+# "our lock overtaken mid-run" branch.)
+# ---------------------------------------------------------------------------
+FLOCK="$WORK/relown.lock"
+printf '999999' >"$FLOCK"   # a pid that is not ours
+if python3 -c "
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('pg', '$PG')
+m = importlib.util.module_from_spec(spec); sys.modules['pg'] = m; spec.loader.exec_module(m)
+m.release_lock(Path('$FLOCK'))
+sys.exit(0 if Path('$FLOCK').exists() else 1)
+"; then
+  pass "release_lock keeps foreign lock"
+else
+  fail "release_lock keeps foreign lock" "release_lock deleted a lockfile owned by another pid"
+fi
+rm -f "$FLOCK"
+
+# ---------------------------------------------------------------------------
+# write-fail — a graph write failure surfaces ERROR + exit 1, not a traceback.
+# Pre-create graph.yaml.tmp as a DIRECTORY so write_graph's tmp write fails. [#10]
+# ---------------------------------------------------------------------------
+D=$(newcase writefail)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 3
+
+nodes:
+  1: {p: "a.md", s: "A", x: "done"}
+  2: {p: "b.md", s: "B", x: "done"}
+
+deps:
+  1: [2, 2]
+EOF
+mkdir "$D/.agents/plan/graph.yaml.tmp"   # occupies the temp path write_graph needs
+pg "$D" --fix
+assert_exit   "writefail-fix" 1
+assert_grep   "writefail-fix ERROR"      "$WORK/err" "ERROR=failed to write graph"
+assert_nogrep "writefail-fix no traceback" "$WORK/err" "Traceback"
+
+# ---------------------------------------------------------------------------
+# show-fix-lock — --show takes precedence and never locks, so --show --fix under
+# a fresh foreign lock still prints the tree (exit 0), matching the docs.
+# ---------------------------------------------------------------------------
+D=$(newcase showfixlock)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "a.md", s: "alpha", x: "done"}
+
+deps:
+EOF
+printf '999999' >"$D/.agents/plan/graph.yaml.lock"
+pg "$D" --show --fix
+assert_exit   "showfixlock-show" 0
+assert_grepF  "showfixlock tree shown" "$WORK/out" "[1] alpha"
+assert_nogrep "showfixlock not blocked" "$WORK/err" "graph locked"
+
+# ---------------------------------------------------------------------------
+printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

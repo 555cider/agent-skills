@@ -9,8 +9,53 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+
+CHANGES: list[dict] = []
+
+
+def record_change(verb: str, node_id: int, path: str | None = None, extra: str | None = None, silent: bool = False):
+    CHANGES.append({
+        "verb": verb,
+        "id": node_id,
+        "path": path,
+        "extra": extra
+    })
+    if not silent:
+        if verb in {"mark", "clear", "remove"}:
+            print(f"CHANGE={verb} {node_id} {extra}")
+        elif verb in {"dedup"}:
+            print(f"CHANGE={verb} {node_id}")
+        elif verb in {"add-frontmatter"}:
+            print(f"CHANGE={verb} {node_id} {path}")
+        elif verb in {"sync-frontmatter"}:
+            print(f"CHANGE={verb} {node_id} {path} {extra}")
+
+
+def acquire_lock(lock_path: Path) -> bool:
+    try:
+        if lock_path.exists():
+            mtime = lock_path.stat().st_mtime
+            if time.time() - mtime < 10:
+                return False
+        lock_path.write_text(str(os.getpid()), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def release_lock(lock_path: Path):
+    try:
+        # Only remove the lock if it is still ours — never delete another
+        # process's lock (e.g. if ours was overtaken as stale mid-run).
+        if lock_path.exists() and lock_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            lock_path.unlink()
+    except Exception:
+        pass
+
 
 
 NEXT_RE = re.compile(r"^\s*next:\s*(\d+)\s*$")
@@ -44,6 +89,17 @@ def format_scalar(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def is_safe_path(path_str: str) -> bool:
+    """A node path is safe to touch on disk only if it stays inside the root:
+    non-empty, relative, and free of `..` traversal. Filesystem writes are
+    gated on this so --fix never mutates a file outside the repo before
+    validate() rejects the path."""
+    if not path_str:
+        return False
+    parts = Path(path_str)
+    return not parts.is_absolute() and ".." not in parts.parts
+
+
 def parse_graph(path: Path):
     next_id = None
     saw_next = False
@@ -51,7 +107,7 @@ def parse_graph(path: Path):
     deps: dict[int, list[int]] = {}
     section = None
 
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for lineno, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -119,34 +175,44 @@ def write_graph(path: Path, next_id: int, nodes: dict[int, Node], deps: dict[int
         lines.append(f"  {node_id}: [{values}]")
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.replace(tmp, target)
+    try:
+        os.replace(tmp, target)
+    except Exception:
+        # Don't leave a half-written .tmp behind if the swap fails.
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        raise
 
 
-def fix_missing_files(root: Path, nodes: dict[int, Node], deps: dict[int, list[int]]):
+def fix_missing_files(root: Path, nodes: dict[int, Node], deps: dict[int, list[int]], silent: bool = False):
     changed = False
     for node_id in sorted(list(nodes)):
         node = nodes[node_id]
+        if not is_safe_path(node.path):
+            continue  # unsafe path: leave it for validate() to reject, don't touch disk
         exists = (root / node.path).exists()
         if node.x == "missing" and exists:
             node.x = None
-            print(f"CHANGE=clear {node_id} missing")
+            record_change("clear", node_id, extra="missing", silent=silent)
             changed = True
             continue
         if node.x or exists:
             continue
         node.x = "missing"
-        print(f"CHANGE=mark {node_id} missing")
+        record_change("mark", node_id, extra="missing", silent=silent)
         changed = True
 
     for node_id, values in list(deps.items()):
         deduped = list(dict.fromkeys(values))
         if deduped != values:
             deps[node_id] = deduped
-            print(f"CHANGE=dedup {node_id}")
+            record_change("dedup", node_id, silent=silent)
             changed = True
         if not deps[node_id]:
             deps.pop(node_id)
-            print(f"CHANGE=remove {node_id} empty-deps")
+            record_change("remove", node_id, extra="empty-deps", silent=silent)
             changed = True
     return changed
 
@@ -239,12 +305,15 @@ def sync_markdown_frontmatter(
     node: Node,
     bases: list[int],
     fix: bool,
+    silent: bool = False,
 ) -> str | None:
+    if not is_safe_path(node.path):
+        return None  # never read/write a file outside root; validate() reports the path error
     path = root / node.path
     if not path.exists() or path.is_dir():
         return None
     try:
-        content = path.read_text(encoding="utf-8")
+        content = path.read_text(encoding="utf-8-sig")
     except Exception as e:
         return f"failed to read {node.path}: {e}"
 
@@ -255,7 +324,7 @@ def sync_markdown_frontmatter(
         if fix:
             try:
                 path.write_text(expected_fm + content, encoding="utf-8")
-                print(f"CHANGE=add-frontmatter {node_id} {node.path}")
+                record_change("add-frontmatter", node_id, path=node.path, silent=silent)
                 return None
             except Exception as e:
                 return f"failed to prepend frontmatter to {node.path}: {e}"
@@ -291,7 +360,7 @@ def sync_markdown_frontmatter(
             try:
                 path.write_text(expected_fm + body, encoding="utf-8")
                 details = ",".join(field for field, _ in mismatch)
-                print(f"CHANGE=sync-frontmatter {node_id} {node.path} {details}")
+                record_change("sync-frontmatter", node_id, path=node.path, extra=details, silent=silent)
                 return None
             except Exception as e:
                 return f"failed to update frontmatter in {node.path}: {e}"
@@ -313,7 +382,7 @@ def get_roadmap_and_critical_path(
     for dep, bases in deps.items():
         if dep not in active:
             continue
-        for base in bases:
+        for base in dict.fromkeys(bases):  # dedup: a repeated base must not inflate in-degree
             if base in active:
                 adj[base].add(dep)
                 in_degree[dep] += 1
@@ -375,14 +444,14 @@ def get_roadmap_and_critical_path(
     return roadmap, critical_path, excluded
 
 
-def validate(root: Path, next_id: int, nodes: dict[int, Node], deps: dict[int, list[int]]):
+def validate(root: Path, next_id: int, nodes: dict[int, Node], deps: dict[int, list[int]], silent: bool = False):
     errors: list[str] = []
     warning_messages: list[str] = []
 
     for node_id, node in sorted(nodes.items()):
         if node.x != "missing":
             bases = deps.get(node_id, [])
-            err = sync_markdown_frontmatter(root, node_id, node, bases, fix=False)
+            err = sync_markdown_frontmatter(root, node_id, node, bases, fix=False, silent=silent)
             if err:
                 if err.startswith("missing frontmatter in "):
                     warning_messages.append(err)
@@ -481,7 +550,7 @@ def render_tree(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]
         if repeated or node_id not in nodes:
             return
         shown.add(node_id)
-        children = sorted(deps.get(node_id, []))
+        children = sorted(set(deps.get(node_id, [])))
         for index, child_id in enumerate(children):
             last = index == len(children) - 1
             child_connector = "└── " if last else "├── "
@@ -500,6 +569,8 @@ def render_tree(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]
             lines.append("")
         walk(root_id, "", "")
     for node_id in sorted(node_id for node_id in nodes if node_id not in shown):
+        if node_id in shown:
+            continue  # a node pulled in by walking an earlier component must not reprint
         if lines:
             lines.append("")
         walk(node_id, "", "")
@@ -513,6 +584,7 @@ def default_root(graph: Path) -> Path:
             check=True,
             capture_output=True,
             text=True,
+            timeout=5,
         )
         return Path(result.stdout.strip())
     except Exception:
@@ -524,66 +596,133 @@ def default_root(graph: Path) -> Path:
 
 
 def main(argv: list[str]) -> int:
+    CHANGES.clear()  # reset the module-level accumulator so repeated in-process calls don't report stale changes
     parser = argparse.ArgumentParser(description="Check or fix a plan graph.")
     parser.add_argument("graph", type=Path)
     parser.add_argument("--fix", action="store_true", help="repair missing-file graph drift")
     parser.add_argument("--show", action="store_true", help="print the plan tree and exit")
     parser.add_argument("--root", type=Path, default=None, help="repo root for plan paths")
+    parser.add_argument("--json", action="store_true", help="output result in JSON format")
     args = parser.parse_args(argv)
     graph = args.graph
     root = (args.root.resolve() if args.root else default_root(graph.resolve()).resolve())
 
-    if not graph.exists() and args.fix:
-        graph.parent.mkdir(parents=True, exist_ok=True)
-        write_graph(graph, 1, {}, {})
+    if not graph.exists():
+        if args.fix:
+            graph.parent.mkdir(parents=True, exist_ok=True)
+            write_graph(graph, 1, {}, {})
+        else:
+            err_msg = f"graph file does not exist: {graph}. Run with --fix to initialize."
+            if args.json:
+                print(json.dumps({"status": "ERROR", "errors": [err_msg], "warnings": [], "changes": []}, ensure_ascii=False, indent=2))
+            else:
+                print(f"ERROR={err_msg}", file=sys.stderr)
+                print("FAIL plan graph", file=sys.stderr)
+            return 1
+
+    lock_path = graph.with_name(graph.name + ".lock")
+    lock_acquired = False
+    if args.fix and not args.show:  # --show is read-only and takes precedence; it never locks
+        for _ in range(3):
+            if acquire_lock(lock_path):
+                lock_acquired = True
+                break
+            time.sleep(1)
+        if not lock_acquired:
+            err_msg = f"graph locked by another process (lockfile: {lock_path})"
+            if args.json:
+                print(json.dumps({"status": "ERROR", "errors": [err_msg], "warnings": [], "changes": []}, ensure_ascii=False, indent=2))
+            else:
+                print(f"ERROR={err_msg}", file=sys.stderr)
+                print("FAIL plan graph", file=sys.stderr)
+            return 1
 
     try:
         next_id, nodes, deps = parse_graph(graph)
     except Exception as exc:
-        print(f"ERROR=parse: {exc}", file=sys.stderr)
+        err_msg = f"parse: {exc}"
+        if args.json:
+            print(json.dumps({"status": "ERROR", "errors": [err_msg], "warnings": [], "changes": []}, ensure_ascii=False, indent=2))
+        else:
+            print(f"ERROR={err_msg}", file=sys.stderr)
+        if args.fix and lock_acquired:
+            release_lock(lock_path)
         return 2
 
     if args.show:
-        for line in render_tree(nodes, deps):
-            print(line)
         roadmap, critical_path, excluded = get_roadmap_and_critical_path(nodes, deps)
-        if roadmap or excluded:
-            print("\nSuggested Implementation Roadmap (Active Plans):")
-            for idx, r_id in enumerate(roadmap, 1):
-                print(f"  {idx}. [{r_id}] {nodes[r_id].summary}")
-            for r_id in excluded:
-                print(f"  - [{r_id}] {nodes[r_id].summary} (cycle, excluded from roadmap)")
-        if critical_path:
-            path_str = " ➔ ".join(f"[{node_id}]" for node_id in critical_path)
-            print(f"\nCritical Path (Longest unresolved chain):\n  {path_str}")
+        tree_lines = render_tree(nodes, deps)
+        if args.json:
+            json_out = {
+                "status": "OK",
+                "tree": tree_lines,
+                "roadmap": [{"id": r_id, "summary": nodes[r_id].summary} for r_id in roadmap],
+                "excluded": [{"id": r_id, "summary": nodes[r_id].summary} for r_id in excluded],
+                "critical_path": critical_path,
+                "changes": [],
+                "errors": [],
+                "warnings": []
+            }
+            print(json.dumps(json_out, ensure_ascii=False, indent=2))
+        else:
+            for line in tree_lines:
+                print(line)
+            if roadmap or excluded:
+                print("\nSuggested Implementation Roadmap (Active Plans):")
+                for idx, r_id in enumerate(roadmap, 1):
+                    print(f"  {idx}. [{r_id}] {nodes[r_id].summary}")
+                for r_id in excluded:
+                    print(f"  - [{r_id}] {nodes[r_id].summary} (cycle, excluded from roadmap)")
+            if critical_path:
+                path_str = " ➔ ".join(f"[{node_id}]" for node_id in critical_path)
+                print(f"\nCritical Path (Longest unresolved chain):\n  {path_str}")
+        if args.fix and lock_acquired:
+            release_lock(lock_path)
         return 0
 
     changed = False
     fix_errors: list[str] = []
     if args.fix:
-        changed = fix_missing_files(root, nodes, deps)
-        for node_id, node in sorted(nodes.items()):
-            if node.x != "missing":
-                bases = deps.get(node_id, [])
-                err = sync_markdown_frontmatter(root, node_id, node, bases, fix=True)
-                if err:
-                    fix_errors.append(err)
-        if changed:
-            write_graph(graph, next_id, nodes, deps)
+        try:
+            changed = fix_missing_files(root, nodes, deps, silent=args.json)
+            for node_id, node in sorted(nodes.items()):
+                if node.x != "missing":
+                    bases = deps.get(node_id, [])
+                    err = sync_markdown_frontmatter(root, node_id, node, bases, fix=True, silent=args.json)
+                    if err:
+                        fix_errors.append(err)
+            if changed:
+                try:
+                    write_graph(graph, next_id, nodes, deps)
+                except Exception as exc:
+                    fix_errors.append(f"failed to write graph: {exc}")
+        finally:
+            if lock_acquired:
+                release_lock(lock_path)
 
-    errors, frontmatter_warnings = validate(root, next_id, nodes, deps)
+    errors, frontmatter_warnings = validate(root, next_id, nodes, deps, silent=args.json)
     errors = fix_errors + errors
-    for error in errors:
-        print(f"ERROR={error}", file=sys.stderr)
-    for warning in frontmatter_warnings + warnings(nodes, deps):
-        print(f"WARN={warning}", file=sys.stderr)
+    all_warnings = frontmatter_warnings + warnings(nodes, deps)
 
-    if errors:
-        print("FAIL plan graph", file=sys.stderr)
-        return 1
+    if args.json:
+        json_out = {
+            "status": "OK" if not errors else "FAIL",
+            "changes": CHANGES,
+            "errors": errors,
+            "warnings": all_warnings
+        }
+        print(json.dumps(json_out, ensure_ascii=False, indent=2))
+    else:
+        for error in errors:
+            print(f"ERROR={error}", file=sys.stderr)
+        for warning in all_warnings:
+            print(f"WARN={warning}", file=sys.stderr)
+        if errors:
+            print("FAIL plan graph", file=sys.stderr)
+        else:
+            print("OK plan graph")
 
-    print("OK plan graph")
-    return 0
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

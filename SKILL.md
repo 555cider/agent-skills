@@ -1,6 +1,6 @@
 ---
 name: plan-graph
-description: Use when creating, revising, reviewing, completing, dropping, or removing persistent planning documents that may need a numeric dependency graph or may relate to existing plan files.
+description: Use when adding, revising, completing, dropping, or removing a persistent plan file in a repo that maintains (or should maintain) a `.agents/plan` dependency-graph index, or when a new plan may depend on, supersede, or relate to existing plan files. Not for drafting a single standalone plan with no cross-plan lineage — use a plain plan-writing skill for that.
 ---
 
 # Plan Graph
@@ -40,6 +40,10 @@ Rules:
   `..` traversal.
 - `deps`: dependent ID to base IDs. `3: [1, 2]` means plan `3` depends on plans
   `1` and `2`.
+- An active node may depend only on active or `done` bases. The script errors
+  on a live dep into an `x: dropped` or `x: missing` node, so never wire a new
+  plan to a superseded or abandoned one — grow it as an independent root
+  instead.
 - `x`: optional non-active state: `done`, `dropped`, or script-managed `missing`.
   `done` means completed but retained because an active plan still depends on it
   or removal is blocked.
@@ -75,6 +79,20 @@ when frontmatter is absent from an existing legacy plan file and errors when
 existing frontmatter conflicts with the graph. Running with `--fix` prepends or
 updates frontmatter fields from the graph.
 
+### First-time setup (existing plans, no graph)
+
+`--fix` on a missing graph creates an **empty** `next: 1` graph; it does not
+auto-discover existing markdown. To adopt a repo that already has plan files:
+
+1. List the plan directory and pick the files worth tracking.
+2. Allocate sequential IDs from `1`, add a `nodes` entry per file (relative
+   path + one-line summary), and set `next` past the highest ID.
+3. Read each file to infer real `deps` edges — do not leave `deps` empty just
+   because the script accepts it.
+4. Run the check command (see `## Command`) to generate frontmatter and catch
+   missing-file or path errors.
+5. Report via `## Report Contract`.
+
 ## Workflow
 
 1. If a graph exists, run the command in `## Command` to validate before trusting it.
@@ -102,7 +120,7 @@ Use exactly these tokens in `Decisions` (see `## Report Contract`).
 |---------------------------------------------------|--------------|-------------|------------------------------------------------------------|
 | Same area, base's assumptions still hold          | base         | reuse       | extend the existing plan; no new node, no new dep          |
 | Same area, some assumptions stale                 | base         | revise      | edit the base plan in place; no new node, no new dep       |
-| Same area, base's conclusion must be overturned   | base         | supersede   | new node; mark base `x: dropped` or prune (no dep on base) |
+| Same area, base's conclusion must be overturned   | base         | supersede   | new node; do NOT dep on the base (active plans can't depend on dropped); then mark base `x: dropped` or prune |
 | Different approach to same goal                   | alternative  | ignore      | no node, no dep; note in `Decisions`                       |
 | Unrelated to candidate area                       | unrelated    | ignore      | no node, no dep                                            |
 | Depends on a base but starts fresh work           | dependent    | independent | new node, add `new -> base` dep                            |
@@ -133,6 +151,18 @@ Pruned: <completed tree ids/paths removed, or none>
 Propagation: <dependent updates, review-needed items, or none>
 ```
 
+`relationship` and `decision` on the `Decisions` line MUST be tokens from the
+Classification table. The report is written to the user in chat, not to a file.
+Worked example:
+
+```text
+Reviewed: 1 (auth), 3 (checkout), legacy.md
+Decisions: checkout.md -> base, reuse; legacy.md -> alternative, ignore
+Deps: +[5->3] -[none]
+Pruned: none
+Propagation: 4 updated (assumption changed); 6 left, unaffected
+```
+
 ## Common Mistakes
 
 - Creating a new root before reviewing existing plans.
@@ -141,23 +171,54 @@ Propagation: <dependent updates, review-needed items, or none>
 - Removing a base plan without checking active dependents.
 - Using the graph as a history log instead of active planning context.
 
+### Cycle Resolution
+
+If a cycle is detected during validation, the check fails with the error
+`cycle detected: <chain>` (exit 1); the cyclic nodes are also dropped from the
+roadmap when you run `--show`. Resolve cycles immediately:
+1. Identify the circular dependency chain in the validation output (e.g., `1 -> 2 -> 1`).
+2. Determine which dependency link in the cycle is invalid or redundant.
+3. Edit the `deps:` block in `.agents/plan/graph.yaml` to remove the circular dependency link.
+4. Run validation with `--fix` to synchronize the corrected dependencies back to the individual plan files.
+
+
 ## Command
 
-Run from the repo root. Replace `<skill-dir>` with this skill's directory.
+Run from the repo root. `<skill-dir>` is the directory holding this `SKILL.md`
+(typically `~/.claude/skills/plan-graph` or the repo's `skills/plan-graph`);
+substitute its path in the commands below.
+
+**Check first — this never writes:**
+
+```bash
+python3 <skill-dir>/scripts/plan-graph.py .agents/plan/graph.yaml
+```
+
+Check reports missing legacy frontmatter as a warning (exit 0) and validates the
+graph. Per Workflow step 1, run this before trusting an existing graph. The
+graph is valid only if every `deps` key/value exists in `nodes` and active plans
+do not depend on `x: dropped` or `x: missing` nodes.
+
+**Then `--fix` to apply repairs — this writes files:**
 
 ```bash
 python3 <skill-dir>/scripts/plan-graph.py .agents/plan/graph.yaml --fix
 ```
 
-Without `--fix`, the command checks and reports missing legacy frontmatter as a
-warning. With `--fix`, missing active plan files are marked with `x: missing`;
-if the file returns, `x: missing` is cleared. If the graph file does not exist
-yet, `--fix` creates an empty graph. The command also deduplicates dep lists.
-Run `--fix` once on existing graphs to generate plan-file frontmatter.
+`--fix` marks missing active plan files `x: missing` (and clears it if the file
+returns), deduplicates dep lists, creates an empty graph if none exists, and
+prepends/syncs plan-file frontmatter from the graph. Run it once on an existing
+graph to generate frontmatter. **Hazard:** drift repairs are persisted *before*
+validation, so a `--fix` that exits `1` may already have mutated files — commit
+or stash a clean tree first, and use plain check when you only want to look.
+After removing a completed tree, run check again.
 
-After removing a completed tree, run the command again. The graph is valid only
-if every `deps` key/value exists in `nodes` and active plans do not depend on
-`x: dropped` or `x: missing` nodes.
+`--root <dir>` overrides the repo root used to resolve plan paths (default: the
+git toplevel of the graph's directory, else a `.agents/plan` heuristic, else the
+cwd). `--fix` takes an exclusive `<graph>.lock` for the duration of the write;
+if you see `ERROR=graph locked by another process`, another `--fix` is running —
+wait and retry. A leftover `.lock` after a crash is stale (locks older than 10s
+are ignored automatically) and safe to delete. Check and `--show` take no lock.
 
 To view the current plans as a tree, add `--show`:
 
@@ -175,7 +236,8 @@ length, critical-path tie-breaking follows the dependent's `deps` order. Nodes
 blocked by a cycle are printed as `(cycle, excluded from roadmap)`.
 `--show` is read-only, prints to stdout only, and exits `0` on success or `2` on
 parse failure; it skips validation, so use it alongside the check/`--fix` modes
-rather than as a replacement.
+rather than as a replacement. `--show` takes precedence over `--fix`: passing
+both shows the tree and performs no repair — run them as separate invocations.
 
 Example output:
 
@@ -236,9 +298,30 @@ FAIL plan graph                     # failure sentinel (exit 1)
 Exit codes: `0` = valid (with or without changes); `1` = validation errors;
 `2` = graph file unparseable.
 
+### JSON output (`--json`)
+
+Add `--json` (works with check, `--fix`, and `--show`) when another agent or
+script will consume the result; for your own report use the text mode above. In
+JSON mode the `CHANGE=`/`WARN=`/`ERROR=`/`OK`/`FAIL` line contracts are
+suppressed and everything goes to stdout as one object (exit codes are
+unchanged). Check / `--fix`:
+
+```json
+{"status": "OK|FAIL|ERROR", "changes": [{"verb": "...", "id": 1, "path": "...", "extra": "..."}], "errors": [], "warnings": []}
+```
+
+`status` is `OK` (exit 0), `FAIL` (exit 1, validation errors), or `ERROR`
+(exit 1 for a lock/missing-graph failure, or exit 2 for a parse failure). Each
+`changes[]` object carries the same verb/id as a `CHANGE=` line (`path`/`extra`
+hold the trailing fields). `--show --json` instead returns
+`{status, tree: [...lines], roadmap: [{id, summary}], excluded: [{id, summary}], critical_path: [ids], changes: [], errors: [], warnings: []}`.
+
 Write ordering with `--fix`: drift repairs (`CHANGE=` lines) are persisted
 *before* validation runs, so a `--fix` invocation that exits `1` may still have
 mutated the graph file. Use `--fix` only when you intend to accept the drift
 repairs; run without `--fix` first if you want a pure read-only check.
 Parse failure (exit `2`) is the one case where the graph is guaranteed not
 touched.
+
+Maintainers: `tests/run.sh` is the CLI regression suite (exit 0 = all pass);
+`tests/README.md` catalogues the fixtures and the contract each guards.
