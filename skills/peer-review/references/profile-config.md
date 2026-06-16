@@ -17,7 +17,7 @@ settings in one review.
 ```
 
 - `cli` — required unless the profile name itself is one of the known CLI
-  names (`codex`, `claude`, `qwen`, `opencode`).
+  names (`codex`, `claude`, `opencode`, `agy`).
 - `model` — optional. Forwarded to the CLI's model flag. Omit to let the
   CLI use whatever it defaults to.
 - `effort` — optional. Applied where supported (currently codex and

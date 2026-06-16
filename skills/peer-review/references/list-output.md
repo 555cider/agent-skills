@@ -16,7 +16,7 @@ Special:
 Reviewer CLIs (from config — index callable as --reviewer=N):
   #    profile              cli        model                     effort   status
   1    codex-deep           codex      gpt-5                     high    on PATH
-  2    qwen-test            qwen       qwen-3                            not found
+  2    agy-test             agy        agy-1                             not found
   3    claude-opus          claude     claude-opus-4-7                   on PATH
 ```
 
@@ -33,8 +33,8 @@ Reviewer CLIs (no config — on-PATH numbers callable as --reviewer=N):
   #    cli        status
   1         codex      on PATH
   2         claude     on PATH
-  -         qwen       not found
   3         opencode   on PATH
+  -         agy        not found
 ```
 
 ## Rules

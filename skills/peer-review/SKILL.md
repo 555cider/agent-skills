@@ -7,7 +7,7 @@ description: Use when the user explicitly asks for a peer review or second opini
 
 Get a second opinion on an implementation/design plan, or a recommendation
 on a set of options/choices, from one or more reviewer CLIs. Supported:
-`codex`, `claude`, `qwen`, `opencode`. Multiple reviewers run in
+`codex`, `claude`, `opencode`, `agy`. Multiple reviewers run in
 parallel — each writes its own temporary review file under `.peer-review/`.
 The shell mechanics live in `scripts/run-peer-review.sh` next to this SKILL.md.
 
@@ -33,7 +33,7 @@ adapt headers/labels to match.
 /peer-review <path> --focus=<area> --reviewer=...  # combine
 ```
 
-`--reviewer` values: `codex`, `claude`, `qwen`, `opencode`, `all`,
+`--reviewer` values: `codex`, `claude`, `opencode`, `agy`, `all`,
 `0` (self — the host CLI itself), any **profile name** defined in a JSON
 config, or — when a config is loaded — a **1-based index** (`2`) or **range**
 (`1-3`) into the profile list (default: `codex`). Pass a comma-separated mix
@@ -131,7 +131,7 @@ default that would match `--host` when another reviewer is available.
 **Avoid accidental self-review** — exclude the host model from the list unless
 the user explicitly opts in via `0` or by name:
 - Inside Claude Code: keep `codex` (default), exclude `claude`. Add others
-  freely (`--reviewer=codex,qwen,opencode`).
+  freely (`--reviewer=codex,opencode,agy`).
 - Inside Codex CLI: pass `--host=codex`; omit `--reviewer` for the script's
   best non-host default, or prefer `--reviewer=claude` when available.
 - Reviewers sharing a backing model give weaker signal when paired

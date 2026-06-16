@@ -45,7 +45,7 @@ run-peer-review.sh <plan-file> \
   [--reviewer=<list>]         # default: codex, unless --host would make that
                               #   accidental self-review and another reviewer is available;
                               #   comma-separated list runs in parallel
-                              #   choices: codex, claude, qwen, opencode, all,
+                              #   choices: codex, claude, opencode, agy, all,
                               #            0 (self — host CLI; requires --host),
                               #            any profile name from JSON config, or
                               #            1-based index / range when a config is loaded
@@ -92,7 +92,7 @@ Special:
 Reviewer CLIs (from config — index callable as --reviewer=N):
   #    profile              cli        model                     effort   status
   1    codex-deep           codex      gpt-5                     high    on PATH
-  2    qwen-test            qwen       qwen-3                            not found
+  2    agy-test             agy        agy-1                             not found
   3    claude-opus          claude     claude-opus-4-7                   on PATH
 ```
 
@@ -109,8 +109,8 @@ Reviewer CLIs (no config — on-PATH numbers callable as --reviewer=N):
   #    cli        status
   1         codex      on PATH
   2         claude     on PATH
-  -         qwen       not found
   3         opencode   on PATH
+  -         agy        not found
 ```
 
 The Special row only renders when `--host=<cli>` is passed (the slash
@@ -214,9 +214,9 @@ missing, 4 filename claim failed, 5 empty response (single-reviewer mode),
 - **Reviewer sandboxing / headless mode:**
   - codex: `codex exec --sandbox read-only` (read-only sandbox)
   - claude: `claude -p` (relies on claude's permission system)
-  - qwen: `qwen --approval-mode plan -p ""` (plan mode = read-only)
   - opencode: `opencode run` (relies on opencode's permission defaults; ANSI
     color codes stripped from saved output)
+  - agy: `agy -p "<prompt>" --sandbox` (runs headlessly in a sandbox)
   All supported reviewers accept the prompt over stdin.
 - **Parallel execution:** multiple reviewers spawn as background subprocesses,
   each with its own temp files and claimed `OUT_FILE`. The script waits for
