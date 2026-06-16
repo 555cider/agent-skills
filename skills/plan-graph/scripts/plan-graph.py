@@ -246,6 +246,53 @@ def warnings(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]:
     ]
 
 
+def render_tree(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]:
+    if not nodes:
+        return ["(empty plan graph)"]
+
+    bases_used: set[int] = set()
+    for bases in deps.values():
+        bases_used.update(bases)
+    roots = sorted(node_id for node_id in nodes if node_id not in bases_used)
+    if not roots:
+        roots = sorted(nodes)
+
+    lines: list[str] = []
+    shown: set[int] = set()
+
+    def label(node_id: int, repeated: bool) -> str:
+        node = nodes.get(node_id)
+        if node is None:
+            return f"[{node_id}] <missing from nodes>"
+        state = f" ({node.x})" if node.x else ""
+        repeat = " ↑" if repeated else ""
+        return f"[{node_id}] {node.summary}{state}{repeat}"
+
+    def walk(node_id: int, prefix: str, connector: str) -> None:
+        repeated = node_id in shown
+        lines.append(f"{prefix}{connector}{label(node_id, repeated)}")
+        if repeated or node_id not in nodes:
+            return
+        shown.add(node_id)
+        children = sorted(deps.get(node_id, []))
+        for index, child_id in enumerate(children):
+            last = index == len(children) - 1
+            child_connector = "└── " if last else "├── "
+            if connector == "":
+                extension = ""
+            elif connector.startswith("└"):
+                extension = "    "
+            else:
+                extension = "│   "
+            walk(child_id, prefix + extension, child_connector)
+
+    for index, root_id in enumerate(roots):
+        if index > 0:
+            lines.append("")
+        walk(root_id, "", "")
+    return lines
+
+
 def default_root(graph: Path) -> Path:
     try:
         result = subprocess.run(
@@ -267,6 +314,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Check or fix a plan graph.")
     parser.add_argument("graph", type=Path)
     parser.add_argument("--fix", action="store_true", help="repair missing-file graph drift")
+    parser.add_argument("--show", action="store_true", help="print the plan tree and exit")
     parser.add_argument("--root", type=Path, default=None, help="repo root for plan paths")
     args = parser.parse_args(argv)
     graph = args.graph
@@ -281,6 +329,11 @@ def main(argv: list[str]) -> int:
     except Exception as exc:
         print(f"ERROR=parse: {exc}", file=sys.stderr)
         return 2
+
+    if args.show:
+        for line in render_tree(nodes, deps):
+            print(line)
+        return 0
 
     changed = False
     if args.fix:
