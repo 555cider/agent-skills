@@ -1,0 +1,52 @@
+{
+  "_comment": "Regression contract for audit.js. Each fixture lists rules that MUST fire (mustHit) and, for the clean baseline, that NOTHING fires. Render at the given viewport; for dashboard scroll the inner .scroll to bottom; for kitchensink install CLS before the late banner. These were validated live in Chromium during the redesign.",
+  "fixtures": [
+    {
+      "file": "login.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "dark",
+      "mustHit": [
+        { "rule": "effectiveContrast", "matches": "회원가입", "note": "G1 washed-out unselected tab label" },
+        { "rule": "effectiveContrast", "matches": "Google", "note": "G2 white button pale text" },
+        { "rule": "effectiveContrast", "matches": "카카오", "note": "G3 yellow button pale text" },
+        { "rule": "effectiveContrast", "matches": "네이버", "note": "G4 green button pale text" },
+        { "rule": "placeholderContrast", "note": "G6 low-contrast input placeholders" },
+        { "rule": "selectedStateAmbiguity", "matches": "회원가입", "note": "G1 selected-state inversion" },
+        { "rule": "authModeNavConflict", "note": "G7 authenticated bottom nav on auth screen" }
+      ]
+    },
+    {
+      "file": "dashboard.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "dark",
+      "setup": "scroll .scroll to bottom",
+      "mustHit": [
+        { "rule": "stickyOverlapContent", "note": "G9/G11 fixed nav clips last content row" }
+      ]
+    },
+    {
+      "file": "kitchensink.html",
+      "viewport": { "width": 375, "height": 812, "isMobile": true },
+      "setup": "wait for late banner, install CLS observer, scroll bottom",
+      "mustHit": [
+        { "rule": "horizontalOverflow", "note": "D1" },
+        { "rule": "ancestorCollapse", "note": "D2 collapsed scroll region" },
+        { "rule": "textClip", "note": "D3 escape + D4 clamp" },
+        { "rule": "tapTarget", "note": "D5 tiny crowded targets" },
+        { "rule": "offViewport", "note": "D6 element off-screen" },
+        { "rule": "stickyOverlapContent", "note": "D7 content under fixed bar" },
+        { "rule": "invisibleContent", "note": "D8 opacity:0 content" },
+        { "rule": "brokenOrDistortedMedia", "note": "D9 broken image" },
+        { "rule": "layoutShiftCLS", "note": "D10 late banner CLS>0.1" }
+      ]
+    },
+    {
+      "file": "clean.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "dark",
+      "mustHit": [],
+      "expectZeroFindings": true,
+      "note": "Precision gate: a well-built page must produce no findings (no cry-wolf)."
+    }
+  ]
+}

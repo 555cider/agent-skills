@@ -33,12 +33,15 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
   `claude`, `qwen`, `opencode`). Multiple reviewers run in
   parallel; saves each review to `<repo>/.peer-review/reviews/`. Invoked by
   `/peer-review` in Claude Code or natural-language ask in Codex.
-- [`skills/ui-splint/`](skills/ui-splint/) - expert visual QA gate for
-  frontend work; catches page-level composition, alignment, spacing, contrast,
-  unclear affordances, form/input state, auth/navigation mode, table and chart
-  issues, scroll/sticky layering, ancestor-driven collapsed or clipped regions,
-  empty/error/stale data-state feedback, responsive, overflow, dynamic-state,
-  consistency, and size-stability problems before completion.
+- [`skills/ui-splint/`](skills/ui-splint/) - visual QA gate for frontend work,
+  built on **measure-don't-eyeball**: a deterministic browser-injected audit
+  (`scripts/audit.js`) MEASURES contrast, overflow, sticky-bar overlap, collapsed
+  regions, text clipping, tap targets, focus traps, layout shift, broken media,
+  and more — then a judgment layer covers composition, hierarchy, data-state
+  feedback, copy, and brand coherence. Detect-first-then-judge; severity is
+  computed from thresholds, not taste. The audit runs via MCP, a zero-dependency
+  Chrome/CDP runner (`scripts/audit-chrome.mjs`), or Playwright; defect fixtures
+  live under `tests/`.
 
 ## Install
 

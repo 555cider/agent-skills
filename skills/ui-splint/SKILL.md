@@ -1,233 +1,110 @@
 ---
 name: ui-splint
-description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, screenshots, or visual QA with layout, composition, alignment, contrast, selected-state clarity, auth/navigation flow, affordance, focus, state, empty-vs-error data feedback, table, responsive, overflow, collapsed/clipped/mispositioned region, visual consistency, or odd-looking screen concerns before claiming frontend work is complete.
+description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots — to catch rendered visual defects (contrast, layout, overlap, overflow, collapsed/clipped regions, state, data feedback, responsive, affordance, navigation mode) before claiming frontend work complete. Triggers on visual QA, "looks off/weird", alignment/spacing/contrast concerns, and any "is this screen done" check.
 ---
 
 # UI Splint
 
-Purpose: catch frontend UI problems that are easy to rationalize away when
-reading code but obvious in the rendered screen. Treat this as an expert visual
-QA gate, not a casual design pass.
+Catch frontend defects that read fine in code but are wrong in the rendered screen.
+The core principle: **measure, don't eyeball.** Most missable UI defects — contrast,
+overflow, overlap, collapsed regions, tiny tap targets, layout shift — are exact,
+computable properties of the live DOM. Eyeballing a downscaled screenshot is the
+worst channel for them, so this skill runs a deterministic audit FIRST and reserves
+human judgment for things only taste can settle.
 
-Use the user's language in reports.
-
-Group related issues by failure mode. Do not report a flat chronological list
-when several findings share the same cause or user impact.
+Use the user's language in reports. Group findings by failure mode, not discovery order.
 
 ## Hard Rules
 
-- Do not claim frontend work is complete unless you have inspected the rendered
-  UI in a browser or screenshot for the relevant screens.
-- If browser or screenshot verification is unavailable, say the work is blocked
-  on visual verification. Do not replace that with "looks good from the code."
-- Report suspicious UI issues before fixing them. Include severity and wait for
-  approval unless the user explicitly asked you to fix a known list of issues.
-- Prefer concrete evidence over taste words: viewport, state, data condition,
-  selector/component, screenshot location, and why it will fail in use.
-- Before reviewing, read `references/scrutiny-checklist.md` and apply every group
-  that is relevant to the screen. The checklist is the substance of the review;
-  do not review from the group names in this file alone.
+- **Run the audit before judging.** Inject `scripts/audit.js` into the rendered page
+  and collect its measured findings before you form any opinion. Do not review from a
+  screenshot alone — it cannot show a contrast ratio or a sub-pixel clip.
+- **No completion/"looks good"/"no findings" claim** unless the audit ran across the
+  recorded matrix (viewports × themes × states) and you can show the coverage ledger.
+  "Looks good from the code" is never acceptable; if you cannot render, say the work is
+  **blocked on visual verification**.
+- **Severity is measured, not felt.** Take each finding's computed `severity`. Do not
+  downgrade a measured `Fail` to taste. Auto-measured findings may be `Fail`;
+  visual-judgment findings are capped at `Risk` until confirmed.
+- **Report before fixing.** List findings with evidence and wait for approval, unless
+  the user gave you a known list to fix.
 
-## Severity
+## Detect-first-then-judge Workflow
 
-- `Fail`: Cannot approve. Includes overlap, clipping, horizontal overflow,
-  broken responsive layout, hidden required controls, unreadable text from poor
-  foreground/background contrast, controls that cannot be distinguished from
-  static text, focus escaping active overlays, pending actions that can be
-  submitted repeatedly, layout shift caused by routine data changes,
-  interactions that are blocked, or primary content that exists in the DOM but is
-  invisible or unusable because an ancestor's layout or formatting context
-  collapsed, clipped, or mispositioned its rendered box. Also includes primary
-  data surfaces that hide retrieval failures behind a normal empty state or make
-  users think failed data was successfully loaded, current, or complete. Primary
-  button labels, tab labels, nav labels, form labels, and entered values that
-  are hard to read against their own surface are `Fail`, even when the colors
-  appear intentional or branded.
-- `Risk`: Not broken in the happy path, but likely to break with realistic data,
-  state, permissions, localization, viewport, or content changes. Includes
-  ambiguous data feedback where users cannot tell whether there are no records,
-  filters removed all records, the query failed, or the visible data is stale or
-  partial.
-- `Polish`: Functional but visibly amateur: weak alignment, noisy hierarchy,
-  wasted space, duplicate containers, awkward rhythm, inconsistent sizing, or
-  layout choices that make the product feel unfinished, including screens that
-  look like controls were simply stacked against the left edge without a designed
-  grid, grouping, or reading path.
+1. **Render** the real UI (running app route, Storybook story, or preview). If none
+   exists, create the narrowest way to render the screen. Cover the matrix: ≥1 mobile +
+   1 desktop viewport, light **and** dark themes, and every data state the screen has
+   (default, empty, error, loading, and stale/partial if remote-backed). Force states
+   with mock fixtures when the UI cannot reach them; remove every mock before finishing.
+2. **Detect.** Inject the audit and capture measured findings. `audit.js` is engine-agnostic
+   — it runs anywhere you can evaluate JS in the page. Pick whichever path is available:
+   - **Interactive (MCP):** navigate, then `browser_evaluate` (Playwright MCP) or
+     `evaluate_script` (chrome-devtools MCP) the contents of `scripts/audit.js`, then
+     call `window.__uiSplintAudit({route, theme, state, isMobile})`. Run it at scroll
+     **top and bottom** of each long screen (sticky-bar overlaps only appear at bottom).
+     For CLS, evaluate `audit.js` once before navigation so the observer installs early.
+   - **Batch, zero dependencies (preferred):** `node scripts/audit-chrome.mjs <url> --config audit-config.json`
+     — drives an installed Chrome/Chromium over the DevTools Protocol with Node's built-in
+     WebSocket. No pip/npm install. Writes `.ui-splint/findings.json` + `coverage.json`,
+     exits non-zero on any Fail. (Note: the bare `playwright`/Chrome CLI only takes
+     screenshots — it cannot inject and measure, which is the whole point — so it is not enough.)
+   - **Batch, Playwright (if already set up):** `python3 scripts/run-ui-splint.py <url> --config audit-config.json`
+     (same outputs; needs `pip install playwright && playwright install chromium`).
+3. **Resolve.** Any finding with `confidence: needs-visual` (text over a gradient/image,
+   unmeasured CLS) must be confirmed by pixel-sampling a screenshot crop or installing
+   the observer — never leave it unresolved or assert a number you didn't measure.
+4. **Triage.** Apply `whitelist`/`baseline` from config; dedupe repeated-component
+   findings to one root cause with an instance count; cap Polish volume.
+5. **Judge.** NOW apply `references/scrutiny-checklist.md` — but only to what the audit
+   cannot measure: page composition and scan path, density appropriateness, microcopy,
+   icon/brand coherence, empty-vs-error tone. Tag these `visual-judgment`; cap at `Risk`.
+6. **Report** using the template below. Every uncovered matrix cell or unrun rule
+   surfaces as **Not verified** — silence is not coverage.
 
-Escalate severity when the issue affects primary workflows, repeated components,
-or any surface the user asked you to finish.
+## Severity (computed from thresholds)
 
-## Inspection Protocol
+| Severity | Meaning | Examples (measured) |
+|----------|---------|---------------------|
+| `Fail` | Broken now in the rendered state | text contrast < 4.5:1 (3:1 large); horizontal overflow; content covered by a sticky bar; region collapsed to ~0 with content; text clipped/escaping; tap target < 24px; broken image; focus escapes an open modal; CLS > 0.25 |
+| `Risk` | Will break with realistic data/state/locale/viewport, or near threshold | placeholder < 4.5:1; tap target < 44px; ambiguous empty-vs-error; auth-mode nav conflict; selected-state inversion; CLS > 0.1 |
+| `Polish` | Functional but visibly unpolished | design-system drift (too many radii/shadows/accent hues); weak rhythm; wasted space |
 
-1. Open the actual rendered UI: app route, Storybook story, preview build, or
-   user-provided screenshot. If none exists, create the narrowest way to render
-   the component before judging it.
-2. Check at least one desktop and one mobile viewport. Add tablet or wide desktop
-   when the layout has multi-column regions, sidebars, tables, canvases, charts,
-   or dense toolbars.
-3. Before drilling into individual components, do a page-level composition pass.
-   Identify the intended workflow regions: header/action row, filters, summary,
-   primary data, detail/sidebar, pagination, and secondary actions where
-   relevant. If you cannot name the layout skeleton or reading path, treat that
-   as a finding instead of only checking whether individual components look
-   styled. Re-run this composition pass on each non-happy state too: when a
-   placeholder replaces a data region, check its centering, dead space, and grid
-   alignment, not only its copy and stability.
-4. Do a visible-label contrast scan before saying "no findings". Check every
-   prominent label on its actual surface: primary and secondary buttons,
-   segmented controls, selected and unselected tabs, bottom nav items, form
-   labels/placeholders/values, dividers, badges, and social/brand buttons. If
-   any required label is washed out, near-invisible, or readable only because you
-   already know the word, report it.
-5. Stress the UI with realistic variation:
-   - Content and data: long labels, localized strings, large numbers,
-     timestamps, prices, short and long table headers or cells, missing images,
-     slow media, varied action counts, no records returned, filter results
-     reduced to zero, data retrieval/query failures, stale cached data after
-     refresh failure, partial responses, and unknown last-updated status
-   - Interaction states: empty, loading, error, disabled, selected, hover, focus,
-     active, pending save/delete, retry after failed load, failed refresh while
-     old data remains visible, and repeated primary or destructive clicks
-   - Theme and affordance: light/dark variants, clickable controls near static
-     text, disabled-looking active controls, and active-looking disabled controls
-   - Overlay and viewport: modals, drawers, dropdowns, popovers, tooltips, focus
-     traps, viewport edges, scrolling, and bottom-of-page content
-   - System consistency: shared components, design tokens, utility classes,
-     spacing, radius, typography, icons, and state treatments
-   - Density and count: zero, one, many, enough items to scroll, and crowded
-     adjacent targets that could be tapped by mistake
-6. Watch for movement. Values, badges, filters, tabs, toasts, side panels, or
-   validation errors must not resize unrelated layout regions or push critical
-   controls around.
-7. Scroll and interact enough to verify sticky headers, modals, menus, popovers,
-   tooltips, focus rings, focus traps, viewport boundaries, and bottom-of-page
-   content.
-8. Confirm that regions actually render where and at the size you expect — scroll
-   regions, virtual lists, flex/grid children, charts, and canvases especially.
-   If a region looks collapsed, clipped, empty, or mispositioned despite having
-   content in the DOM, inspect its computed values and trace the ancestor/context
-   chain for the break, rather than assuming the data is missing or the leaf CSS
-   is at fault.
-
-If you cannot force a state through the UI, inspect the code or fixtures to see
-how it would render, then mark unverified visual behavior as `Risk`.
-
-For edge cases such as very long text, missing assets, localized wrapping, or
-empty/error/loading fallback containers, prefer a temporary local mock fixture or
-Storybook state over guessing. Inject dummy props, mock API handlers, or local
-mock data, then render and capture the extreme state. Remove every temporary
-mock, test route, and prop override before declaring the code work complete.
-
-## What To Scrutinize
-
-The detailed criteria for each failure-mode group live in
-`references/scrutiny-checklist.md`. You MUST read that file and apply every group
-relevant to the screen before reporting — this is the substance of the review,
-not optional reference. Use the group names below as report groups; skip empty
-groups.
-
-- Alignment and Boundaries
-- Space and Density
-- Size Stability
-- Ancestor-Driven Layout Breaks
-- Tables and Columns
-- Overflow and Text
-- Contrast and Affordance
-- Forms and Inputs
-- System Consistency
-- Navigation and Mode Clarity
-- Interaction Safety
-- Scroll, Sticky, and Layering
-- Responsive Behavior
-- States and Feedback
-- Charts and Metrics
-- Icon Consistency
-- Visual Assets
-
-When you add a newly discovered failure mode, add it as a group (or a bullet
-under the closest existing group) in `references/scrutiny-checklist.md`, and add
-its name to this list if it is a new group.
+Escalate when the issue hits a primary workflow, a repeated component, or a surface the
+user asked you to finish. See `references/audit-rules.md` for each rule's exact method.
 
 ## Report Format
 
-Start with findings. Keep it short when possible, but include enough evidence
-that the user can decide whether to approve fixes. Group findings by failure
-mode, not by the order you noticed them.
-
 ```text
 UI review: <blocked | fixes recommended | no findings>
-Checked: <routes/components>, <viewports>, <states/data varied>
-Contrast checked: <buttons, tabs/segmented controls, nav, form labels/values, placeholders, brand buttons>
-Mode/navigation checked: <current route/mode and any auth, modal, wizard, or bottom-nav context>
-Data states checked: <loaded, loading, true-empty, filter-empty, error, retry, stale/partial if relevant>
+Coverage: routes <…> · viewports <mobile,desktop> · themes <light,dark> · states <default,empty,error,…>
+Audit: ran (findings.json) | not run (BLOCKED)
 
-Findings:
-<group name, for example Contrast and affordance>
-- [Fail] <area>: <problem>. Evidence: <viewport/state/data>. Why it matters: <reason>. Suggested fix: <fix>.
+Findings (grouped by failure mode):
+<group, e.g. Contrast & legibility>
+- [Fail · auto-measured] <area>: <problem>. Measured: <number vs threshold>. Selector: <sel>. Viewport/state: <…>. Fix: <fix>.
 
-<group name, for example Interaction safety>
-- [Risk] <area>: <problem>. Evidence: <viewport/state/data>. Why it matters: <reason>. Suggested fix: <fix>.
+<group, e.g. Composition (judgment)>
+- [Risk · visual-judgment] <area>: <problem>. Evidence: <what you saw>. Fix: <fix>.
 
-<group name, for example Layout stability>
-- [Polish] <area>: <problem>. Evidence: <viewport/state/data>. Suggested fix: <fix>.
-
-Not verified: <anything relevant that could not be rendered or stressed, including untested data states>
+Not verified: <matrix cells/states/rules not exercised>
 Approval needed: <specific fix set or next action>
 ```
 
-If there are no findings, still state what was checked. "No findings" without
-viewports, states, visible-label contrast, selected-state clarity, navigation
-mode, and data variation is not a valid result. If the UI depends on remote
-data, "No findings" is not valid unless empty, error, and relevant stale or
-partial data states were checked or explicitly listed as not verified.
+"No findings" is valid only when the audit ran and returned zero threshold violations
+across the recorded matrix, and the subjective residue was judged.
 
-## Common Mistakes
+## Files
 
-- Judging from JSX/CSS alone and assuming the browser will look fine.
-- Checking only the seeded happy path with short labels and one viewport.
-- Checking only one color theme and missing unreadable text in the other theme.
-- Treating pastel, low-opacity, or "brand" colors as automatically acceptable
-  while required button, tab, nav, or form text is hard to read.
-- Approving a segmented control or tab group because one side is selected,
-  without checking whether both the selected state and label contrast are clear.
-- Treating forms as generic spacing blocks and missing unreadable entered
-  values, covered validation errors, keyboard-covered submit buttons, or
-  ambiguous required/disabled/saved states.
-- Ignoring an auth screen's surrounding navigation and missing that a bottom nav
-  or highlighted account tab conflicts with the login/signup flow.
-- Listing findings in discovery order instead of grouping related problems by
-  failure mode and user impact.
-- Ignoring existing shared components, tokens, or utility classes and accepting
-  one-off UI that does not match the surrounding product.
-- Treating wasted space, unstable dimensions, or almost-aligned regions as taste
-  instead of product quality problems.
-- Accepting a screen that merely stacks controls and content on the left without
-  checking whether the overall composition, grouping, and scan path feel designed.
-- Treating no data and data load failure as the same empty state, especially when
-  the UI says "No data" after an API/query error.
-- Treating stale cached data, partial responses, or failed refreshes as a normal
-  success state because some data is still visible.
-- Judging an empty/error/loading state only by its copy, retry affordance, and
-  stability while skipping its composition within the region — a placeholder
-  pinned to the left or top with a large dead area is a layout defect even when
-  the message and button are correct.
-- Reporting only component-level polish and missing the page-level composition:
-  where the user starts, what they scan next, and where primary actions belong.
-- Accepting text-like buttons or link-like static labels because the event handler
-  is obvious from code.
-- Fixing visual issues silently when the user asked to review what looks weird.
-- Reporting "responsive works" without naming the tested widths and observed
-  layout behavior.
-- Seeing a region rendered as a thin line, empty, clipped, or mispositioned and
-  concluding the data is missing or the leaf CSS is wrong, instead of tracing the
-  ancestor/context chain where the layout actually breaks.
-- Trusting that an element is sized or positioned correctly because its own CSS
-  looks right, without verifying every ancestor actually forwards the size,
-  containing block, overflow, and stacking context it depends on.
-- Restoring a broken layout with an ID/class rule that overrides the `hidden`
-  attribute, leaving panels that should be hidden visible.
-- Approving charts or metric cards because they render without checking units,
-  time range, legend contrast, tooltip reachability, stale/partial data states,
-  and large/localized number formatting.
-- Checking only first paint and missing sticky headers, fixed footers, nested
-  scroll areas, or mobile safe-area issues that appear after scrolling.
+- `scripts/audit.js` — the deterministic detector (source of truth). Pure DOM/CSSOM/geometry; engine-agnostic.
+- `scripts/audit-chrome.mjs` — zero-dependency batch runner (drives installed Chrome via CDP / Node WebSocket).
+- `scripts/run-ui-splint.py` — Playwright batch runner (same outputs; for envs that already use Playwright).
+- `scripts/audit-config.default.json` — thresholds, matrix, whitelist/baseline.
+- `references/audit-rules.md` — every audit rule: signal, method, threshold→severity, FP guards.
+- `references/findings-schema.md` — the findings/coverage JSON contract.
+- `references/scrutiny-checklist.md` — the judgment layer for the subjective residue only.
+- `tests/fixtures/` + `tests/expected.json` — defect fixtures (+ a clean baseline) and the
+  coverage spec: what each fixture must trigger. Point a runner at them to verify a change to `audit.js`.
+
+When you find a new failure mode: if it is measurable, add a rule to `audit.js` (and
+`audit-rules.md`); if it needs taste, add it to `scrutiny-checklist.md`. Keep detection
+in code and taste in the checklist.

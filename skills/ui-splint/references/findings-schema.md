@@ -1,0 +1,92 @@
+# UI Splint — findings & coverage JSON contract
+
+`window.__uiSplintAudit(config)` returns one **report** object per render state.
+`run-ui-splint.py` aggregates per-cell reports into `findings.json` (a flat array of
+findings) and `coverage.json` (the matrix that was actually exercised).
+
+## `config` (input, all optional)
+
+```jsonc
+{
+  "route": "/login",        // label only, for the report
+  "theme": "dark",          // label; falls back to prefers-color-scheme
+  "state": "default",       // label, e.g. default|empty|error|loading
+  "isMobile": true,         // run tap-target rules; default = innerWidth <= 600
+  "contrast": { "normal": 4.5, "large": 3.0, "washedOut": 1.3, "placeholderFail": 3.0 },
+  "tap": { "fail": 24, "risk": 44, "crowdGap": 8 },
+  "cls": { "risk": 0.1, "fail": 0.25 },
+  "overflowTolerancePx": 1,
+  "collapsePx": 3,
+  "mediaAspectTolerance": 0.05,
+  "authedNavWords": ["my", "account", "마이", "..."],
+  "whitelist": ["#known-ok"],            // CSS selectors to drop entirely
+  "baseline": [{ "rule": "effectiveContrast", "selector": "..." }], // approved findings to suppress
+  "maxFindingsPerRule": 60,
+  "maxPolish": 15
+}
+```
+
+## report (output of `__uiSplintAudit`)
+
+```jsonc
+{
+  "meta": {
+    "url": "http://localhost:3000/login",
+    "route": "/login", "theme": "dark", "state": "default",
+    "viewport": { "w": 390, "h": 844, "dpr": 3 },
+    "isMobile": true, "scrollY": 0, "ts": null   // caller stamps ts (Date is not read in-page)
+  },
+  "coverage": {
+    "rulesRun": ["effectiveContrast", "..."],
+    "rulesSkipped": ["ruleName: error message"],  // a rule that threw; investigate, do not ignore
+    "elementsScanned": 142,
+    "counts": { "Fail": 3, "Risk": 2, "Polish": 0 }
+  },
+  "findings": [ /* finding objects, see below */ ]
+}
+```
+
+## finding object
+
+```jsonc
+{
+  "rule": "effectiveContrast",          // which detector fired (see audit-rules.md)
+  "severity": "Fail",                    // Fail | Risk | Polish — COMPUTED, do not downgrade by taste
+  "confidence": "auto-measured",         // auto-measured | needs-visual | visual-judgment
+  "selector": "html > body > button.kakao",  // CSS path to the element
+  "message": "Text \"카카오 로그인\" contrast 1.02:1 is below 4.5:1.",
+  "measured": { "ratio": 1.02, "fg": "rgb(...)", "bg": "rgb(...)", "fontPx": 17 },
+  "threshold": { "min": 4.5 },
+  "rect": { "x": 16, "y": 320, "w": 358, "h": 56 },  // viewport coords for an evidence crop; may be null
+  "suggestedFix": "Kakao spec: #191919 text on #FEE500.",
+  "scroll": "bottom",      // added by the runner: which scroll position surfaced it
+  "cell": { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default" },  // runner adds
+  "instances": 1           // runner adds: how many cells/scrolls produced the same rule+selector
+}
+```
+
+### `confidence` — how to treat each tier
+
+| confidence | meaning | how to report |
+|------------|---------|---------------|
+| `auto-measured` | a number past a threshold backs it | report at its computed severity, including `Fail` |
+| `needs-visual` | candidate found, but the measurement is uncertain (text over a gradient/image; CLS observer not installed) | **must resolve** — pixel-sample a screenshot crop or install the observer; never assert a number you didn't measure |
+| `visual-judgment` | a heuristic/structural signal, not a hard number (auth-mode conflict, disabled-looking primary, selected-state inversion, design drift) | cap at `Risk` until visually confirmed; pair with a measured `Fail` to escalate |
+
+## `coverage.json` (runner)
+
+```jsonc
+{
+  "base_url": "http://localhost:3000",
+  "matrix": [
+    { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default",
+      "status": "checked", "counts": { "Fail": 1, "Risk": 0, "Polish": 0 } },
+    { "route": "/", "viewport": "desktop", "theme": "light", "state": "error",
+      "status": "error", "error": "TimeoutError: ..." }   // surfaces as "Not verified"
+  ],
+  "totals": { "Fail": 1, "Risk": 0, "Polish": 0 }
+}
+```
+
+A matrix cell with `status` other than `checked`, or any rule in `rulesSkipped`, must be
+reported as **Not verified** — it is not coverage.

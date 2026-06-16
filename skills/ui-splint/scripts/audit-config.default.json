@@ -1,0 +1,22 @@
+{
+  "_comment": "Defaults for run-ui-splint.py. Copy to your project as audit-config.json and override. routes/states/waitForSelector are project-specific; thresholds rarely need changing.",
+  "routes": ["/"],
+  "viewports": [
+    { "name": "mobile", "width": 390, "height": 844, "isMobile": true, "dpr": 3 },
+    { "name": "desktop", "width": 1280, "height": 900, "isMobile": false, "dpr": 1 }
+  ],
+  "themes": ["light", "dark"],
+  "states": ["default"],
+  "scrollPositions": ["top", "bottom"],
+  "waitForSelector": null,
+  "baseline": [],
+  "auditConfig": {
+    "contrast": { "normal": 4.5, "large": 3.0, "washedOut": 1.3, "placeholderFail": 3.0 },
+    "tap": { "fail": 24, "risk": 44, "crowdGap": 8 },
+    "cls": { "risk": 0.1, "fail": 0.25 },
+    "authedNavWords": ["my", "account", "profile", "mypage", "마이", "계정", "프로필", "내정보"],
+    "whitelist": [],
+    "maxFindingsPerRule": 60,
+    "maxPolish": 15
+  }
+}

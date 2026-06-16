@@ -4,3 +4,11 @@
 __pycache__/
 *.pyc
 tests/
+# but DO track ui-splint's defect fixtures + coverage spec (not a heavy harness)
+!skills/**/tests/
+!skills/**/tests/README.md
+!skills/**/tests/expected.json
+!skills/**/tests/fixtures/
+!skills/**/tests/fixtures/**
+.ui-splint/
+.playwright-mcp/
