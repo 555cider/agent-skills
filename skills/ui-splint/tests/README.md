@@ -19,12 +19,12 @@ detector covers.
 
 ## Verify a change to `audit.js`
 
-Serve this folder and point a runner at it:
+Serve the fixture directory and point a runner at it:
 
 ```bash
-# from this directory
+# from skills/ui-splint/tests/fixtures
 python3 -m http.server 8788 &
-node ../scripts/audit-chrome.mjs http://localhost:8788 \
+node ../../scripts/audit-chrome.mjs http://localhost:8788 \
   --config /tmp/cfg.json --out-dir /tmp/ui-splint-check --no-screenshots
 # cfg.json: { "routes": ["/login.html","/dashboard.html","/kitchensink.html","/clean.html"],
 #             "viewports":[{"name":"mobile","width":390,"height":844,"isMobile":true,"dpr":3}],

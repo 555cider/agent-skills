@@ -118,7 +118,9 @@ def main():
                         cell = {"route": route, "viewport": vp["name"], "theme": theme, "state": state}
                         try:
                             apply_state_route(page, state)  # mock network for empty/error/loading
-                            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                            response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                            if response and response.status >= 400:
+                                raise RuntimeError(f"HTTP {response.status} loading {url}")
                             if wait_selector:
                                 page.wait_for_selector(wait_selector, timeout=15000)
                             page.wait_for_timeout(400)
@@ -168,6 +170,10 @@ def main():
 
     totals = count_sev(findings)
     print(f"\nUI Splint: {totals} across {len(coverage_cells)} matrix cells -> {out_dir}/findings.json")
+    errors = [cell for cell in coverage_cells if cell.get("status") != "checked"]
+    if errors:
+        print(f"BLOCKED: {len(errors)} matrix cell(s) were not verified. Review coverage.json before claiming the work complete.")
+        sys.exit(1)
     fails = [f for f in findings if f.get("severity") == "Fail"]
     if fails:
         print(f"BLOCKED: {len(fails)} un-baselined Fail finding(s). Review before claiming the work complete.")

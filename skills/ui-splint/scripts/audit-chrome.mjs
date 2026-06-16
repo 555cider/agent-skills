@@ -148,10 +148,13 @@ try {
       for (const theme of themes) {
         for (const state of states) {
           const cell = { route, viewport: vp.name, theme, state };
+          let targetId = null;
           try {
-            const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+            const created = await cdp.send('Target.createTarget', { url: 'about:blank' });
+            targetId = created.targetId;
             const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
             await cdp.send('Page.enable', {}, sessionId);
+            await cdp.send('Network.enable', {}, sessionId);
             await cdp.send('Runtime.enable', {}, sessionId);
             // NB: mobile:false on purpose — CDP mobile + dpr can distort innerHeight; pass isMobile to the audit instead.
             await cdp.send('Emulation.setDeviceMetricsOverride',
@@ -160,8 +163,13 @@ try {
               { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
             await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INIT }, sessionId);
             const loaded = cdp.once('Page.loadEventFired', sessionId, 20000).catch(() => null);
-            await cdp.send('Page.navigate', { url }, sessionId);
+            const mainResponse = cdp.once('Network.responseReceived', sessionId, 20000).catch(() => null);
+            const nav = await cdp.send('Page.navigate', { url }, sessionId);
+            if (nav.errorText) throw new Error(`navigation failed for ${url}: ${nav.errorText}`);
             await loaded;
+            const response = await mainResponse;
+            const status = response && response.response && response.response.status;
+            if (status >= 400) throw new Error(`HTTP ${status} loading ${url}`);
             await sleep(1200); // settle fonts + load-triggered late content (CLS)
 
             const cellFindings = [];
@@ -187,10 +195,13 @@ try {
             for (const f of cellFindings) { const k = f.rule + '|' + f.selector + '|' + f.message; if (!seen.has(k)) { seen.add(k); deduped.push(f); } }
             allFindings.push(...deduped);
             cell.counts = countSev(deduped); cell.status = 'checked';
-            await cdp.send('Target.closeTarget', { targetId });
           } catch (e) {
             cell.status = 'error'; cell.error = String(e && e.message || e);
             console.error(`  ! ${JSON.stringify(cell)}: ${cell.error}`);
+          } finally {
+            if (targetId) {
+              try { await cdp.send('Target.closeTarget', { targetId }); } catch {}
+            }
           }
           matrix.push(cell);
           console.log(`  audited ${cell.status}: ${route} ${vp.name} ${theme} ${state} -> ${JSON.stringify(cell.counts || {})}`);
@@ -215,6 +226,8 @@ writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({ base_url: baseUrl,
 
 const totals = countSev(findings);
 console.log(`\nUI Splint: ${JSON.stringify(totals)} across ${matrix.length} cells -> ${outDir}/findings.json`);
+const errors = matrix.filter(c => c.status !== 'checked');
+if (errors.length) { console.log(`BLOCKED: ${errors.length} matrix cell(s) were not verified. Review coverage.json before claiming the work complete.`); process.exit(1); }
 const fails = findings.filter(f => f.severity === 'Fail');
 if (fails.length) { console.log(`BLOCKED: ${fails.length} un-baselined Fail finding(s). Review before claiming the work complete.`); process.exit(1); }
 process.exit(0);
