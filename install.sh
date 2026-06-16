@@ -7,6 +7,7 @@
 #   ./install.sh <name> [<name>...]    # install only the named skill(s)
 #   ./install.sh --list                # print available skill names and exit
 #   ./install.sh -h | --help           # this help
+# --- END USAGE ---
 #
 # Mechanism:
 #   Each skill is published as its own branch (split/<name>) containing only
@@ -66,7 +67,10 @@ SELECTED=()
 for arg in "$@"; do
   case "$arg" in
     -h|--help)
-      sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+      # Extract from first comment after shebang up to the END USAGE sentinel.
+      # Sentinel keeps the help output stable across header edits.
+      sed -n '2,/^# --- END USAGE ---$/{/^# --- END USAGE ---$/d;p;}' "${BASH_SOURCE[0]}" \
+        | sed 's/^# \?//'
       exit 0
       ;;
     --*)
