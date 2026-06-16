@@ -19,7 +19,7 @@
 #
 # Default reviewer: codex, unless --host would make that accidental self-review;
 # then the first available non-host reviewer is used. Pass a comma-separated list
-# to run multiple reviewers in parallel (e.g., --reviewer=codex,claude,qwen).
+# to run multiple reviewers in parallel (e.g., --reviewer=codex,claude).
 # Indexes (1-based) and ranges are accepted when a config defines profiles —
 # e.g., --reviewer=2 (second profile), --reviewer=1-3 (first three),
 # --reviewer=1,3,my-claude (mix). Run `list` to see available reviewers.
@@ -148,12 +148,12 @@ case "$SOURCE" in
   *) echo "invalid --source: $SOURCE (use: file|chat)" >&2; exit 2 ;;
 esac
 case "$EXCLUDE_CLI" in
-  ""|codex|claude|qwen|opencode) ;;
-  *) echo "invalid --exclude-cli: $EXCLUDE_CLI (use: codex|claude|qwen|opencode)" >&2; exit 2 ;;
+  ""|codex|claude|opencode|agy) ;;
+  *) echo "invalid --exclude-cli: $EXCLUDE_CLI (use: codex|claude|opencode|agy)" >&2; exit 2 ;;
 esac
 case "$HOST_CLI" in
-  ""|codex|claude|qwen|opencode) ;;
-  *) echo "invalid --host: $HOST_CLI (use: codex|claude|qwen|opencode)" >&2; exit 2 ;;
+  ""|codex|claude|opencode|agy) ;;
+  *) echo "invalid --host: $HOST_CLI (use: codex|claude|opencode|agy)" >&2; exit 2 ;;
 esac
 if ! [[ "$REVIEW_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   echo "invalid --timeout: $REVIEW_TIMEOUT (use a positive integer number of seconds)" >&2
@@ -228,7 +228,7 @@ if [ "$LIST_MODE" -eq 0 ]; then
   fi
 fi
 
-ALL_CLIS=(codex claude qwen opencode)
+ALL_CLIS=(codex claude opencode agy)
 
 # --- profile registry (populated from JSON config, if any) ---
 declare -a PROFILE_NAMES=()
@@ -257,7 +257,7 @@ import json
 import re
 import sys
 
-KNOWN_CLIS = {"codex", "claude", "qwen", "opencode"}
+KNOWN_CLIS = {"codex", "claude", "opencode", "agy"}
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # Numeric-only or numeric-range patterns conflict with index/range notation
 # (e.g., --reviewer=2, --reviewer=1-3) — reject to keep the CLI unambiguous.
@@ -364,10 +364,15 @@ profile_slug() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-30 | sed 's/-$//'
 }
 
+# is_cli_available <cli>: returns 0 if the CLI is available on PATH, 1 otherwise.
+is_cli_available() {
+  command -v "$1" >/dev/null 2>&1
+}
+
 # cli_status <cli>: print "on PATH" if the CLI is callable, "not found" otherwise.
 # Single source of truth for PATH discovery — used by `list` and `all` expansion.
 cli_status() {
-  if command -v "$1" >/dev/null 2>&1; then
+  if is_cli_available "$1"; then
     printf 'on PATH'
   else
     printf 'not found'
@@ -435,14 +440,14 @@ pick_default_reviewer() {
   if [ ${#PROFILE_NAMES[@]} -gt 0 ]; then
     for p in "${PROFILE_NAMES[@]}"; do
       cli="$(profile_cli_for "$p")"
-      if [ "$cli" != "$HOST_CLI" ] && command -v "$cli" >/dev/null 2>&1; then
+      if [ "$cli" != "$HOST_CLI" ] && is_cli_available "$cli"; then
         REVIEWER_ARG="$p"
         return 0
       fi
     done
   else
     for c in "${ALL_CLIS[@]}"; do
-      if [ "$c" != "$HOST_CLI" ] && command -v "$c" >/dev/null 2>&1; then
+      if [ "$c" != "$HOST_CLI" ] && is_cli_available "$c"; then
         REVIEWER_ARG="$c"
         return 0
       fi
@@ -479,7 +484,7 @@ resolve_index() {
   if [ ${#PROFILE_NAMES[@]} -eq 0 ]; then
     local c i=1
     for c in "${ALL_CLIS[@]}"; do
-      command -v "$c" >/dev/null 2>&1 || continue
+      is_cli_available "$c" || continue
       if [ "$i" -eq "$idx" ]; then
         add_unique "$c"
         mark_host_warning "$c"
@@ -547,7 +552,7 @@ for r in "${_RAW[@]}"; do
       for p in "${PROFILE_NAMES[@]}"; do
         cli="$(profile_cli_for "$p")"
         if [ -n "$EXCLUDE_CLI" ] && [ "$cli" = "$EXCLUDE_CLI" ]; then continue; fi
-        if command -v "$cli" >/dev/null 2>&1; then
+        if is_cli_available "$cli"; then
           add_unique "$p"
           mark_host_warning "$p"
         else
@@ -557,7 +562,7 @@ for r in "${_RAW[@]}"; do
     else
       for c in "${ALL_CLIS[@]}"; do
         [ "$c" = "$EXCLUDE_CLI" ] && continue
-        if command -v "$c" >/dev/null 2>&1; then
+        if is_cli_available "$c"; then
           add_unique "$c"
           mark_host_warning "$c"
         else
@@ -575,16 +580,18 @@ for r in "${_RAW[@]}"; do
     mark_host_warning "$r"
   else
     case "$r" in
-      codex|claude|qwen|opencode)
+      codex|claude|opencode|agy)
         add_unique "$r"
         mark_host_warning "$r"
         ;;
       *)
-        echo "unknown profile: $r" >&2
-        if [ ${#PROFILE_NAMES[@]} -gt 0 ]; then
-          echo "  defined profiles: ${PROFILE_NAMES[*]}" >&2
+        if [ "$LIST_MODE" -eq 1 ]; then
+          # list is more forgiving so it doesn't crash on invalid profiles in a config
+          # that the user isn't trying to invoke.
+          continue
         fi
-        echo "  known CLIs: codex|claude|qwen|opencode" >&2
+        echo "unknown reviewer: $r" >&2
+        echo "  known CLIs: codex|claude|opencode|agy" >&2
         [ -n "$CONFIG_PATH" ] && echo "  (config loaded from: $CONFIG_PATH)" >&2
         exit 2
         ;;
@@ -598,7 +605,7 @@ done
 # passed this check during expansion.
 for p in "${REVIEWERS_LIST[@]}"; do
   cli="$(profile_cli_for "$p")"
-  command -v "$cli" >/dev/null 2>&1 || { echo "$cli CLI (for profile $p) not found on PATH" >&2; exit 3; }
+  is_cli_available "$cli" || { echo "$cli CLI (for profile $p) not found on PATH" >&2; exit 3; }
 done
 
 if [ "$STDIN_PLAN" -eq 1 ]; then
@@ -875,14 +882,13 @@ build_cmd() {
       CMD=(claude -p)
       [ -n "$model" ] && CMD+=(--model "$model")
       ;;
-    qwen)
-      CMD=(qwen --approval-mode plan -p "")
-      [ -n "$model" ] && CMD+=(-m "$model")
-      ;;
     opencode)
       CMD=(opencode run)
       [ -n "$model" ] && CMD+=(-m "$model")
       [ -n "$effort" ] && CMD+=(--variant "$effort")
+      ;;
+    agy)
+      CMD=(agy -p "$(cat "$PROMPT_FILE")" --sandbox)
       ;;
   esac
   # Explicit success — `[ test ] && cmd` constructs would propagate the test's
