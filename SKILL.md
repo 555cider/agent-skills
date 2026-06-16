@@ -131,6 +131,34 @@ After removing a completed tree, run the command again. The graph is valid only
 if every `deps` key/value exists in `nodes` and active plans do not depend on
 `x: dropped` or `x: missing` nodes.
 
+To view the current plans as a tree, add `--show`:
+
+```bash
+python3 <skill-dir>/scripts/plan-graph.py .agents/plan/graph.yaml --show
+```
+
+Roots are top-level dependents (nodes nothing else depends on); each subtree
+lists that plan's bases. Shared bases appear once and are marked `↑` on repeats.
+Non-active states render inline as `(done)`, `(dropped)`, or `(missing)`.
+`--show` is read-only, prints to stdout only, and exits `0` on success or `2` on
+parse failure; it skips validation, so use it alongside the check/`--fix` modes
+rather than as a replacement.
+
+Example output:
+
+```
+[5] Migration plan
+├── [3] Checkout recovery
+│   └── [1] Auth/session
+└── [4] DB schema
+    ├── [1] Auth/session ↑
+    └── [2] Error strategy
+
+[6] Logging plan
+
+[7] Legacy approach (dropped)
+```
+
 ## Command Output Contract
 
 The script writes machine-readable lines that callers (this skill, or any other
