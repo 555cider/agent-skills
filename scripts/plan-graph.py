@@ -129,24 +129,24 @@ def fix_missing_files(root: Path, nodes: dict[int, Node], deps: dict[int, list[i
         exists = (root / node.path).exists()
         if node.x == "missing" and exists:
             node.x = None
-            print(f"CLEAR {node_id} missing")
+            print(f"CHANGE=clear {node_id} missing")
             changed = True
             continue
         if node.x or exists:
             continue
         node.x = "missing"
-        print(f"MARK {node_id} missing")
+        print(f"CHANGE=mark {node_id} missing")
         changed = True
 
     for node_id, values in list(deps.items()):
         deduped = list(dict.fromkeys(values))
         if deduped != values:
             deps[node_id] = deduped
-            print(f"DEDUP {node_id}")
+            print(f"CHANGE=dedup {node_id}")
             changed = True
         if not deps[node_id]:
             deps.pop(node_id)
-            print(f"REMOVE {node_id} empty-deps")
+            print(f"CHANGE=remove {node_id} empty-deps")
             changed = True
     return changed
 
@@ -279,7 +279,7 @@ def main(argv: list[str]) -> int:
     try:
         next_id, nodes, deps = parse_graph(graph)
     except Exception as exc:
-        print(f"ERROR parse: {exc}", file=sys.stderr)
+        print(f"ERROR=parse: {exc}", file=sys.stderr)
         return 2
 
     changed = False
@@ -290,9 +290,9 @@ def main(argv: list[str]) -> int:
 
     errors = validate(root, next_id, nodes, deps)
     for error in errors:
-        print(f"ERROR {error}", file=sys.stderr)
+        print(f"ERROR={error}", file=sys.stderr)
     for warning in warnings(nodes, deps):
-        print(f"WARN {warning}", file=sys.stderr)
+        print(f"WARN={warning}", file=sys.stderr)
 
     if errors:
         print("FAIL plan graph", file=sys.stderr)
