@@ -180,8 +180,215 @@ def has_cycle(deps: dict[int, list[int]]) -> tuple[bool, list[int]]:
     return False, []
 
 
+FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*(?:\n|$)", re.DOTALL)
+
+
+def strip_frontmatter_comment(value: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(value):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if quote == "'":
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value.strip()
+
+
+def parse_frontmatter(content: str) -> dict[str, str]:
+    match = FRONTMATTER_RE.match(content)
+    if not match:
+        return {}
+    data = {}
+    for line in match.group(1).splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            data[k.strip()] = strip_frontmatter_comment(v.strip())
+    return data
+
+
+def make_frontmatter(node_id: int, node: Node, bases: list[int]) -> str:
+    lines = [
+        "---",
+        f"id: {node_id}",
+        f"summary: {format_scalar(node.summary)}",
+    ]
+    if node.x:
+        lines.append(f"x: {format_scalar(node.x)}")
+    if bases:
+        lines.append(f"deps: [{', '.join(str(b) for b in bases)}]")
+    lines.extend(["---", ""])
+    return "\n".join(lines)
+
+
+def sync_markdown_frontmatter(
+    root: Path,
+    node_id: int,
+    node: Node,
+    bases: list[int],
+    fix: bool,
+) -> str | None:
+    path = root / node.path
+    if not path.exists() or path.is_dir():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"failed to read {node.path}: {e}"
+
+    match = FRONTMATTER_RE.match(content)
+    expected_fm = make_frontmatter(node_id, node, bases)
+
+    if not match:
+        if fix:
+            try:
+                path.write_text(expected_fm + content, encoding="utf-8")
+                print(f"CHANGE=add-frontmatter {node_id} {node.path}")
+                return None
+            except Exception as e:
+                return f"failed to prepend frontmatter to {node.path}: {e}"
+        else:
+            return f"missing frontmatter in {node.path}"
+
+    fm_text = match.group(0)
+    body = content[len(fm_text):]
+    fm_data = parse_frontmatter(content)
+
+    fm_id = int(fm_data.get("id")) if fm_data.get("id", "").isdigit() else None
+    fm_summary = parse_scalar(fm_data.get("summary")) or ""
+    fm_x = parse_scalar(fm_data.get("x"))
+    raw_deps = fm_data.get("deps", "").strip("[] ")
+    fm_deps = (
+        [int(d.strip()) for d in raw_deps.split(",") if d.strip().isdigit()]
+        if raw_deps
+        else []
+    )
+
+    mismatch: list[tuple[str, str]] = []
+    if fm_id != node_id:
+        mismatch.append(("id", f"id mismatch ({fm_id} != {node_id})"))
+    if fm_summary != node.summary:
+        mismatch.append(("summary", "summary mismatch"))
+    if fm_x != node.x:
+        mismatch.append(("x", f"x mismatch ({fm_x} != {node.x})"))
+    if fm_deps != bases:
+        mismatch.append(("deps", "deps mismatch"))
+
+    if mismatch:
+        if fix:
+            try:
+                path.write_text(expected_fm + body, encoding="utf-8")
+                details = ",".join(field for field, _ in mismatch)
+                print(f"CHANGE=sync-frontmatter {node_id} {node.path} {details}")
+                return None
+            except Exception as e:
+                return f"failed to update frontmatter in {node.path}: {e}"
+        else:
+            details = ", ".join(message for _, message in mismatch)
+            return f"frontmatter mismatch in {node.path}: {details}"
+    return None
+
+
+def get_roadmap_and_critical_path(
+    nodes: dict[int, Node],
+    deps: dict[int, list[int]],
+) -> tuple[list[int], list[int], list[int]]:
+    active = {n_id for n_id, n in nodes.items() if n.x is None}
+
+    adj: dict[int, set[int]] = {n_id: set() for n_id in active}
+    in_degree = {n_id: 0 for n_id in active}
+
+    for dep, bases in deps.items():
+        if dep not in active:
+            continue
+        for base in bases:
+            if base in active:
+                adj[base].add(dep)
+                in_degree[dep] += 1
+
+    queue = sorted([n_id for n_id in active if in_degree[n_id] == 0])
+    roadmap: list[int] = []
+
+    while queue:
+        u = queue.pop(0)
+        roadmap.append(u)
+        for v in sorted(adj[u]):
+            in_degree[v] -= 1
+            if in_degree[v] == 0:
+                queue.append(v)
+                queue.sort()
+
+    excluded = sorted(active - set(roadmap))
+    path_active = set(roadmap)
+    memo_depth: dict[int, int] = {}
+    memo_next: dict[int, int | None] = {}
+    visiting: set[int] = set()
+
+    def get_longest_path(u: int) -> int:
+        if u in memo_depth:
+            return memo_depth[u]
+        if u in visiting:
+            return 0
+        visiting.add(u)
+        max_d = 0
+        best_next = None
+        for v in deps.get(u, []):
+            if v in path_active:
+                d = get_longest_path(v)
+                if d > max_d:
+                    max_d = d
+                    best_next = v
+        visiting.remove(u)
+        memo_depth[u] = 1 + max_d
+        memo_next[u] = best_next
+        return memo_depth[u]
+
+    for u in sorted(path_active):
+        get_longest_path(u)
+
+    critical_path: list[int] = []
+    if path_active:
+        start_node = max(
+            sorted(path_active),
+            key=lambda x: memo_depth.get(x, 0),
+            default=None,
+        )
+        if start_node is not None and memo_depth.get(start_node, 0) > 1:
+            curr = start_node
+            while curr is not None:
+                critical_path.append(curr)
+                curr = memo_next.get(curr)
+            critical_path.reverse()
+
+    return roadmap, critical_path, excluded
+
+
 def validate(root: Path, next_id: int, nodes: dict[int, Node], deps: dict[int, list[int]]):
     errors: list[str] = []
+    warning_messages: list[str] = []
+
+    for node_id, node in sorted(nodes.items()):
+        if node.x != "missing":
+            bases = deps.get(node_id, [])
+            err = sync_markdown_frontmatter(root, node_id, node, bases, fix=False)
+            if err:
+                if err.startswith("missing frontmatter in "):
+                    warning_messages.append(err)
+                else:
+                    errors.append(err)
+
     seen_paths: dict[str, int] = {}
     max_id = max(nodes.keys(), default=0)
     if next_id <= max_id:
@@ -223,7 +430,7 @@ def validate(root: Path, next_id: int, nodes: dict[int, Node], deps: dict[int, l
     cyclic, cycle = has_cycle(deps)
     if cyclic:
         errors.append(f"cycle detected: {' -> '.join(str(part) for part in cycle)}")
-    return errors
+    return errors, warning_messages
 
 
 def warnings(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]:
@@ -287,9 +494,15 @@ def render_tree(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]
             walk(child_id, prefix + extension, child_connector)
 
     for index, root_id in enumerate(roots):
+        if root_id in shown:
+            continue
         if index > 0:
             lines.append("")
         walk(root_id, "", "")
+    for node_id in sorted(node_id for node_id in nodes if node_id not in shown):
+        if lines:
+            lines.append("")
+        walk(node_id, "", "")
     return lines
 
 
@@ -333,18 +546,36 @@ def main(argv: list[str]) -> int:
     if args.show:
         for line in render_tree(nodes, deps):
             print(line)
+        roadmap, critical_path, excluded = get_roadmap_and_critical_path(nodes, deps)
+        if roadmap or excluded:
+            print("\nSuggested Implementation Roadmap (Active Plans):")
+            for idx, r_id in enumerate(roadmap, 1):
+                print(f"  {idx}. [{r_id}] {nodes[r_id].summary}")
+            for r_id in excluded:
+                print(f"  - [{r_id}] {nodes[r_id].summary} (cycle, excluded from roadmap)")
+        if critical_path:
+            path_str = " ➔ ".join(f"[{node_id}]" for node_id in critical_path)
+            print(f"\nCritical Path (Longest unresolved chain):\n  {path_str}")
         return 0
 
     changed = False
+    fix_errors: list[str] = []
     if args.fix:
         changed = fix_missing_files(root, nodes, deps)
+        for node_id, node in sorted(nodes.items()):
+            if node.x != "missing":
+                bases = deps.get(node_id, [])
+                err = sync_markdown_frontmatter(root, node_id, node, bases, fix=True)
+                if err:
+                    fix_errors.append(err)
         if changed:
             write_graph(graph, next_id, nodes, deps)
 
-    errors = validate(root, next_id, nodes, deps)
+    errors, frontmatter_warnings = validate(root, next_id, nodes, deps)
+    errors = fix_errors + errors
     for error in errors:
         print(f"ERROR={error}", file=sys.stderr)
-    for warning in warnings(nodes, deps):
+    for warning in frontmatter_warnings + warnings(nodes, deps):
         print(f"WARN={warning}", file=sys.stderr)
 
     if errors:

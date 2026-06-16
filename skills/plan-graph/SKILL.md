@@ -48,6 +48,33 @@ Rules:
 - Treat graph edits as single-writer work. Do not assign IDs in parallel.
 - Removing completed nodes does not reuse IDs and does not decrement `next`.
 
+### Plan File Frontmatter
+
+The graph is the source of truth. Plan-file frontmatter is a readable copy
+derived from the graph, and file-side frontmatter edits are overwritten from
+the graph when `--fix` runs. Change plan IDs, summaries, states, and deps in
+the graph first.
+
+Every active, done, or dropped plan markdown file that exists SHOULD start with
+a YAML frontmatter block. The fields inside the block match the node's
+properties in the graph:
+
+```yaml
+---
+id: 1
+summary: "Auth/session plan"
+x: "done"
+deps: [2]
+---
+```
+
+Omit `x` when the graph node has no state. Omit `deps` when the plan has no
+base IDs. Preserve the graph's `deps` order in frontmatter because order is used
+as a deterministic tie-breaker in `--show` output. The validation script warns
+when frontmatter is absent from an existing legacy plan file and errors when
+existing frontmatter conflicts with the graph. Running with `--fix` prepends or
+updates frontmatter fields from the graph.
+
 ## Workflow
 
 1. If a graph exists, run the command in `## Command` to validate before trusting it.
@@ -122,10 +149,11 @@ Run from the repo root. Replace `<skill-dir>` with this skill's directory.
 python3 <skill-dir>/scripts/plan-graph.py .agents/plan/graph.yaml --fix
 ```
 
-Without `--fix`, the command only checks. With `--fix`, missing active plan
-files are marked with `x: missing`; if the file returns, `x: missing` is
-cleared. If the graph file does not exist yet, `--fix` creates an empty graph.
-The command also deduplicates dep lists.
+Without `--fix`, the command checks and reports missing legacy frontmatter as a
+warning. With `--fix`, missing active plan files are marked with `x: missing`;
+if the file returns, `x: missing` is cleared. If the graph file does not exist
+yet, `--fix` creates an empty graph. The command also deduplicates dep lists.
+Run `--fix` once on existing graphs to generate plan-file frontmatter.
 
 After removing a completed tree, run the command again. The graph is valid only
 if every `deps` key/value exists in `nodes` and active plans do not depend on
@@ -140,6 +168,11 @@ python3 <skill-dir>/scripts/plan-graph.py .agents/plan/graph.yaml --show
 Roots are top-level dependents (nodes nothing else depends on); each subtree
 lists that plan's bases. Shared bases appear once and are marked `↑` on repeats.
 Non-active states render inline as `(done)`, `(dropped)`, or `(missing)`.
+The roadmap includes only active nodes with no `x` state; `done`, `dropped`, and
+`missing` nodes still appear in the tree but are excluded from roadmap ordering.
+Roadmap ordering is deterministic; when multiple dependency chains have the same
+length, critical-path tie-breaking follows the dependent's `deps` order. Nodes
+blocked by a cycle are printed as `(cycle, excluded from roadmap)`.
 `--show` is read-only, prints to stdout only, and exits `0` on success or `2` on
 parse failure; it skips validation, so use it alongside the check/`--fix` modes
 rather than as a replacement.
@@ -157,6 +190,17 @@ Example output:
 [6] Logging plan
 
 [7] Legacy approach (dropped)
+
+Suggested Implementation Roadmap (Active Plans):
+  1. [1] Auth/session
+  2. [2] Error strategy
+  3. [3] Checkout recovery
+  4. [4] DB schema
+  5. [5] Migration plan
+  6. [6] Logging plan
+
+Critical Path (Longest unresolved chain):
+  [1] ➔ [3] ➔ [5]
 ```
 
 ## Command Output Contract
@@ -172,11 +216,13 @@ CHANGE=<verb> <node_id> [reason]   # one line per --fix mutation
 OK plan graph                       # success sentinel (exit 0)
 ```
 
-`<verb>` ∈ `{mark, clear, dedup, remove}`:
+`<verb>` ∈ `{mark, clear, dedup, remove, add-frontmatter, sync-frontmatter}`:
 - `mark <id> missing` — active plan file is gone; node marked `x: missing`
 - `clear <id> missing` — previously-missing file is back; `x` cleared
 - `dedup <id>` — duplicate base IDs removed from the dep list
 - `remove <id> empty-deps` — dep entry became empty after dedup and was removed
+- `add-frontmatter <id> <path>` — added missing YAML frontmatter to plan file
+- `sync-frontmatter <id> <path> <fields>` — synchronized mismatched frontmatter fields; `<fields>` is comma-separated with no spaces
 
 stderr:
 

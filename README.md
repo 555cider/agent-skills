@@ -34,11 +34,11 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
   parallel; saves each review to `<repo>/.peer-review/reviews/`. Invoked by
   `/peer-review` in Claude Code or natural-language ask in Codex.
 - [`skills/ui-splint/`](skills/ui-splint/) - expert visual QA gate for
-  frontend work; catches odd layout, alignment, spacing, contrast, unclear
-  clickable affordances, focus leaks, ambiguous disabled states, table column
-  sizing, clipped popovers, icon inconsistency, visual drift from shared UI
-  primitives, overflow, responsive, dynamic-state, and size-stability problems
-  before completion.
+  frontend work; catches page-level composition, alignment, spacing, contrast,
+  unclear affordances, form/input state, auth/navigation mode, table and chart
+  issues, scroll/sticky layering, ancestor-driven collapsed or clipped regions,
+  empty/error/stale data-state feedback, responsive, overflow, dynamic-state,
+  consistency, and size-stability problems before completion.
 
 ## Install
 
