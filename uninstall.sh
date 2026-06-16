@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# uninstall.sh — remove installed skills from harness dirs and ~/.agents/skills.
+# uninstall.sh — remove this monorepo's skills from harness dirs and ~/.agents/skills.
 #
 # Usage:
 #   ./uninstall.sh <name> [<name>...]    # remove the named skill(s)
-#   ./uninstall.sh --all                 # remove every installed skill
-#   ./uninstall.sh --list                # print installed skill names and exit
+#   ./uninstall.sh --all                 # remove every skill defined in this monorepo
+#   ./uninstall.sh --list                # print this monorepo's skill names and exit
 #   ./uninstall.sh -h | --help           # this help
 #
 # Removes, for each <name>:
@@ -16,10 +16,10 @@
 # uncommitted changes or unpushed commits — reported as SKIP, not removed.
 # Commit/push or `rm -rf` manually to override.
 #
-# `--list` and `--all` operate on the *installed* set — the union of
-# entries actually present under those three roots — not on this
-# monorepo's skills/ dir. uninstall.sh works even if the monorepo
-# has been deleted.
+# `--list` and `--all` enumerate this monorepo's skills/<name>/SKILL.md entries,
+# never the union of whatever else lives under the harness skill dirs. Plugin-
+# managed or third-party skills sharing those dirs are out of scope by design;
+# remove them with their own tooling, or pass an explicit <name>.
 #
 # Idempotent: targets that are already absent are reported and skipped.
 # Works on POSIX symlinks, NTFS junctions, and plain directories.
@@ -27,6 +27,8 @@
 set -euo pipefail
 
 ROOTS=("$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.agents/skills")
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILLS_SRC="$REPO_ROOT/skills"
 
 usage() {
   # Extract from first comment after shebang up to the END USAGE sentinel.
@@ -49,40 +51,34 @@ for arg in "$@"; do
   esac
 done
 
-# compute_installed: print the union of skill names present under any of
-# the three roots, deduplicated and sorted. Output is one name per line.
-# Empty output is normal (nothing installed).
-compute_installed() {
-  local root entry
-  {
-    for root in "${ROOTS[@]}"; do
-      [ -d "$root" ] || continue
-      # `ls -1` would mis-handle dotfiles and odd names; iterate the
-      # directory directly. Skip if the glob matched nothing.
-      for entry in "$root"/*; do
-        [ -e "$entry" ] || [ -L "$entry" ] || continue
-        basename "$entry"
-      done
-    done
-  } | sort -u
+# compute_monorepo_skills: print every skill defined in this monorepo,
+# one name per line, sorted. A skill is any skills/<name>/SKILL.md.
+# Empty output means the monorepo declares no skills.
+compute_monorepo_skills() {
+  local entry
+  [ -d "$SKILLS_SRC" ] || return 0
+  for entry in "$SKILLS_SRC"/*/SKILL.md; do
+    [ -f "$entry" ] || continue
+    basename "$(dirname "$entry")"
+  done | sort -u
 }
 
 if [ "$LIST" = "1" ]; then
   [ "$ALL" = "0" ] && [ ${#SELECTED[@]} -eq 0 ] \
     || { echo "error: --list takes no other arguments" >&2; exit 2; }
-  compute_installed
+  compute_monorepo_skills
   exit 0
 fi
 
-# --all expands to every currently-installed skill.
+# --all expands to every skill this monorepo defines.
 if [ "$ALL" = "1" ]; then
   [ ${#SELECTED[@]} -eq 0 ] \
     || { echo "error: --all takes no skill names" >&2; exit 2; }
   while IFS= read -r name; do
     [ -n "$name" ] && SELECTED+=("$name")
-  done < <(compute_installed)
+  done < <(compute_monorepo_skills)
   if [ ${#SELECTED[@]} -eq 0 ]; then
-    echo "no installed skills found under ${ROOTS[*]}"
+    echo "no skills declared under $SKILLS_SRC"
     exit 0
   fi
 fi
