@@ -50,35 +50,49 @@ Rules:
 
 ## Workflow
 
-1. If the graph exists, run the command below before trusting it.
-2. Before drafting a new or revised plan, inspect existing graph nodes and read
-   active candidate plans. If no graph exists, scan the repo's plan directory
-   before creating the first graph.
-3. Classify each candidate as:
-   `relationship`: `base`, `alternative`, `dependent`, or `unrelated`;
-   `decision`: `reuse`, `revise`, `supersede`, `independent`, or `ignore`.
-   Keep valid assumptions, call out stale or conflicting assumptions, and note
-   gaps. Treat "predecessor" and "obsolete" as notes, not graph labels.
-4. Only create a new plan node if `reuse` or `revise` would be worse. For a new
-   node, assign `next`, add a `nodes` entry, and increment `next` in the same
-   edit.
-5. Add `deps` only for base plans whose assumptions, decisions, or unfinished
-   work remain in force. Do not add deps for alternatives, unrelated plans, or
-   plans inspected and rejected.
-6. Before changing or removing a base plan, reverse-search `deps` for affected
-   dependents.
-7. For each affected dependent, update it, mark it for review in the response, or
-   leave the base plan unchanged if propagation is too costly.
-8. A plan is complete only when its tasks are resolved in the plan file and the
-   user or agent has declared it done. When a complete tree is closed, remove it
-   from the plan directory and graph: delete completed plan files, delete their
-   `nodes` entries, delete their `deps` entries, and remove their IDs from any
-   remaining dep lists. A tree is closed only when no active outside plan still
-   depends on it.
-9. Use `x: done` only when a completed plan must remain because an active plan
-   still depends on it or removal is explicitly blocked. Use `x: dropped` for
-   rejected or abandoned plans that should remain visible as non-active context.
-10. Report using the contract below.
+1. If a graph exists, run the command in `## Command` to validate before trusting it.
+   If no graph exists, scan the repo's plan directory before creating the first graph.
+2. For each candidate plan that touches the same area, classify it using the table
+   below, then act per the **action** column. Only the `dependent / independent`
+   row adds a `deps` entry; other rows either reuse the base in place or create
+   an unrelated new tree.
+3. New node only if no `reuse` or `revise` row fits. Assign `next`, add a `nodes`
+   entry, and increment `next` in the same edit. Never reuse IDs.
+4. Before changing or removing any base plan, reverse-search `deps` for dependents
+   and apply propagation per the table.
+5. Use `x:` states sparingly: `done` only if a still-active plan depends on it;
+   `dropped` for rejected/abandoned that should stay visible as non-active context.
+   Otherwise prune the node entirely.
+6. Report using `## Report Contract`.
+
+### Classification table
+
+`relationship` ∈ `{base, alternative, unrelated, dependent}`.
+`decision` ∈ `{reuse, revise, supersede, ignore, independent}`.
+Use exactly these tokens in `Decisions` (see `## Report Contract`).
+
+| Candidate state                                   | relationship | decision    | action                                                     |
+|---------------------------------------------------|--------------|-------------|------------------------------------------------------------|
+| Same area, base's assumptions still hold          | base         | reuse       | extend the existing plan; no new node, no new dep          |
+| Same area, some assumptions stale                 | base         | revise      | edit the base plan in place; no new node, no new dep       |
+| Same area, base's conclusion must be overturned   | base         | supersede   | new node; mark base `x: dropped` or prune (no dep on base) |
+| Different approach to same goal                   | alternative  | ignore      | no node, no dep; note in `Decisions`                       |
+| Unrelated to candidate area                       | unrelated    | ignore      | no node, no dep                                            |
+| Depends on a base but starts fresh work           | dependent    | independent | new node, add `new -> base` dep                            |
+
+### Propagation rules (when changing or removing a base)
+
+| Situation                                              | what to do                                       |
+|--------------------------------------------------------|--------------------------------------------------|
+| Dependent still relies on the changed assumption       | update dependent in same response                |
+| Dependent unaffected by the specific change            | leave dependent; note in `Propagation`           |
+| Propagation cost > value of the change                 | leave base unchanged; record reason in response  |
+| Base done, no active dependent, removal not blocked    | prune base (delete file + node + dep entries)    |
+| Base done, active dependent still references it        | keep base, mark `x: done`                        |
+
+A complete tree is closed only when no active outside plan depends on it; only
+then delete its files and nodes together. Treat "predecessor" and "obsolete"
+as notes in the response, not graph labels.
 
 ## Report Contract
 
@@ -116,3 +130,41 @@ The command also deduplicates dep lists.
 After removing a completed tree, run the command again. The graph is valid only
 if every `deps` key/value exists in `nodes` and active plans do not depend on
 `x: dropped` or `x: missing` nodes.
+
+## Command Output Contract
+
+The script writes machine-readable lines that callers (this skill, or any other
+agent chaining on plan-graph) can parse. Streams are split deliberately —
+state-change records go to stdout, problems go to stderr.
+
+stdout:
+
+```
+CHANGE=<verb> <node_id> [reason]   # one line per --fix mutation
+OK plan graph                       # success sentinel (exit 0)
+```
+
+`<verb>` ∈ `{mark, clear, dedup, remove}`:
+- `mark <id> missing` — active plan file is gone; node marked `x: missing`
+- `clear <id> missing` — previously-missing file is back; `x` cleared
+- `dedup <id>` — duplicate base IDs removed from the dep list
+- `remove <id> empty-deps` — dep entry became empty after dedup and was removed
+
+stderr:
+
+```
+WARN=<message>                      # advisory (e.g. done w/o active dependent)
+ERROR=<message>                     # validation error
+ERROR=parse: <exception>            # graph file failed to parse (exit 2)
+FAIL plan graph                     # failure sentinel (exit 1)
+```
+
+Exit codes: `0` = valid (with or without changes); `1` = validation errors;
+`2` = graph file unparseable.
+
+Write ordering with `--fix`: drift repairs (`CHANGE=` lines) are persisted
+*before* validation runs, so a `--fix` invocation that exits `1` may still have
+mutated the graph file. Use `--fix` only when you intend to accept the drift
+repairs; run without `--fix` first if you want a pure read-only check.
+Parse failure (exit `2`) is the one case where the graph is guaranteed not
+touched.
