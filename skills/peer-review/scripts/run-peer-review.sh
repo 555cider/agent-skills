@@ -19,7 +19,7 @@
 #
 # Default reviewer: codex, unless --host would make that accidental self-review;
 # then the first available non-host reviewer is used. Pass a comma-separated list
-# to run multiple reviewers in parallel (e.g., --reviewer=codex,claude,gemini).
+# to run multiple reviewers in parallel (e.g., --reviewer=codex,claude,qwen).
 # Indexes (1-based) and ranges are accepted when a config defines profiles —
 # e.g., --reviewer=2 (second profile), --reviewer=1-3 (first three),
 # --reviewer=1,3,my-claude (mix). Run `list` to see available reviewers.
@@ -148,12 +148,12 @@ case "$SOURCE" in
   *) echo "invalid --source: $SOURCE (use: file|chat)" >&2; exit 2 ;;
 esac
 case "$EXCLUDE_CLI" in
-  ""|codex|claude|gemini|qwen|opencode) ;;
-  *) echo "invalid --exclude-cli: $EXCLUDE_CLI (use: codex|claude|gemini|qwen|opencode)" >&2; exit 2 ;;
+  ""|codex|claude|qwen|opencode) ;;
+  *) echo "invalid --exclude-cli: $EXCLUDE_CLI (use: codex|claude|qwen|opencode)" >&2; exit 2 ;;
 esac
 case "$HOST_CLI" in
-  ""|codex|claude|gemini|qwen|opencode) ;;
-  *) echo "invalid --host: $HOST_CLI (use: codex|claude|gemini|qwen|opencode)" >&2; exit 2 ;;
+  ""|codex|claude|qwen|opencode) ;;
+  *) echo "invalid --host: $HOST_CLI (use: codex|claude|qwen|opencode)" >&2; exit 2 ;;
 esac
 if ! [[ "$REVIEW_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   echo "invalid --timeout: $REVIEW_TIMEOUT (use a positive integer number of seconds)" >&2
@@ -228,7 +228,7 @@ if [ "$LIST_MODE" -eq 0 ]; then
   fi
 fi
 
-ALL_CLIS=(codex claude gemini qwen opencode)
+ALL_CLIS=(codex claude qwen opencode)
 
 # --- profile registry (populated from JSON config, if any) ---
 declare -a PROFILE_NAMES=()
@@ -257,7 +257,7 @@ import json
 import re
 import sys
 
-KNOWN_CLIS = {"codex", "claude", "gemini", "qwen", "opencode"}
+KNOWN_CLIS = {"codex", "claude", "qwen", "opencode"}
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # Numeric-only or numeric-range patterns conflict with index/range notation
 # (e.g., --reviewer=2, --reviewer=1-3) — reject to keep the CLI unambiguous.
@@ -568,14 +568,14 @@ for r in "${_RAW[@]}"; do
     continue
   fi
 
-  # Explicit name: must either be a defined profile, or one of the five known
+  # Explicit name: must either be a defined profile, or one of the known
   # CLI names (in which case no config entry is needed — current default behavior).
   if [ -n "${PROFILE_CLI[$r]:-}" ]; then
     add_unique "$r"
     mark_host_warning "$r"
   else
     case "$r" in
-      codex|claude|gemini|qwen|opencode)
+      codex|claude|qwen|opencode)
         add_unique "$r"
         mark_host_warning "$r"
         ;;
@@ -584,7 +584,7 @@ for r in "${_RAW[@]}"; do
         if [ ${#PROFILE_NAMES[@]} -gt 0 ]; then
           echo "  defined profiles: ${PROFILE_NAMES[*]}" >&2
         fi
-        echo "  known CLIs: codex|claude|gemini|qwen|opencode" >&2
+        echo "  known CLIs: codex|claude|qwen|opencode" >&2
         [ -n "$CONFIG_PATH" ] && echo "  (config loaded from: $CONFIG_PATH)" >&2
         exit 2
         ;;
@@ -874,10 +874,6 @@ build_cmd() {
     claude)
       CMD=(claude -p)
       [ -n "$model" ] && CMD+=(--model "$model")
-      ;;
-    gemini)
-      CMD=(gemini --approval-mode plan --output-format text -p "")
-      [ -n "$model" ] && CMD+=(-m "$model")
       ;;
     qwen)
       CMD=(qwen --approval-mode plan -p "")
