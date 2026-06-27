@@ -1,9 +1,9 @@
 name: split-skills
 
 # Each directory under skills/ is published as its own branch named
-# split/<skill-name>, containing only that skill's history. Users
-# `git clone -b split/<name> --single-branch <repo>` into
-# ~/.agents/skills/<name>/ and run `git pull` there to update.
+# split/<skill-name>, containing only that skill's history. install.sh clones
+# that split branch for normal installs; before a new split branch exists, it
+# can sync the local skills/<name>/ checkout for maintainer testing.
 #
 # This workflow runs `git subtree split` for every skill on every push to
 # main that touches skills/, and force-pushes the result. The split

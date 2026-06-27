@@ -3,8 +3,9 @@
 *.swo
 __pycache__/
 *.pyc
-tests/
-# but DO track ui-splint's defect fixtures + coverage spec (not a heavy harness)
+tests/*
+!tests/install.sh
+# but DO track lightweight repo-level install tests and skill test suites.
 !skills/**/tests/
 !skills/**/tests/README.md
 !skills/**/tests/expected.json

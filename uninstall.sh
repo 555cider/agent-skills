@@ -10,11 +10,11 @@
 # Removes, for each <name>:
 #   ~/.claude/skills/<name>        (harness link or directory)
 #   ~/.codex/skills/<name>         (harness link or directory)
-#   ~/.agents/skills/<name>/       (the git clone itself)
+#   ~/.agents/skills/<name>/       (the installed skill directory)
 #
-# Safety: refuses to delete a ~/.agents/skills/<name>/ clone that has
-# uncommitted changes or unpushed commits — reported as SKIP, not removed.
-# Commit/push or `rm -rf` manually to override.
+# Safety: refuses to delete a ~/.agents/skills/<name>/ git clone that has
+# uncommitted changes or unpushed commits. Plain synced directories are removed.
+# Commit/push or `rm -rf` manually to override a protected clone.
 #
 # `--list` and `--all` enumerate this monorepo's skills/<name>/SKILL.md entries,
 # never the union of whatever else lives under the harness skill dirs. Plugin-
@@ -84,16 +84,15 @@ if [ "$ALL" = "1" ]; then
 fi
 
 if [ ${#SELECTED[@]} -eq 0 ]; then
-  echo "error: no skill names given (use --all to remove everything, or --list to see what is installed)" >&2
+  echo "error: no skill names given (use --all to remove this monorepo's skills, or --list to see them)" >&2
   exit 2
 fi
 
 # remove_path <path>: rm -rf the path if present, reporting either
 # `removed` or `not present`. Sanity-checks that the path is under one
 # of the known skill roots before deleting. For ~/.agents/skills/<name>/
-# entries (the actual git clone), also refuse to delete if the clone has
-# uncommitted changes or unpushed commits — symmetric with install.sh,
-# which warns and skips on mismatched destinations.
+# entries that are git clones, also refuse to delete if the clone has
+# uncommitted changes or unpushed commits.
 remove_path() {
   local path="$1"
   local under=0 root

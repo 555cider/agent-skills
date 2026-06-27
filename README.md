@@ -25,6 +25,10 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 
 ## Skills
 
+- [`skills/agent-memory/`](skills/agent-memory/) - shared local memory
+  protocol for multiple coding agents, with budgeted lookup, explicit and
+  automatic capture, conservative promotion, and a stdlib helper for safe
+  file-backed storage under `~/.agents/memory/`.
 - [`skills/plan-graph/`](skills/plan-graph/) - review existing planning
   documents, then create, revise, or remove connected plans while tracking
   dependencies.
@@ -45,9 +49,9 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 
 ## Install
 
-Clone this monorepo just to get `install.sh` — the script then clones
-each selected skill into its own location (you can `rm -rf` this
-monorepo afterwards if you only want to use skills, not edit them).
+Clone this monorepo just to get `install.sh` — the script installs each
+selected skill into its own location (you can `rm -rf` this monorepo
+afterwards if you only want to use skills, not edit them).
 
 ```bash
 git clone https://github.com/555cider/agent-skills.git
@@ -61,24 +65,30 @@ cd agent-skills
 
 The script wires each selected skill in two steps:
 
-1. `git clone -b split/<skill-name> --single-branch <this-repo>` into
+1. If `split/<skill-name>` is published, `git clone -b
+   split/<skill-name> --single-branch <this-repo>` into
    `~/.agents/skills/<skill-name>/` — that directory is itself a small git
-   repo whose history contains only commits that touched this skill.
-   `~/.agents/skills/` is the [agentskills.io](https://agentskills.io/specification)
-   runtime aggregation path; tool-neutral.
+   repo whose history contains only commits that touched this skill. If the
+   split branch is not published yet, the script syncs the local
+   `skills/<skill-name>/` checkout instead. `~/.agents/skills/` is the
+   [agentskills.io](https://agentskills.io/specification) runtime aggregation
+   path; tool-neutral.
 2. `~/.claude/skills/<skill-name>/`, `~/.codex/skills/<skill-name>/` →
    symlink (or NTFS junction on Windows) to `~/.agents/skills/<skill-name>/`.
    Each harness is auto-detected; missing harnesses are skipped.
 
-Update an installed skill with:
+Update a split-based install with:
 
 ```bash
 cd ~/.agents/skills/<skill-name> && git pull
 ```
 
-The harness links pick up the new content automatically.
+The harness links pick up the new content automatically. If a skill was
+installed from a local fallback before its split branch existed, re-run
+`./install.sh <skill-name>` from the monorepo checkout to refresh it.
 
-For maintainer/dev testing before split branches are published, use local mode:
+For maintainer/dev testing, or when you want to force local files even if a
+split branch exists, use local mode:
 
 ```bash
 ./install.sh --local               # copy every local skill into ~/.agents/skills
@@ -99,9 +109,12 @@ artifacts and must never be committed to directly.
 
 The script is idempotent — safe to re-run after pulling new skills into
 the monorepo. If `~/.agents/skills/<name>/` is already a clone, it's
-left alone (run `git pull` there yourself). Mismatched directories or
-links are reported as warnings and left untouched; remove them manually
-if you want the script to manage them.
+left alone (run `git pull` there yourself). If the split branch is still
+unpublished, it syncs or refreshes the local checkout. Other mismatched
+directories or links are reported as warnings and left untouched; remove
+them manually if you want the script to manage them. A plain directory is
+only refreshed by the default fallback when it already looks like the same
+local skill (`SKILL.md` declares the matching `name:`).
 
 **Linking mechanism — POSIX vs Windows.** On macOS and Linux, the script uses
 POSIX symlinks (`ln -s`). On Windows + Git Bash / MSYS2 / Cygwin, it uses
@@ -118,20 +131,21 @@ clear error rather than silently degrading to a copy.
 ```bash
 ./uninstall.sh <name>              # remove one skill
 ./uninstall.sh peer-review other   # remove several
-./uninstall.sh --all               # remove every installed skill
-./uninstall.sh --list              # print currently installed skills
+./uninstall.sh --all               # remove every skill declared by this repo
+./uninstall.sh --list              # print this monorepo's skill names
 ```
 
 For each skill, this removes:
 
 - `~/.claude/skills/<name>` (harness link, if present)
 - `~/.codex/skills/<name>` (harness link, if present)
-- `~/.agents/skills/<name>/` (the per-skill git clone, if present)
+- `~/.agents/skills/<name>/` (the installed skill directory, if present)
 
 Idempotent — re-running is safe; already-absent paths are reported and
 skipped. Works on POSIX symlinks, NTFS junctions, and plain
 directories alike. Re-installing later just re-runs `./install.sh
-<name>` and re-clones `split/<name>` from origin.
+<name>`; the install will clone `split/<name>` when available or sync the
+local checkout while the split branch is still unpublished.
 
 ## Adding a new skill (maintainers)
 
@@ -141,7 +155,9 @@ directories alike. Re-installing later just re-runs `./install.sh
 3. [`.github/workflows/split.yml`](.github/workflows/split.yml) runs
    `git subtree split --prefix=skills/<new-skill>` and force-pushes the
    result to `split/<new-skill>`. This takes ~30 s.
-4. Users get the skill via `./install.sh <new-skill>`.
+4. Users get the skill via `./install.sh <new-skill>`. Before the split branch
+   exists, maintainers can run the same command from the monorepo checkout and
+   install the local copy.
 
 The split branches are derived artifacts. Never commit to them
 directly — your work will be overwritten on the next `main` push.
@@ -151,10 +167,11 @@ directly — your work will be overwritten on the next `main` push.
 - **Single source of truth for maintainers:** all skills live in one
   monorepo. Cross-cutting changes (frontmatter conventions, shared
   scripts, lint rules) land in one PR.
-- **Per-skill independence for users:** each user's
-  `~/.agents/skills/<name>/` is its own git clone with that skill's
-  history only — small, no monorepo overhead, and `git pull` updates
-  just that one skill.
+- **Per-skill independence for users:** once a split branch is published,
+  each user's `~/.agents/skills/<name>/` is its own git clone with that
+  skill's history only — small, no monorepo overhead, and `git pull` updates
+  just that one skill. Before publication, maintainers can install the local
+  synced directory from the monorepo checkout.
 - **Tool-neutral:** `~/.agents/skills/` is the converging convention; any
   agent that reads it finds the skill without per-tool config.
 - **No symlink chains:** harness dirs link directly to

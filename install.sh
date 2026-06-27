@@ -13,9 +13,13 @@
 # Mechanism:
 #   Each skill is published as its own branch (split/<name>) containing only
 #   that skill's history — produced by .github/workflows/split.yml on push to
-#   main. install.sh `git clone`s split/<name> into ~/.agents/skills/<name>/
-#   so that directory IS its own git repo. Update with:
+#   main. When the branch exists, install.sh `git clone`s split/<name> into
+#   ~/.agents/skills/<name>/ so that directory IS its own git repo. Update with:
 #       cd ~/.agents/skills/<name> && git pull
+#
+#   If a local skill exists before its split/<name> branch has been published,
+#   install.sh syncs the checkout's skills/<name>/ instead so new skills can be
+#   installed during development.
 #
 #   For local development, --local skips origin entirely and synchronizes the
 #   current checkout's skills/<name>/ into ~/.agents/skills/<name>/.
@@ -27,11 +31,13 @@
 #   Windows. UNC shares / non-NTFS volumes are unsupported and fail loudly.
 #
 # Idempotent: re-running is safe. If ~/.agents/skills/<name>/ already exists
-# as the right git repo, it's left alone (run `git pull` there yourself).
-# Mismatched dirs / links are reported and skipped, never overwritten.
+# as the right git repo, it's left alone (run `git pull` there yourself). If a
+# split branch is still unpublished, a matching local fallback directory is
+# refreshed. Other mismatched dirs / links are reported and skipped.
 #
-# To uninstall: rm -rf the harness links and the ~/.agents/skills/<name>/
-# clone. Both POSIX symlinks and Windows junctions accept `rm -rf`.
+# To uninstall: run uninstall.sh, or rm -rf the harness links and the
+# ~/.agents/skills/<name>/ install directory. Both POSIX symlinks and Windows
+# junctions accept `rm -rf`.
 set -euo pipefail
 
 case "$(uname -s)" in
@@ -123,12 +129,31 @@ resolve_phys() {
   ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null
 }
 
+split_branch_status() {
+  local branch="$1"
+  local status
+  if git ls-remote --exit-code --heads "$REMOTE_URL" "$branch" >/dev/null 2>&1; then
+    return 0
+  else
+    status=$?
+    return "$status"
+  fi
+}
+
+local_skill_dir_matches() {
+  local dir="$1" name="$2"
+  [ -f "$dir/SKILL.md" ] || return 1
+  grep -Eq "^[[:space:]]*name:[[:space:]]*['\"]?${name}['\"]?[[:space:]]*$" "$dir/SKILL.md"
+}
+
 # clone_skill <name>: ensure ~/.agents/skills/<name>/ is a clone of
-# split/<name> from origin. If it already exists as that clone, leave it.
+# split/<name> from origin. If it already exists as that clone, leave it. If
+# the split branch is not published yet, sync the local checkout instead.
 clone_skill() {
   local name="$1"
   local dest="$AGENTS_DIR/$name"
   local branch="split/$name"
+  local branch_status
 
   if [ -e "$dest" ]; then
     if [ -d "$dest/.git" ] || [ -f "$dest/.git" ]; then
@@ -139,8 +164,33 @@ clone_skill() {
       printf '  WARN %s is a symlink — remove with `rm -rf %s` and re-run\n' "$dest" "$dest" >&2
       return 1
     fi
+    if split_branch_status "$branch"; then
+      branch_status=0
+    else
+      branch_status=$?
+    fi
+    if [ "$branch_status" = "2" ]; then
+      if local_skill_dir_matches "$dest" "$name"; then
+        printf '  note %s is not published; syncing local %s instead\n' "$branch" "$SKILLS_SRC/$name"
+        sync_local_skill "$name"
+        return $?
+      fi
+      printf '  WARN %s exists but is not a recognized local %s skill — remove with `rm -rf %s` and re-run\n' "$dest" "$name" "$dest" >&2
+      return 1
+    fi
     printf '  WARN %s exists but is not a git clone — remove with `rm -rf %s` and re-run\n' "$dest" "$dest" >&2
     return 1
+  fi
+
+  if split_branch_status "$branch"; then
+    branch_status=0
+  else
+    branch_status=$?
+  fi
+  if [ "$branch_status" = "2" ]; then
+    printf '  note %s is not published; syncing local %s instead\n' "$branch" "$SKILLS_SRC/$name"
+    sync_local_skill "$name"
+    return $?
   fi
 
   # `--single-branch -b split/<name>` fetches only that branch's history,
