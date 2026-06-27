@@ -1,0 +1,82 @@
+[
+  {
+    "query": "Before you touch this repo, check whether we have any remembered conventions about test commands or doc paths. I think we hit a stale-link issue here before.",
+    "should_trigger": true
+  },
+  {
+    "query": "remember for future sessions: in this project, pnpm run test:quality catches stale docs references after path moves",
+    "should_trigger": true
+  },
+  {
+    "query": "continue the handoff from the previous agent in this repo; they should have left branch and next-step context somewhere",
+    "should_trigger": true
+  },
+  {
+    "query": "forget the old memory that says the API route is /v1/jobs. It changed to /api/jobs and I do not want agents using the old one.",
+    "should_trigger": true
+  },
+  {
+    "query": "Use memory if relevant, then review this failing CI check. Last time there was a weird cache problem after the build command.",
+    "should_trigger": true
+  },
+  {
+    "query": "Can you update memory? From now on I prefer narrow verification for small scoped edits unless the touched module is shared.",
+    "should_trigger": true
+  },
+  {
+    "query": "Search prior project notes for the migration decision before changing the database adapter.",
+    "should_trigger": true
+  },
+  {
+    "query": "Where were we on the long-running refactor? Resume from the last saved session state if there is one.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run a memory health review and tell me which entries are stale or duplicates before you clean anything up.",
+    "should_trigger": true
+  },
+  {
+    "query": "We discovered that this repo's renderer test is stale only after re-running it. Save that caveat with command evidence.",
+    "should_trigger": true
+  },
+  {
+    "query": "Translate this Korean sentence into English: 다음 회의는 오후 세 시입니다.",
+    "should_trigger": false
+  },
+  {
+    "query": "What is the current time in Seoul?",
+    "should_trigger": false
+  },
+  {
+    "query": "Format this JSON object with two-space indentation and do not change the values.",
+    "should_trigger": false
+  },
+  {
+    "query": "Open package.json and tell me the package name only.",
+    "should_trigger": false
+  },
+  {
+    "query": "Write a regex that matches an ISO date like 2026-06-27.",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain what a memory leak is in Python, but do not inspect this repository.",
+    "should_trigger": false
+  },
+  {
+    "query": "Delete the temporary build directory under dist after confirming it is ignored by git.",
+    "should_trigger": false
+  },
+  {
+    "query": "Summarize the last command output I pasted in this message only.",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a new markdown note in docs/ideas.md with these three bullets. This is a project document, not agent memory.",
+    "should_trigger": false
+  },
+  {
+    "query": "Tell me whether this sentence sounds natural: I very like this tool.",
+    "should_trigger": false
+  }
+]

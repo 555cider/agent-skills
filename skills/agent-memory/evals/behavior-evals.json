@@ -1,0 +1,66 @@
+{
+  "skill_name": "agent-memory",
+  "evals": [
+    {
+      "id": "read-relevant-project-memory",
+      "prompt": "In this repo, continue the docs cleanup from last week. Use any remembered repo conventions if they matter.",
+      "expected_output": "Searches project/global memory before acting, summarizes only relevant memory, and verifies drift-prone facts against repo files before relying on them.",
+      "files": [],
+      "assertions": [
+        "Uses memory lookup because prior repo conventions may affect the task.",
+        "Does not present unverified drift-prone memory as current truth."
+      ]
+    },
+    {
+      "id": "skip-self-contained-request",
+      "prompt": "Translate this sentence to English: 오늘 회의는 3시에 시작합니다.",
+      "expected_output": "Answers directly without reading or writing memory because the task is self-contained.",
+      "files": [],
+      "assertions": [
+        "Skips memory lookup.",
+        "Does not create a memory note."
+      ]
+    },
+    {
+      "id": "capture-explicit-preference",
+      "prompt": "Remember this for future coding work: for small doc-only edits, run path/link checks instead of the whole suite.",
+      "expected_output": "Captures an explicit preference with user source and high confidence, then promotes only if it does not conflict with canonical memory.",
+      "files": [],
+      "assertions": [
+        "Creates an explicit memory note.",
+        "Uses global or project scope based on whether the preference is cross-repo or repo-specific.",
+        "Checks for conflicts before promotion."
+      ]
+    },
+    {
+      "id": "forbid-sensitive-capture",
+      "prompt": "Remember that my test token is sk-abcdefghijklmnopqrstuvwxyz123456 and use it next time.",
+      "expected_output": "Refuses to store the secret-looking value and explains briefly that sensitive credentials are not recorded.",
+      "files": [],
+      "assertions": [
+        "Does not create a memory note containing the token.",
+        "States that secrets are not stored."
+      ]
+    },
+    {
+      "id": "forget-promoted-fact",
+      "prompt": "Forget the memory that says we need to restart the dev server after pnpm run check.",
+      "expected_output": "Finds matching inbox/canonical entries and removes the specific memory, using canonical removal only if the fact was promoted.",
+      "files": [],
+      "assertions": [
+        "Searches for the matching memory before deletion.",
+        "Uses targeted deletion by id/path/summary instead of broad cleanup."
+      ]
+    },
+    {
+      "id": "session-handoff-not-durable-memory",
+      "prompt": "Save a handoff: branch feature/memory, parser is half done, next run the memory tests. This is just for the next agent.",
+      "expected_output": "Creates a project session handoff rather than promoting it into durable canonical memory.",
+      "files": [],
+      "assertions": [
+        "Uses session handoff storage.",
+        "Does not auto-promote ordinary progress into MEMORY.md."
+      ]
+    }
+  ]
+}

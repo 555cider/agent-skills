@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Memory"
+  short_description: "Shared local memory protocol for reading, capturing, validating, and promoting durable context across coding agents."
+  default_prompt: "Use $agent-memory when prior preferences, repo-specific facts, decisions, handoff context, or explicit remember/update-memory requests may affect the task. Read concise global/project memory first, capture durable non-sensitive learnings, and promote only eligible verified project facts."
