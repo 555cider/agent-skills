@@ -9,12 +9,13 @@ needs to know when picking or troubleshooting.
 |---|---|---|
 | `codex` | sandbox-enforced read-only | Default reviewer. |
 | `claude` | permission-system gated | Relies on the CLI's interactive permission grants. |
-| `opencode` | permission-default gated | ANSI color codes are stripped from saved output. |
-| `agy` | sandbox-enforced read-only | Runs headlessly via `agy -p` with `--sandbox` flag. |
+| `opencode` | temporary read-only agent | Runs headlessly with a generated `peer-review-readonly-*` agent that denies edit/shell/network/delegation tools. Model names without a slash are automatically prefixed with `opencode/`. ANSI color codes are stripped from output. |
+| `agy` | sandbox-restricted | Runs headlessly via `agy -p` with `--sandbox`. Forward model flag if configured. |
 
-All supported reviewers accept the prompt over stdin. Exact flag spellings,
-model selection, and effort plumbing live in `build_cmd()` — read the
-function, do not mirror its argv here.
+The wrapper feeds the prompt over stdin where the CLI supports it; `agy`
+receives the prompt through `-p`. Exact flag spellings, model selection, and
+effort plumbing live in `build_cmd()` — read the function, do not mirror its
+argv here.
 
 ## Reviewer-selection guidance
 

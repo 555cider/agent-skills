@@ -34,7 +34,7 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
   dependencies.
 - [`skills/peer-review/`](skills/peer-review/) — second-opinion review of
   plans, specs, or design choices via one or more reviewer CLIs (`codex`,
-  `claude`, `qwen`, `opencode`). Multiple reviewers run in
+  `claude`, `opencode`, `agy`). Multiple reviewers run in
   parallel; saves each review to `<repo>/.peer-review/reviews/`. Invoked by
   `/peer-review` in Claude Code or natural-language ask in Codex.
 - [`skills/ui-splint/`](skills/ui-splint/) - visual QA gate for frontend work,
