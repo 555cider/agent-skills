@@ -5,6 +5,7 @@
     { "case": "normal-check", "fixture": "normal", "args": [], "expectExit": 0, "grepStdout": ["OK plan graph"], "noGrepStderr": ["ERROR=", "WARN="], "note": "fully clean after setup --fix populates frontmatter" },
     { "case": "normal-json", "fixture": "normal", "args": ["--json"], "expectExit": 0, "grepStdout": ["\"status\": \"OK\"", "\"errors\": []"], "note": "check/--fix JSON object shape" },
     { "case": "normal-show-json", "fixture": "normal", "args": ["--show", "--json"], "expectExit": 0, "grepStdout": ["\"critical_path\"", "\"roadmap\""], "note": "--show JSON adds tree/roadmap/excluded/critical_path" },
+    { "case": "suggest-deps", "fixture": "suggest", "args": ["--suggest-deps"], "expectExit": 0, "grepStdout": ["SUGGEST=2->1 EXTRACTED"], "note": "read-only path-reference dependency suggestion; graph.yaml left byte-identical and --fix does not leave a lock" },
     { "case": "single-show", "fixture": "single", "args": ["--show"], "expectExit": 0, "noGrepStdout": ["Critical Path"], "note": "depth>1 gate: a lone node prints no critical path" },
     { "case": "cycle-show", "fixture": "cycle", "args": ["--show"], "expectExit": 0, "grepStdout": ["[1] alpha", "[2] beta", "(cycle, excluded from roadmap)"], "noGrep": ["Traceback"], "note": "no RecursionError; all nodes listed" },
     { "case": "cycle-check", "fixture": "cycle", "args": [], "expectExit": 1, "grepStderr": ["ERROR=cycle detected: 1 -> 2 -> 1", "FAIL plan graph"] },

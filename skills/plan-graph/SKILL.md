@@ -239,6 +239,22 @@ parse failure; it skips validation, so use it alongside the check/`--fix` modes
 rather than as a replacement. `--show` takes precedence over `--fix`: passing
 both shows the tree and performs no repair — run them as separate invocations.
 
+To scan existing plan text for missing dependency candidates without mutating
+the graph, use `--suggest-deps`:
+
+```bash
+python3 <skill-dir>/scripts/plan-graph.py .agents/plan/graph.yaml --suggest-deps
+```
+
+This mode is read-only. It reports candidates such as `SUGGEST=3->1 EXTRACTED
+path reference .agents/plan/auth.md`; JSON mode returns a `suggestions` array
+with `dependent`, `base`, `confidence`, and `reason`. `EXTRACTED` means the
+dependent plan explicitly names the base path, filename, or summary. `INFERRED`
+means weaker keyword overlap around dependency language. Treat suggestions as
+review input only: classify them with the normal relationship/decision table
+before editing `deps:`. `--suggest-deps` takes precedence over `--fix`, so it
+does not initialize, lock, or repair the graph.
+
 Example output:
 
 ```
@@ -315,6 +331,8 @@ unchanged). Check / `--fix`:
 `changes[]` object carries the same verb/id as a `CHANGE=` line (`path`/`extra`
 hold the trailing fields). `--show --json` instead returns
 `{status, tree: [...lines], roadmap: [{id, summary}], excluded: [{id, summary}], critical_path: [ids], changes: [], errors: [], warnings: []}`.
+`--suggest-deps --json` returns
+`{status, suggestions: [{dependent, base, confidence, reason}], changes: [], errors: [], warnings: []}`.
 
 Write ordering with `--fix`: drift repairs (`CHANGE=` lines) are persisted
 *before* validation runs, so a `--fix` invocation that exits `1` may still have

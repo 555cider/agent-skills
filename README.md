@@ -27,11 +27,11 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 
 - [`skills/agent-memory/`](skills/agent-memory/) - shared local memory
   protocol for multiple coding agents, with budgeted lookup, explicit and
-  automatic capture, conservative promotion, and a stdlib helper for safe
-  file-backed storage under `~/.agents/memory/`.
+  automatic capture, conservative proposal/promotion, and a stdlib helper for
+  safe file-backed storage under `~/.agents/memory/`.
 - [`skills/plan-graph/`](skills/plan-graph/) - review existing planning
   documents, then create, revise, or remove connected plans while tracking
-  dependencies.
+  dependencies, including read-only dependency suggestions with provenance.
 - [`skills/peer-review/`](skills/peer-review/) — second-opinion review of
   plans, specs, or design choices via one or more reviewer CLIs (`codex`,
   `claude`, `opencode`, `agy`). Multiple reviewers run in

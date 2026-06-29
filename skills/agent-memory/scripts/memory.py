@@ -391,41 +391,211 @@ def command_repo_key(args: argparse.Namespace) -> int:
 
 def command_note(args: argparse.Namespace) -> int:
     home = memory_home(args)
-    cwd = cwd_from_args(args)
-    repo_key = compute_repo_key(cwd) if args.scope == "project" else None
-    ensure_layout(home, repo_key)
-
     evidence = [parse_evidence_arg(raw) for raw in (args.evidence or [])]
     body = args.body
     if body is None and not sys.stdin.isatty():
         body = sys.stdin.read()
     body = body or ""
+    target, _ = write_note(
+        home,
+        cwd=cwd_from_args(args),
+        scope=args.scope,
+        priority=args.priority,
+        note_type=args.type,
+        source=args.source,
+        confidence=args.confidence,
+        summary=args.summary,
+        evidence=evidence,
+        tags=args.tag or [],
+        body=body,
+    )
+    print(f"NOTE={target}")
+    return 0
 
-    check_sensitive(args.summary, body, "\n".join(item["ref"] for item in evidence))
 
+def write_note(
+    home: Path,
+    *,
+    cwd: Path,
+    scope: str,
+    priority: str,
+    note_type: str,
+    source: str,
+    confidence: str,
+    summary: str,
+    evidence: list[dict[str, str]],
+    tags: list[str],
+    body: str,
+) -> tuple[Path, dict[str, str]]:
+    repo_key = compute_repo_key(cwd) if scope == "project" else None
+    ensure_layout(home, repo_key)
+    check_sensitive(summary, body, "\n".join(item.get("ref", "") for item in evidence))
     meta = {
-        "type": args.type,
-        "scope": args.scope,
-        "priority": args.priority,
-        "source": args.source,
-        "confidence": args.confidence,
-        "summary": args.summary,
+        "type": note_type,
+        "scope": scope,
+        "priority": priority,
+        "source": source,
+        "confidence": confidence,
+        "summary": summary,
         "created_at": utc_now(),
         "agent_id": agent_id(),
     }
-    tags = format_tags(args.tag or [])
-    if tags:
-        meta["tags"] = tags
+    tag_text = format_tags(tags)
+    if tag_text:
+        meta["tags"] = tag_text
     if repo_key:
         meta["repo_key"] = repo_key
 
-    target_dir = home / ("global" if args.scope == "global" else f"projects/{repo_key}") / "inbox" / args.priority
+    target_dir = home / ("global" if scope == "global" else f"projects/{repo_key}") / "inbox" / priority
     stem = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     filename = f"{stem}_{meta['agent_id']}_{secrets.token_hex(4)}.md"
     target = target_dir / filename
     with Lock(home):
         atomic_write(target, note_text(meta, evidence, body))
-    print(f"NOTE={target}")
+    return target, meta
+
+
+def clean_proposal_text(value: str) -> str:
+    text = re.sub(
+        r"^\s*(repeated failure|lesson learned|user correction|correction|preference)\s*:\s*",
+        "",
+        value,
+        flags=re.I,
+    )
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text
+
+
+def proposal_summary(line: str) -> str:
+    text = clean_proposal_text(line)
+    match = re.search(r"\bafter\s+(.+?),\s*(.+?)\s+before\s+(.+)", text, flags=re.I)
+    if match:
+        before = match.group(1).strip()
+        action = match.group(2).strip()
+        condition = match.group(3).strip()
+        text = f"{action} before {condition} after {before}"
+    return text[:SUMMARY_MAX]
+
+
+def command_ref_from_line(line: str) -> str:
+    match = re.search(r"verified with command:\s*(.+)$", line, flags=re.I)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def infer_proposals(text: str, default_tags: list[str]) -> list[dict[str, object]]:
+    proposals: list[dict[str, object]] = []
+    pending_evidence: list[dict[str, str]] = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        command_ref = command_ref_from_line(line)
+        if command_ref:
+            if proposals:
+                evidence = proposals[-1].setdefault("evidence", [])
+                if isinstance(evidence, list):
+                    evidence.append({"kind": "command", "ref": command_ref})
+                proposals[-1]["confidence"] = "high"
+            else:
+                pending_evidence.append({"kind": "command", "ref": command_ref})
+            continue
+
+        lowered = line.lower()
+        if "user correction" in lowered or "prefer" in lowered or "preference" in lowered:
+            proposals.append({
+                "type": "preference",
+                "confidence": "medium",
+                "summary": proposal_summary(line),
+                "evidence": [],
+                "tags": list(default_tags),
+                "body": line,
+            })
+            continue
+
+        if (
+            "repeated failure" in lowered
+            or "lesson learned" in lowered
+            or "verified" in lowered
+            or "run " in lowered
+            or "restart " in lowered
+            or "command" in lowered
+        ):
+            evidence = pending_evidence
+            pending_evidence = []
+            proposals.append({
+                "type": "command",
+                "confidence": "high" if evidence else "medium",
+                "summary": proposal_summary(line),
+                "evidence": evidence,
+                "tags": list(default_tags),
+                "body": line,
+            })
+
+    return [
+        proposal
+        for proposal in proposals
+        if str(proposal.get("summary", "")).strip()
+    ]
+
+
+def command_propose(args: argparse.Namespace) -> int:
+    home = memory_home(args)
+    cwd = cwd_from_args(args)
+    ensure_layout(home, compute_repo_key(cwd) if args.scope == "project" else None)
+    if args.input:
+        text = Path(args.input).expanduser().read_text(encoding="utf-8")
+    elif not sys.stdin.isatty():
+        text = sys.stdin.read()
+    else:
+        raise MemoryError("propose requires --input or piped stdin")
+
+    proposals = infer_proposals(text, args.tag or [])
+    candidates: list[dict[str, object]] = []
+    for proposal in proposals:
+        evidence = proposal.get("evidence", [])
+        if not isinstance(evidence, list):
+            evidence = []
+        path, meta = write_note(
+            home,
+            cwd=cwd,
+            scope=args.scope,
+            priority="auto",
+            note_type=str(proposal["type"]),
+            source=args.source,
+            confidence=str(proposal["confidence"]),
+            summary=str(proposal["summary"]),
+            evidence=[item for item in evidence if isinstance(item, dict)],
+            tags=(
+                [str(tag) for tag in proposal.get("tags", []) if isinstance(tag, str)]
+                if isinstance(proposal.get("tags"), list)
+                else []
+            ),
+            body=str(proposal.get("body", "")),
+        )
+        candidates.append({
+            "path": str(path),
+            "type": meta["type"],
+            "scope": meta["scope"],
+            "priority": meta["priority"],
+            "source": meta["source"],
+            "confidence": meta["confidence"],
+            "summary": meta["summary"],
+            "evidence": evidence,
+            "tags": parse_tags(meta.get("tags")),
+        })
+
+    if args.format == "json":
+        print(json.dumps(
+            {"candidates": candidates, "total": len(candidates)},
+            indent=2,
+            ensure_ascii=False,
+        ))
+    else:
+        for candidate in candidates:
+            print(f"PROPOSE={candidate['path']}: {candidate['summary']}")
     return 0
 
 
@@ -1298,6 +1468,15 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--stale-days", type=int, default=90, help="Report canonical entries older than N days")
     review.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
     review.set_defaults(func=command_review)
+
+    propose = sub.add_parser("propose", help="Stage automatic memory candidates from session text")
+    propose.add_argument("--cwd", help="Project directory")
+    propose.add_argument("--scope", choices=sorted(SCOPES), default="project")
+    propose.add_argument("--source", choices=sorted(SOURCES), default="session")
+    propose.add_argument("--tag", action="append", help="Tag to attach to proposed notes; can be repeated")
+    propose.add_argument("--input", help="Text file to scan; stdin is used when omitted and piped")
+    propose.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    propose.set_defaults(func=command_propose)
 
     session = sub.add_parser("session", help="Manage project session handoff notes")
     session_sub = session.add_subparsers(dest="session_command", required=True)

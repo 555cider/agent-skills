@@ -61,6 +61,17 @@
         "Uses session handoff storage.",
         "Does not auto-promote ordinary progress into MEMORY.md."
       ]
+    },
+    {
+      "id": "propose-background-learning-candidates",
+      "prompt": "Review this session summary for learnings: repeated failure after pnpm run check, restart ./sp dev before browser checks; user correction says keep doc-only verification narrow.",
+      "expected_output": "Stages conservative auto inbox candidates with evidence when available, then leaves promotion to a separate review/promote step.",
+      "files": [],
+      "assertions": [
+        "Uses propose or equivalent auto inbox staging for candidate learnings.",
+        "Does not write directly to canonical MEMORY.md.",
+        "Keeps inferred preferences or corrections below automatic promotion eligibility unless explicitly confirmed by the user."
+      ]
     }
   ]
 }

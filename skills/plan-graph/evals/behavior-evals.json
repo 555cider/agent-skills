@@ -55,6 +55,17 @@
         "Produces the requested chat-only plan.",
         "Does not emit the plan-graph report contract."
       ]
+    },
+    {
+      "id": "suggest-deps-before-editing",
+      "prompt": "Before updating graph.yaml, check whether existing plan text already names missing dependencies.",
+      "expected_output": "Runs the read-only dependency suggestion mode, treats EXTRACTED/INFERRED edges as review input, and only edits deps after classifying the relationship.",
+      "files": [".agents/plan/graph.yaml"],
+      "assertions": [
+        "Uses --suggest-deps or equivalent read-only scan before mutating the graph.",
+        "Does not automatically apply suggested deps.",
+        "Classifies accepted suggestions with the normal relationship and decision tokens."
+      ]
     }
   ]
 }

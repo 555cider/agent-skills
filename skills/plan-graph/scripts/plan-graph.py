@@ -522,6 +522,72 @@ def warnings(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]:
     ]
 
 
+def significant_words(value: str) -> set[str]:
+    return {
+        part
+        for part in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", value.lower())
+        if part not in {"the", "and", "for", "with", "plan", "this", "that"}
+    }
+
+
+def suggest_deps(
+    root: Path,
+    nodes: dict[int, Node],
+    deps: dict[int, list[int]],
+) -> list[dict[str, object]]:
+    suggestions: list[dict[str, object]] = []
+    existing = {(dependent, base) for dependent, bases in deps.items() for base in bases}
+
+    for dependent_id, dependent in sorted(nodes.items()):
+        if dependent.x is not None or not is_safe_path(dependent.path):
+            continue
+        dependent_path = root / dependent.path
+        if not dependent_path.exists() or dependent_path.is_dir():
+            continue
+        try:
+            content = dependent_path.read_text(encoding="utf-8-sig", errors="replace")
+        except Exception:
+            continue
+        lowered = content.lower()
+
+        for base_id, base in sorted(nodes.items()):
+            if base_id == dependent_id or base.x in {"dropped", "missing"}:
+                continue
+            if (dependent_id, base_id) in existing:
+                continue
+            confidence = ""
+            reason = ""
+            base_path = base.path.lower()
+            base_name = Path(base.path).name.lower()
+            if base_path and base_path in lowered:
+                confidence = "EXTRACTED"
+                reason = f"path reference {base.path}"
+            elif base_name and base_name in lowered:
+                confidence = "EXTRACTED"
+                reason = f"filename reference {Path(base.path).name}"
+            elif base.summary and base.summary.lower() in lowered:
+                confidence = "EXTRACTED"
+                reason = f"summary reference {base.summary}"
+            else:
+                base_words = significant_words(base.summary)
+                dep_words = significant_words(content)
+                overlap = sorted(base_words & dep_words)
+                if (
+                    len(overlap) >= 2
+                    and re.search(r"\b(depends?|before|after|blocks?|requires?)\b", lowered)
+                ):
+                    confidence = "INFERRED"
+                    reason = "keyword overlap " + ",".join(overlap[:4])
+            if confidence:
+                suggestions.append({
+                    "dependent": dependent_id,
+                    "base": base_id,
+                    "confidence": confidence,
+                    "reason": reason,
+                })
+    return suggestions
+
+
 def render_tree(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]:
     if not nodes:
         return ["(empty plan graph)"]
@@ -601,6 +667,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("graph", type=Path)
     parser.add_argument("--fix", action="store_true", help="repair missing-file graph drift")
     parser.add_argument("--show", action="store_true", help="print the plan tree and exit")
+    parser.add_argument(
+        "--suggest-deps",
+        action="store_true",
+        help="print read-only dependency suggestions and exit",
+    )
     parser.add_argument("--root", type=Path, default=None, help="repo root for plan paths")
     parser.add_argument("--json", action="store_true", help="output result in JSON format")
     args = parser.parse_args(argv)
@@ -608,7 +679,7 @@ def main(argv: list[str]) -> int:
     root = (args.root.resolve() if args.root else default_root(graph.resolve()).resolve())
 
     if not graph.exists():
-        if args.fix:
+        if args.fix and not args.suggest_deps:
             graph.parent.mkdir(parents=True, exist_ok=True)
             write_graph(graph, 1, {}, {})
         else:
@@ -622,7 +693,8 @@ def main(argv: list[str]) -> int:
 
     lock_path = graph.with_name(graph.name + ".lock")
     lock_acquired = False
-    if args.fix and not args.show:  # --show is read-only and takes precedence; it never locks
+    if args.fix and not args.show and not args.suggest_deps:
+        # Only write-capable fix mode locks; read-only modes take precedence.
         for _ in range(3):
             if acquire_lock(lock_path):
                 lock_acquired = True
@@ -678,6 +750,26 @@ def main(argv: list[str]) -> int:
                 print(f"\nCritical Path (Longest unresolved chain):\n  {path_str}")
         if args.fix and lock_acquired:
             release_lock(lock_path)
+        return 0
+
+    if args.suggest_deps:
+        suggestions = suggest_deps(root, nodes, deps)
+        if args.json:
+            print(json.dumps({
+                "status": "OK",
+                "suggestions": suggestions,
+                "changes": [],
+                "errors": [],
+                "warnings": [],
+            }, ensure_ascii=False, indent=2))
+        else:
+            for item in suggestions:
+                print(
+                    f"SUGGEST={item['dependent']}->{item['base']} "
+                    f"{item['confidence']} {item['reason']}"
+                )
+            if not suggestions:
+                print("OK no dependency suggestions")
         return 0
 
     changed = False

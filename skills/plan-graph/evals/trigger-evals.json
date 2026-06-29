@@ -24,6 +24,10 @@
     "should_trigger": true
   },
   {
+    "query": "Scan the current persistent plans for missing dependency edges, but do not edit graph.yaml yet.",
+    "should_trigger": true
+  },
+  {
     "query": "Write a quick implementation plan in chat for adding a retry helper.",
     "should_trigger": false
   },
