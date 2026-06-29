@@ -41,6 +41,22 @@ assert_grepF()   { if grep -qF -- "$3" "$2"; then pass "$1"; else fail "$1" "mis
 assert_nogrep()  { if grep -qE -- "$3" "$2"; then fail "$1" "unexpected /$3/ -> $(grep -nE -- "$3" "$2" | head -1)"; else pass "$1"; fi; }
 assert_fgrep()   { if grep -qE -- "$3" "$2"; then pass "$1"; else fail "$1" "file $2 missing /$3/"; fi; }
 assert_fnogrep() { if grep -qE -- "$3" "$2"; then fail "$1" "file $2 unexpectedly has /$3/"; else pass "$1"; fi; }
+assert_json_expr() {
+  python3 - "$2" "$3" <<'PY'
+import json
+import sys
+
+path, expr = sys.argv[1], sys.argv[2]
+data = json.load(open(path, encoding="utf-8"))
+if not eval(expr, {"__builtins__": {}}, {"data": data, "any": any, "len": len, "all": all}):
+    raise SystemExit(f"expression failed: {expr}")
+PY
+  if [ "$?" -eq 0 ]; then
+    pass "$1"
+  else
+    fail "$1" "JSON expression failed: $3"
+  fi
+}
 
 # newcase <name> -> creates $WORK/<name>/.agents/plan and echoes the case root.
 newcase() { local d="$WORK/$1"; mkdir -p "$d/.agents/plan"; printf '%s' "$d"; }
@@ -95,6 +111,43 @@ pg "$D" --show --json
 assert_exit "normal-show-json" 0
 assert_grep "normal-show-json critical_path" "$WORK/out" '"critical_path"'
 assert_grep "normal-show-json roadmap"       "$WORK/out" '"roadmap"'
+
+# ---------------------------------------------------------------------------
+# suggest-deps — read-only dependency candidates with confidence provenance.
+# ---------------------------------------------------------------------------
+D=$(newcase suggest)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 3
+
+nodes:
+  1: {p: ".agents/plan/auth.md", s: "Auth/session"}
+  2: {p: ".agents/plan/checkout.md", s: "Checkout recovery"}
+
+deps:
+EOF
+printf '# Auth/session\n\nBase authentication constraints.\n' >"$D/.agents/plan/auth.md"
+cat >"$D/.agents/plan/checkout.md" <<'EOF'
+# Checkout recovery
+
+This plan depends on .agents/plan/auth.md before implementing checkout retry behavior.
+EOF
+cp "$D/.agents/plan/graph.yaml" "$WORK/suggest-before.yaml"
+
+pg "$D" --suggest-deps --json
+assert_exit "suggest-deps-json" 0
+assert_json_expr "suggest-deps reports extracted edge" "$WORK/out" \
+  'data["status"] == "OK" and any(item["dependent"] == 2 and item["base"] == 1 and item["confidence"] == "EXTRACTED" for item in data["suggestions"])'
+cmp "$D/.agents/plan/graph.yaml" "$WORK/suggest-before.yaml" >/dev/null && \
+  pass "suggest-deps leaves graph untouched" || fail "suggest-deps leaves graph untouched" "graph mutated"
+
+pg "$D" --suggest-deps
+assert_exit "suggest-deps-text" 0
+assert_grepF "suggest-deps text provenance" "$WORK/out" "SUGGEST=2->1 EXTRACTED"
+
+pg "$D" --suggest-deps --fix
+assert_exit "suggest-deps-fix-readonly" 0
+[ ! -e "$D/.agents/plan/graph.yaml.lock" ] && \
+  pass "suggest-deps fix mode does not leave lock" || fail "suggest-deps fix mode does not leave lock" "lock left behind"
 
 # ---------------------------------------------------------------------------
 # single — a lone node must NOT print a Critical Path section (#8 depth>1 gate).
