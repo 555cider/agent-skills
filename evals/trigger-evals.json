@@ -1,0 +1,50 @@
+[
+  {
+    "query": "Add a persistent plan under .agents/plan for the auth migration and wire it into graph.yaml.",
+    "should_trigger": true
+  },
+  {
+    "query": "Mark the checkout recovery plan complete and prune any closed plan tree.",
+    "should_trigger": true
+  },
+  {
+    "query": "This new plan depends on the existing billing and error strategy plans; update the plan graph.",
+    "should_trigger": true
+  },
+  {
+    "query": "Drop the stale import plan from .agents/plan and keep dependency lineage correct.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the plan-graph checker and fix missing frontmatter in tracked plan files.",
+    "should_trigger": true
+  },
+  {
+    "query": "Before writing a new persistent plan, inspect existing .agents/plan dependencies.",
+    "should_trigger": true
+  },
+  {
+    "query": "Write a quick implementation plan in chat for adding a retry helper.",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a standalone checklist in docs/todo.md with no dependency graph.",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain what a directed acyclic graph is.",
+    "should_trigger": false
+  },
+  {
+    "query": "Review this code diff and tell me if the algorithm is correct.",
+    "should_trigger": false
+  },
+  {
+    "query": "Delete an obsolete README section unrelated to planning files.",
+    "should_trigger": false
+  },
+  {
+    "query": "Brainstorm three possible architectures; do not write files yet.",
+    "should_trigger": false
+  }
+]
