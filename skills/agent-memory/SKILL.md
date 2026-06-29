@@ -170,6 +170,21 @@ python3 <skill-dir>/scripts/memory.py note \
 Never auto-promote global preferences, global operating rules, decisions, or
 anything inferred only from conversation.
 
+To stage learning candidates from session notes, use `propose`. It scans text
+for explicit corrections, repeated failures, and verified commands, then writes
+only `inbox/auto` notes. It never edits canonical `MEMORY.md`; run `review` and
+`promote` separately after checking the candidates and evidence.
+
+```bash
+python3 <skill-dir>/scripts/memory.py propose \
+  --cwd "$PWD" \
+  --scope project \
+  --source session \
+  --tag verification \
+  --input /tmp/session-notes.txt \
+  --format json
+```
+
 ## Do Not Record
 
 Do not record:
@@ -283,7 +298,7 @@ python3 <skill-dir>/scripts/memory.py cleanup --cwd "$PWD" --older-than-days 90
 
 ## JSON Output
 
-The `find`, `list`, and `stats` commands support `--format json` for
+The `find`, `list`, `stats`, and `propose` commands support `--format json` for
 programmatic consumption:
 
 ```bash
@@ -318,6 +333,7 @@ The helper enforces the mechanical parts that agents are bad at doing manually:
 - Canonical updates by read/merge/dedupe under lock, temp write, and atomic rename.
 - Sensitive-pattern rejection for note and canonical content.
 - Promotion eligibility checks and stable canonical ids.
+- Propose: conservative session-text candidate extraction into `inbox/auto` only.
 - Budgeted ranked lookup with filters.
 - Forget: inbox note deletion and optional canonical entry removal by summary or id.
 - Verify: canonical `last_verified` updates by id.

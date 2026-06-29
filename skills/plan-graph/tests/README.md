@@ -24,6 +24,7 @@ each case proves.
 | Case | Mode | Guards |
 |------|------|--------|
 | `normal` | `--show` / check / `--json` | golden tree + roadmap + critical path reproduce; excluded wording only on real exclusions; `--json` shape |
+| `suggest` | `--suggest-deps` | dependency suggestions include provenance and leave `graph.yaml` byte-identical |
 | `single` | `--show` | lone node prints **no** Critical Path (depth>1 gate) |
 | `cycle` | `--show` / check | `--show` exits 0 and lists all nodes (no crash); check errors `cycle detected` |
 | `legacy` | check → `--fix` → check | missing frontmatter is `WARN` (exit 0), `--fix` adds it, recheck clean |

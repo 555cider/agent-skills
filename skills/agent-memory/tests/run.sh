@@ -423,6 +423,30 @@ assert_json_expr "review reports promotion candidates" "$WORK/out" \
   'any(item["kind"] == "promotion_candidate" for item in data["findings"])'
 
 # ---------------------------------------------------------------------------
+# propose: stage candidate learnings from session text without promoting them.
+# ---------------------------------------------------------------------------
+PROPOSE_TEXT="$WORK/propose-input.txt"
+cat >"$PROPOSE_TEXT" <<'EOF'
+Repeated failure: after pnpm run check, restart ./sp dev before browser verification.
+Verified with command: ./sp dev
+User correction: keep verification narrow for small doc-only edits.
+EOF
+
+run_mem propose --cwd "$PROJ" --scope project --source session \
+  --tag verification --format json --input "$PROPOSE_TEXT"
+assert_exit "propose stages candidates" 0
+assert_contains "propose JSON has candidates" "$WORK/out" '"candidates"'
+assert_json_expr "propose writes auto inbox notes" "$WORK/out" \
+  'data["total"] == 2 and all(item["priority"] == "auto" for item in data["candidates"])'
+assert_json_expr "propose command candidate has evidence" "$WORK/out" \
+  'any(item["type"] == "command" and item["confidence"] == "high" and item["evidence"] for item in data["candidates"])'
+assert_json_expr "propose preference candidate stays medium" "$WORK/out" \
+  'any(item["type"] == "preference" and item["confidence"] == "medium" for item in data["candidates"])'
+assert_json_expr "propose notes are staged in inbox" "$WORK/out" \
+  'all(item["path"] for item in data["candidates"])'
+assert_not_contains "propose does not promote to MEMORY.md" "$PROJECT_MEMORY" "restart ./sp dev"
+
+# ---------------------------------------------------------------------------
 # session handoff: save, list, resume, close.
 # ---------------------------------------------------------------------------
 run_mem session save --cwd "$PROJ" --id handoff-1 --summary "Continue docs cleanup" \
