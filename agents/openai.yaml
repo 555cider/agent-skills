@@ -1,4 +1,4 @@
 interface:
   display_name: "Peer Review"
-  short_description: "Get second opinions on plans and specs."
-  default_prompt: "Use $peer-review to get a second opinion on a plan, spec, or design choice."
+  short_description: "Get external second opinions on plans, specs, design choices, and option sets."
+  default_prompt: "Use $peer-review when the user explicitly asks for a peer review, second opinion, reviewer list/help, or choice recommendation. Run reviewer CLIs through the bundled wrapper, report saved review paths and key issues, then add your own judgment."

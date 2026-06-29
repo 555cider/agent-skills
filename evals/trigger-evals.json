@@ -1,0 +1,58 @@
+[
+  {
+    "query": "/peer-review docs/superpowers/plans/auth-plan.md --reviewer=claude,codex",
+    "should_trigger": true
+  },
+  {
+    "query": "Get a second opinion on the implementation plan I just wrote.",
+    "should_trigger": true
+  },
+  {
+    "query": "peer-review this spec with focus on repo-fit and assumptions.",
+    "should_trigger": true
+  },
+  {
+    "query": "Use reviewer 0 to self-review the plan in chat.",
+    "should_trigger": true
+  },
+  {
+    "query": "Show me the peer-review reviewer list.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run a choice review over these three architecture options and recommend one.",
+    "should_trigger": true
+  },
+  {
+    "query": "Ask opencode and agy for a second opinion on .agents/plan/import.md.",
+    "should_trigger": true
+  },
+  {
+    "query": "Summarize the pull request diff and list likely bugs.",
+    "should_trigger": false
+  },
+  {
+    "query": "Review this Python function for off-by-one errors without calling external reviewers.",
+    "should_trigger": false
+  },
+  {
+    "query": "Run the unit tests and fix any failures.",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a new implementation plan for the search feature.",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain the trade-offs between SQLite and Postgres in general.",
+    "should_trigger": false
+  },
+  {
+    "query": "Open README.md and tell me whether it mentions installation.",
+    "should_trigger": false
+  },
+  {
+    "query": "Format the markdown table below.",
+    "should_trigger": false
+  }
+]

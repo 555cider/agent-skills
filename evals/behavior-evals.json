@@ -1,0 +1,60 @@
+{
+  "skill_name": "peer-review",
+  "evals": [
+    {
+      "id": "review-plan-file-with-default-reviewer",
+      "prompt": "peer-review docs/plans/payment-retry.md",
+      "expected_output": "Runs the peer-review wrapper against the provided file with source=file and a non-host default reviewer, then reports the saved review path and key issues.",
+      "files": ["docs/plans/payment-retry.md"],
+      "assertions": [
+        "Treats the positional argument as a plan file.",
+        "Passes --source=file and --host for reviewer resolution.",
+        "Summarizes reviewer findings before adding its own judgment."
+      ]
+    },
+    {
+      "id": "review-chat-choice-block",
+      "prompt": "Use peer-review --focus=choice on the options I just listed in chat.",
+      "expected_output": "Finds the most recent choice-shaped chat block, pipes it through --stdin-plan with --focus=choice, and reports the reviewer recommendation with trade-offs.",
+      "files": [],
+      "assertions": [
+        "Uses chat-sourced input only when the recent choice block is unambiguous.",
+        "Does not create a temporary chat plan file manually when --stdin-plan is available.",
+        "Preserves the user's requested focus=choice."
+      ]
+    },
+    {
+      "id": "list-reviewers-no-plan",
+      "prompt": "/peer-review list",
+      "expected_output": "Runs the wrapper with the positional list subcommand and --host, then relays the available reviewer table without searching for a plan.",
+      "files": [],
+      "assertions": [
+        "Does not ask for or infer a plan file.",
+        "Uses the positional list subcommand, not --list.",
+        "Includes the self-review row by passing --host."
+      ]
+    },
+    {
+      "id": "surface-total-reviewer-failure",
+      "prompt": "Run peer-review on docs/spec.md with --reviewer=codex --timeout=1.",
+      "expected_output": "If all reviewers fail or time out, reports the wrapper stderr verbatim and does not invent a review summary.",
+      "files": ["docs/spec.md"],
+      "assertions": [
+        "Surfaces timeout messages directly.",
+        "Stops when no REVIEW lines are produced.",
+        "Does not claim the review succeeded."
+      ]
+    },
+    {
+      "id": "avoid-ordinary-code-review-trigger",
+      "prompt": "Review this diff for bugs and missing tests.",
+      "expected_output": "Does not invoke peer-review because the user asked for the host agent's own code review, not an external second opinion.",
+      "files": [],
+      "assertions": [
+        "Uses normal code-review behavior.",
+        "Does not call scripts/run-peer-review.sh.",
+        "Leads with findings when issues are found."
+      ]
+    }
+  ]
+}
