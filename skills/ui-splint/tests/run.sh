@@ -66,5 +66,93 @@ else
   fail "coverage records HTTP 404 as unverified" "$(cat "$WORK/audit/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 300)"
 fi
 
+set +e
+python3 - "$HERE" "$RUNNER" "$PORT" "$WORK" >"$WORK/contract.out" 2>"$WORK/contract.err" <<'PY'
+import json
+import pathlib
+import subprocess
+import sys
+
+here = pathlib.Path(sys.argv[1])
+runner = pathlib.Path(sys.argv[2])
+port = sys.argv[3]
+work = pathlib.Path(sys.argv[4])
+expected = json.loads((here / "expected.json").read_text(encoding="utf-8"))["fixtures"]
+base = f"http://127.0.0.1:{port}"
+errors = []
+
+for fixture in expected:
+    file_name = fixture["file"]
+    viewport = fixture["viewport"]
+    out_dir = work / ("contract-" + file_name.replace(".", "-"))
+    config = {
+        "routes": ["/" + file_name],
+        "viewports": [{
+            "name": "fixture",
+            "width": viewport["width"],
+            "height": viewport["height"],
+            "isMobile": viewport.get("isMobile", True),
+            "dpr": viewport.get("dpr", 3),
+        }],
+        "themes": [fixture.get("theme", "light")],
+        "states": ["default"],
+        "scrollPositions": ["top", "bottom"],
+    }
+    cfg_path = work / (file_name + ".json")
+    cfg_path.write_text(json.dumps(config), encoding="utf-8")
+    result = subprocess.run(
+        ["node", str(runner), base, "--config", str(cfg_path), "--out-dir", str(out_dir), "--no-screenshots"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode not in (0, 1):
+        errors.append(f"{file_name}: runner exited {result.returncode}\n{result.stderr or result.stdout}")
+        continue
+
+    findings_path = out_dir / "findings.json"
+    coverage_path = out_dir / "coverage.json"
+    if not findings_path.exists() or not coverage_path.exists():
+        errors.append(f"{file_name}: missing findings/coverage output")
+        continue
+
+    findings = json.loads(findings_path.read_text(encoding="utf-8"))
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    bad_cells = [c for c in coverage.get("matrix", []) if c.get("status") != "checked"]
+    if bad_cells:
+        errors.append(f"{file_name}: unverified coverage cells {bad_cells!r}")
+
+    if fixture.get("expectZeroFindings") and findings:
+        rules = ", ".join(sorted({f.get("rule", "?") for f in findings}))
+        errors.append(f"{file_name}: expected zero findings, got {len(findings)} ({rules})")
+
+    for must in fixture.get("mustHit", []):
+        rule = must["rule"]
+        needle = must.get("matches")
+        matched = False
+        for finding in findings:
+            if finding.get("rule") != rule:
+                continue
+            blob = json.dumps(finding, ensure_ascii=False)
+            if not needle or needle in blob:
+                matched = True
+                break
+        if not matched:
+            detail = f" matching {needle!r}" if needle else ""
+            rules = ", ".join(sorted({f.get("rule", "?") for f in findings}))
+            errors.append(f"{file_name}: missing {rule}{detail}; saw [{rules}]")
+
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    raise SystemExit(1)
+PY
+EC=$?
+set -e
+
+assert_exit "fixture contract matches expected.json" 0
+if [ "$EC" -ne 0 ]; then
+  fail "fixture contract details" "$(cat "$WORK/contract.err" 2>/dev/null | tr '\n' '|' | head -c 800)"
+fi
+
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

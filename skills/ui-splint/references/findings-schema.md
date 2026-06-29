@@ -15,6 +15,7 @@ findings) and `coverage.json` (the matrix that was actually exercised).
   "contrast": { "normal": 4.5, "large": 3.0, "washedOut": 1.3, "placeholderFail": 3.0 },
   "tap": { "fail": 24, "risk": 44, "crowdGap": 8 },
   "cls": { "risk": 0.1, "fail": 0.25 },
+  "layout": { "loneNarrowWidth": 180, "maxButtonsInRow": 4 },
   "overflowTolerancePx": 1,
   "collapsePx": 3,
   "mediaAspectTolerance": 0.05,

@@ -62,6 +62,7 @@
     cls: { risk: 0.1, fail: 0.25 },
     mediaAspectTolerance: 0.05,
     polish: { maxRadii: 4, maxShadows: 4, maxAccentHues: 6, maxFontPairs: 10, lineLenMin: 45, lineLenMax: 95 },
+    layout: { loneNarrowWidth: 180, maxButtonsInRow: 4 },
     // selectors matching authenticated destinations for the auth-mode-conflict rule
     authedNavWords: ['my', 'account', 'profile', 'mypage', '마이', '계정', '프로필', '내정보'],
     isMobile: null,        // null => infer from innerWidth <= 600
@@ -95,7 +96,9 @@
       ['brokenOrDistortedMedia', ruleMedia],
       ['focusTrapLeak', ruleFocusTrap],
       ['layoutShiftCLS', ruleCLS],
-      ['designSystemDrift', ruleDrift]
+      ['designSystemDrift', ruleDrift],
+      ['loneNarrowElement', ruleLoneNarrow],
+      ['excessiveButtonsInRow', ruleExcessiveButtons]
     ];
 
     RULES.forEach(function (pair) {
@@ -652,6 +655,128 @@
         { cls: round2(s.cls), sources: (s.clsSources || []).slice(0, 5) }, { risk: ctx.cfg.cls.risk, fail: ctx.cfg.cls.fail }, null,
         'Reserve space for late content (image width/height, skeletons matching final size, no inserted banners above content).'));
     }
+  }
+
+  function ruleLoneNarrow(ctx) {
+    var cfg = ctx.cfg.layout || { loneNarrowWidth: 180 };
+    var threshold = cfg.loneNarrowWidth;
+    var sel = 'button,[role=button],.btn,input,select,textarea,.chip,.badge,.pill,.tag';
+
+    var allVisible = qsa('body *').filter(function (el) {
+      if (!isVisible(el) || isExempt(el)) return false;
+      var r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+
+    var candidates = allVisible.filter(function (el) {
+      var r = el.getBoundingClientRect();
+      if (r.width >= threshold) return false;
+      var cs = getComputedStyle(el);
+      if (cs.display === 'inline' && el.tagName === 'A') return false;
+
+      if (el.matches(sel) || (hasOwnText(el) && r.width < threshold)) {
+        return true;
+      }
+      return false;
+    });
+
+    candidates.forEach(function (el) {
+      var r = el.getBoundingClientRect();
+      var alone = true;
+      for (var i = 0; i < allVisible.length; i++) {
+        var other = allVisible[i];
+        if (other === el || el.contains(other) || other.contains(el)) continue;
+
+        var or = other.getBoundingClientRect();
+        var overlap = Math.min(r.bottom, or.bottom) - Math.max(r.top, or.top);
+        var minH = Math.min(r.height, or.height);
+
+        if (overlap > 0 && (overlap >= minH * 0.5 || overlap >= 10)) {
+          alone = false;
+          break;
+        }
+      }
+
+      if (alone) {
+        var text = (el.textContent || el.value || '').trim().slice(0, 20);
+        ctx.findings.push(mk('loneNarrowElement', 'Polish', 'auto-measured', cssPath(el),
+          'Narrow element "' + text + '" (' + Math.round(r.width) + 'px) occupies a whole row by itself. Prefer sharing the row with other elements.',
+          { width: Math.round(r.width), text: text }, { threshold: threshold }, rectOf(el),
+          'Place this element in the same row as other related controls, or increase its width to fill the row if it must be alone.'));
+      }
+    });
+  }
+
+  function ruleExcessiveButtons(ctx) {
+    var cfg = ctx.cfg.layout || { maxButtonsInRow: 4 };
+    var maxCount = cfg.maxButtonsInRow;
+
+    function isButton(el) {
+      if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || el.classList.contains('btn') || el.classList.contains('button')) {
+        return true;
+      }
+      if (el.tagName === 'INPUT' && (el.type === 'button' || el.type === 'submit')) {
+        return true;
+      }
+      return false;
+    }
+
+    var buttons = qsa('body *').filter(function (el) {
+      if (!isVisible(el) || isExempt(el)) return false;
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return false;
+      return isButton(el);
+    });
+
+    var rows = [];
+    buttons.forEach(function (b) {
+      var br = b.getBoundingClientRect();
+      var placed = false;
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var overlaps = row.some(function (member) {
+          var mr = member.rect;
+          var overlap = Math.min(br.bottom, mr.bottom) - Math.max(br.top, mr.top);
+          var minH = Math.min(br.height, mr.height);
+          return overlap > 0 && (overlap >= minH * 0.5 || overlap >= 10);
+        });
+        if (overlaps) {
+          row.push({ el: b, rect: br });
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        rows.push([{ el: b, rect: br }]);
+      }
+    });
+
+    rows.forEach(function (row) {
+      if (row.length > maxCount) {
+        var commonAncestor = findCommonAncestor(row.map(function (item) { return item.el; }));
+        var selectors = row.map(function (item) {
+          return (item.el.textContent || '').trim().slice(0, 15) || item.el.tagName.toLowerCase();
+        }).join(', ');
+
+        ctx.findings.push(mk('excessiveButtonsInRow', 'Polish', 'auto-measured', cssPath(commonAncestor),
+          'Too many buttons listed in a single row (' + row.length + ' buttons: ' + selectors + '). Consider grouping some under a menu/dropdown.',
+          { count: row.length }, { max: maxCount }, rectOf(commonAncestor),
+          'Group some or all of these buttons into a dropdown menu (e.g., a "More" action menu) to clean up the row.'));
+      }
+    });
+  }
+
+  function findCommonAncestor(elements) {
+    if (!elements.length) return document.body;
+    var current = elements[0];
+    while (current) {
+      var allContain = elements.every(function (el) {
+        return current.contains(el);
+      });
+      if (allContain) return current;
+      current = current.parentElement;
+    }
+    return document.body;
   }
 
   function ruleDrift(ctx) {

@@ -1,5 +1,5 @@
 {
-  "_comment": "Regression contract for audit.js. Each fixture lists rules that MUST fire (mustHit) and, for the clean baseline, that NOTHING fires. Render at the given viewport; for dashboard scroll the inner .scroll to bottom; for kitchensink install CLS before the late banner. These were validated live in Chromium during the redesign.",
+  "_comment": "Regression contract for audit.js. Each fixture lists rules that MUST fire (mustHit) and, for the clean baseline, that NOTHING fires. Render at the given viewport and run top/bottom scroll positions; for kitchensink install CLS before the late banner. These were validated live in Chromium during the redesign.",
   "fixtures": [
     {
       "file": "login.html",
@@ -38,6 +38,15 @@
         { "rule": "invisibleContent", "note": "D8 opacity:0 content" },
         { "rule": "brokenOrDistortedMedia", "note": "D9 broken image" },
         { "rule": "layoutShiftCLS", "note": "D10 late banner CLS>0.1" }
+      ]
+    },
+    {
+      "file": "layout.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "loneNarrowElement", "matches": "Filter", "note": "L1 narrow control stranded on its own row" },
+        { "rule": "excessiveButtonsInRow", "matches": "5 buttons", "note": "L2 too many peer actions in one row" }
       ]
     },
     {

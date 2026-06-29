@@ -113,3 +113,13 @@ Segmented/tab/radio groups where the wrong item looks active.
 - **Method:** histograms over visible elements: distinct `border-radius` (`>4`), `box-shadow`
   (`>4`), saturated accent hues in 30° buckets used ≥2× (`>6`), font-size/weight pairs (`>10`).
   Tolerance-gated and capped; never escalates above `Polish` on its own. Exclude data-viz/code.
+
+## loneNarrowElement — `Polish` — auto-measured
+- **Method:** checks if any button, input, select, badge, chip, tag or narrow content element with rendered width `< loneNarrowWidth` (default `180px`) occupies a whole row by itself (i.e. no other visible non-ancestor, non-descendant element overlaps it vertically).
+- **Threshold:** width `< 180px` (or configured value).
+- **FP guards:** ignores inline text links, hidden/exempt elements, and elements that share a row with other elements (e.g. sidebars sharing row with main content).
+
+## excessiveButtonsInRow — `Polish` — auto-measured
+- **Method:** finds all visible button-like elements, groups them into rows based on vertical overlap (sharing at least 50% height or 10px vertically), and flags any row containing more than `maxButtonsInRow` (default `4`).
+- **Threshold:** count `> 4` (or configured value).
+- **FP guards:** ignores hidden/exempt elements; groups using vertical bounding rect intersection to prevent false groupings.

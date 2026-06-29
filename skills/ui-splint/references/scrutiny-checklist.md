@@ -90,6 +90,9 @@ The audit sees boxes, not a workflow. Judge whether the screen reads as a compos
   controls (occasional filters/sort) that could collapse into an existing toolbar →
   `Polish`; `Risk` when they cost first-viewport space. Not a finding when those controls
   are the primary scanning tool for the screen.
+- **[auto]** Narrow elements (buttons, inputs, badges, etc.) occupying a full row by themselves → `loneNarrowElement` (`Polish`). Prefer sharing the row with other elements.
+- **[auto]** Too many buttons listed in a single row → `excessiveButtonsInRow` (`Polish`). Prefer grouping some under a dropdown/menu.
+
 
 ## Spacing rhythm & alignment  *([visual], beyond drift histograms)*
 

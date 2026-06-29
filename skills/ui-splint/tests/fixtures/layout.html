@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>layout polish defects</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f8fafc;color:#111827;font-family:system-ui,sans-serif;padding:24px}
+  main{max-width:420px;margin:0 auto}
+  h1{font-size:22px;line-height:1.2;margin:0 0 24px}
+  section{margin:0 0 28px}
+  .filter{display:block;width:92px;min-height:48px;border:1px solid #9ca3af;border-radius:8px;background:#ffffff;color:#111827;font-weight:700}
+  .actions{display:flex;gap:8px;align-items:center}
+  .actions button{min-width:56px;min-height:48px;border:1px solid #9ca3af;border-radius:8px;background:#ffffff;color:#111827;font-weight:700}
+</style></head>
+<body>
+  <main>
+    <h1>Layout polish regression fixture</h1>
+    <section>
+      <button class="filter">Filter</button>
+    </section>
+    <section class="actions" aria-label="row of peer actions">
+      <button>One</button>
+      <button>Two</button>
+      <button>Three</button>
+      <button>Four</button>
+      <button>Five</button>
+    </section>
+  </main>
+</body></html>

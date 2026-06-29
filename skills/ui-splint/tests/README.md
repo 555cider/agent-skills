@@ -12,6 +12,7 @@ detector covers.
 | `login.html` | the real dark-theme auth screen | washed-out unselected tab, pale brand-button text (Google/Kakao/Naver), low-contrast placeholders, selected-state inversion, authenticated-nav-on-auth conflict |
 | `dashboard.html` | the real dark dashboard | fixed bottom nav clipping the last content row (only visible at scroll-bottom) |
 | `kitchensink.html` | a broad defect set | horizontal overflow, ancestor-collapsed scroll region, text escape + clamp, tiny/crowded tap targets, off-viewport element, content under a fixed bar, opacity:0 content, broken image, CLS |
+| `layout.html` | layout polish regressions | lone narrow element on its own row, too many buttons in one row |
 | `clean.html` | a well-built version of the same screens | **nothing** (zero findings) |
 
 `expected.json` is the machine-readable contract: per fixture, the rules that must fire
@@ -26,7 +27,7 @@ Serve the fixture directory and point a runner at it:
 python3 -m http.server 8788 &
 node ../../scripts/audit-chrome.mjs http://localhost:8788 \
   --config /tmp/cfg.json --out-dir /tmp/ui-splint-check --no-screenshots
-# cfg.json: { "routes": ["/login.html","/dashboard.html","/kitchensink.html","/clean.html"],
+# cfg.json: { "routes": ["/login.html","/dashboard.html","/kitchensink.html","/layout.html","/clean.html"],
 #             "viewports":[{"name":"mobile","width":390,"height":844,"isMobile":true,"dpr":3}],
 #             "themes":["dark"], "states":["default"], "scrollPositions":["top","bottom"] }
 ```
@@ -35,8 +36,8 @@ Then check `findings.json` against `expected.json`: every `mustHit` rule present
 fixture, and `clean.html` with zero findings. (Or inject `audit.js` via the MCP/DevTools
 console and call `__uiSplintAudit({isMobile:true})` — see `../SKILL.md`.)
 
-Validated baseline (mobile/dark): login 7 Fail / 2 Risk · dashboard sticky-overlap at
-bottom · kitchensink all defect classes · clean **0**.
+Validated baseline: login auth defects · dashboard sticky-overlap at bottom ·
+kitchensink all defect classes · layout polish rules · clean **0**.
 
 ## Gotcha (already handled in both runners)
 
