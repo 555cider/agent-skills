@@ -1,0 +1,60 @@
+{
+  "skill_name": "ui-splint",
+  "evals": [
+    {
+      "id": "measure-before-judging",
+      "prompt": "Review the dashboard UI and tell me whether it is ready.",
+      "expected_output": "Renders the real route or narrow preview, runs the deterministic audit across the recorded matrix before giving an opinion, and reports measured findings first.",
+      "files": [],
+      "assertions": [
+        "Does not rely on a screenshot alone.",
+        "Runs scripts/audit.js or a documented runner before visual judgment.",
+        "Reports coverage for routes, viewports, themes, and states."
+      ]
+    },
+    {
+      "id": "blocked-when-cannot-render",
+      "prompt": "The frontend app cannot start here; still say whether the screen looks good from the code.",
+      "expected_output": "Refuses to claim the UI is visually complete and marks the review blocked on rendered visual verification.",
+      "files": [],
+      "assertions": [
+        "Does not claim no findings without rendering.",
+        "Surfaces the unverified matrix cells.",
+        "Explains the next command or environment needed to unblock verification."
+      ]
+    },
+    {
+      "id": "fix-known-visual-findings",
+      "prompt": "Fix the sticky footer covering content and low-contrast placeholder findings from the ui-splint report.",
+      "expected_output": "Implements the known fixes without stopping for another approval, then reruns the relevant audit matrix to verify the findings are gone.",
+      "files": [],
+      "assertions": [
+        "Treats the provided finding list as approval to fix.",
+        "Uses measured re-verification after changes.",
+        "Does not broaden into unrelated visual redesign."
+      ]
+    },
+    {
+      "id": "separate-measurement-from-judgment",
+      "prompt": "Audit this settings screen for visual quality.",
+      "expected_output": "Groups auto-measured failures separately from visual-judgment risks and caps subjective issues at Risk unless measured.",
+      "files": [],
+      "assertions": [
+        "Uses computed severity for auto findings.",
+        "Labels subjective issues as visual-judgment.",
+        "Keeps findings grouped by failure mode."
+      ]
+    },
+    {
+      "id": "avoid-backend-only-trigger",
+      "prompt": "Fix the JSON serialization bug in the API handler.",
+      "expected_output": "Does not invoke ui-splint because the task has no rendered UI surface to verify.",
+      "files": [],
+      "assertions": [
+        "Uses backend tests or static checks instead.",
+        "Does not start a browser or run visual audit tooling.",
+        "Does not mention visual coverage."
+      ]
+    }
+  ]
+}

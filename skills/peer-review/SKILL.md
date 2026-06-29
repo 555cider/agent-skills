@@ -1,6 +1,6 @@
 ---
 name: peer-review
-description: Use when the user explicitly asks for a peer review or second opinion on a plan, spec, or design choice, including /peer-review in Claude Code or natural-language requests in Codex.
+description: Use when the user explicitly asks for a peer review, second opinion, reviewer list/help, or choice recommendation for a plan, spec, design choice, or option set, including /peer-review in Claude Code or natural-language requests in Codex. Do not use for ordinary host-agent code review unless the user asks for an external/peer reviewer.
 ---
 
 # Peer Review

@@ -1,0 +1,60 @@
+{
+  "skill_name": "plan-graph",
+  "evals": [
+    {
+      "id": "validate-before-trusting-existing-graph",
+      "prompt": "Add a new persistent plan that depends on .agents/plan/auth.md.",
+      "expected_output": "Runs the plan-graph check command first, reviews existing candidate plans, classifies the relationship, then adds a new node and dependency only if the work is truly dependent.",
+      "files": [".agents/plan/graph.yaml", ".agents/plan/auth.md"],
+      "assertions": [
+        "Checks the existing graph before editing it.",
+        "Does not create a blank root without reviewing related plans.",
+        "Reports Reviewed, Decisions, Deps, Pruned, and Propagation."
+      ]
+    },
+    {
+      "id": "reuse-existing-plan",
+      "prompt": "Extend the current checkout plan with another task; it has the same assumptions.",
+      "expected_output": "Classifies the existing checkout plan as base,reuse and edits it in place without allocating a new graph node.",
+      "files": [".agents/plan/graph.yaml"],
+      "assertions": [
+        "Does not create a duplicate node for same-area work.",
+        "Leaves deps unchanged when reusing the base plan.",
+        "Records the reuse decision with exact relationship and decision tokens."
+      ]
+    },
+    {
+      "id": "supersede-without-live-dep",
+      "prompt": "The old import plan is wrong; replace it with a new plan and drop the old one.",
+      "expected_output": "Creates a replacement node only when needed, marks or prunes the stale plan, and does not add a dependency from the new active node to a dropped base.",
+      "files": [".agents/plan/graph.yaml"],
+      "assertions": [
+        "Never wires active plans to dropped nodes.",
+        "Checks active dependents before changing or pruning the base.",
+        "Reports propagation or lack of propagation explicitly."
+      ]
+    },
+    {
+      "id": "complete-and-prune-closed-tree",
+      "prompt": "Complete the migration planning tree and remove it if nothing active depends on it.",
+      "expected_output": "Reverse-searches dependencies, prunes the closed tree only when no active outside plan depends on it, and runs check again after removal.",
+      "files": [".agents/plan/graph.yaml"],
+      "assertions": [
+        "Does not use x: done as a history archive for closed trees.",
+        "Keeps done nodes only when an active dependent still needs them.",
+        "Runs validation after graph/file removal."
+      ]
+    },
+    {
+      "id": "avoid-standalone-chat-plan",
+      "prompt": "Draft a one-off plan in this chat; do not save planning files.",
+      "expected_output": "Does not use plan-graph because no persistent plan file or graph lineage is involved.",
+      "files": [],
+      "assertions": [
+        "Does not inspect or modify .agents/plan.",
+        "Produces the requested chat-only plan.",
+        "Does not emit the plan-graph report contract."
+      ]
+    }
+  ]
+}

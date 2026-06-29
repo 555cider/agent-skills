@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 tests/*
 !tests/install.sh
+!tests/validate-skill-evals.py
 # but DO track lightweight repo-level install tests and skill test suites.
 !skills/**/tests/
 !skills/**/tests/README.md
