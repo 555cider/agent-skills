@@ -695,6 +695,10 @@ for p in "${REVIEWERS_LIST[@]}"; do
 done
 
 PROMPT_FILE="$(mktemp "$OUT_DIR/.peer-review-prompt-XXXXXX.md")"
+OPENCODE_AGENT_FILE=""
+OPENCODE_AGENT_NAME=""
+OPENCODE_AGENT_DIR_CREATED=0
+OPENCODE_CONFIG_DIR_CREATED=0
 
 # --- cleanup on any exit ---
 declare -A FINALIZED=()
@@ -729,6 +733,15 @@ cleanup() {
 
   cleanup_stdin_plan
   rm -f "$PROMPT_FILE" 2>/dev/null || true
+  if [ -n "$OPENCODE_AGENT_FILE" ]; then
+    rm -f "$OPENCODE_AGENT_FILE" 2>/dev/null || true
+    if [ "$OPENCODE_AGENT_DIR_CREATED" -eq 1 ]; then
+      rmdir "$(dirname "$OPENCODE_AGENT_FILE")" 2>/dev/null || true
+    fi
+    if [ "$OPENCODE_CONFIG_DIR_CREATED" -eq 1 ]; then
+      rmdir "$(dirname "$(dirname "$OPENCODE_AGENT_FILE")")" 2>/dev/null || true
+    fi
+  fi
   rm -f "$OUT_DIR"/.peer-review-timeout-* "$OUT_DIR"/.peer-review-prompt-* 2>/dev/null || true
   for p in "${REVIEWERS_LIST[@]}"; do
     rm -f "${TMP_OUTS[$p]:-}" "${TMP_ERRS[$p]:-}" 2>/dev/null || true
@@ -860,6 +873,48 @@ run_with_timeout() {
   return "$status"
 }
 
+ensure_opencode_readonly_agent() {
+  [ -n "$OPENCODE_AGENT_FILE" ] && return 0
+
+  local base dir name file
+  base="${REPO_ROOT:-$PWD}"
+  dir="$base/.opencode/agent"
+  [ -d "$(dirname "$dir")" ] || OPENCODE_CONFIG_DIR_CREATED=1
+  [ -d "$dir" ] || OPENCODE_AGENT_DIR_CREATED=1
+  mkdir -p "$dir" || {
+    echo "could not create opencode read-only agent directory: $dir" >&2
+    exit 2
+  }
+  name="peer-review-readonly-$$"
+  file="$dir/$name.md"
+  if [ -e "$file" ]; then
+    name="peer-review-readonly-$$-$(date +%s)"
+    file="$dir/$name.md"
+  fi
+  ( set -C; : > "$file" ) 2>/dev/null || {
+    echo "could not create opencode read-only agent file: $file" >&2
+    exit 2
+  }
+  cat > "$file" <<'EOF'
+---
+description: Read-only peer reviewer for implementation plans, specs, and design choices.
+mode: primary
+permission:
+  bash: deny
+  edit: deny
+  webfetch: deny
+  websearch: deny
+  task: deny
+  todowrite: deny
+  lsp: deny
+  skill: deny
+---
+You are a read-only peer reviewer. Inspect repository files when useful, but do not modify files, run shell commands, delegate work, fetch web content, or use skills. Return only review findings.
+EOF
+  OPENCODE_AGENT_FILE="$file"
+  OPENCODE_AGENT_NAME="$name"
+}
+
 # Build the headless invocation for the named profile. Looks up the backing CLI
 # and any model/effort settings from the profile registry; appends model/effort
 # flags where the CLI exposes them (effort is silently ignored where unsupported,
@@ -886,12 +941,19 @@ build_cmd() {
       [ -n "$model" ] && CMD+=(--model "$model")
       ;;
     opencode)
-      CMD=(opencode run)
-      [ -n "$model" ] && CMD+=(-m "$model")
+      ensure_opencode_readonly_agent
+      CMD=(opencode run --agent "$OPENCODE_AGENT_NAME")
+      if [ -n "$model" ]; then
+        if [[ "$model" != */* ]]; then
+          model="opencode/$model"
+        fi
+        CMD+=(-m "$model")
+      fi
       [ -n "$effort" ] && CMD+=(--variant "$effort")
       ;;
     agy)
       CMD=(agy -p "$(cat "$PROMPT_FILE")" --sandbox)
+      [ -n "$model" ] && CMD+=(--model "$model")
       ;;
   esac
   # Explicit success — `[ test ] && cmd` constructs would propagate the test's

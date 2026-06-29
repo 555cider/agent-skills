@@ -214,10 +214,14 @@ missing, 4 filename claim failed, 5 empty response (single-reviewer mode),
 - **Reviewer sandboxing / headless mode:**
   - codex: `codex exec --sandbox read-only` (read-only sandbox)
   - claude: `claude -p` (relies on claude's permission system)
-  - opencode: `opencode run` (relies on opencode's permission defaults; ANSI
-    color codes stripped from saved output)
-  - agy: `agy -p "<prompt>" --sandbox` (runs headlessly in a sandbox)
-  All supported reviewers accept the prompt over stdin.
+  - opencode: creates a temporary repo-local `peer-review-readonly-*` agent
+    that denies edit/shell/network/delegation tools, then runs
+    `opencode run --agent <agent>`; model names without a provider prefix are
+    sent as `opencode/<model>`; ANSI color codes are stripped from saved output.
+  - agy: `agy -p "<prompt>" --sandbox`; model is forwarded when configured.
+  The wrapper feeds the prompt over stdin where the CLI supports it; `agy`
+  receives the prompt through `-p` because that is its headless prompt
+  interface.
 - **Parallel execution:** multiple reviewers spawn as background subprocesses,
   each with its own temp files and claimed `OUT_FILE`. The script waits for
   all, emits one `REVIEW=` per success and one `ERROR=` per failure. Wall
