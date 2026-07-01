@@ -260,6 +260,201 @@ python3 -c "import json, sys; json.load(open(sys.argv[1]))" "$WORK/out" 2>/dev/n
   pass "stats JSON output is valid" || fail "stats JSON output is valid" "invalid JSON"
 
 # ---------------------------------------------------------------------------
+# OKF-compatible topics: expose frontmatter metadata in JSON find results.
+# ---------------------------------------------------------------------------
+TOPIC_DIR="$MEMHOME/projects/$PROJECT_KEY/topics"
+mkdir -p "$TOPIC_DIR"
+cat >"$TOPIC_DIR/verification-policy.md" <<'EOF'
+---
+type: AgentMemoryTopic
+title: Verification Policy
+description: How to scope checks for documentation and small edits.
+resource: repo://agent-skills/verification-policy
+tags: [verification, docs]
+timestamp: 2026-07-01T00:00:00Z
+owner: agents
+---
+
+# Verification Policy
+
+Use targeted checks before broad suites for doc-only edits.
+EOF
+
+run_mem find --cwd "$PROJ" --query "Verification Policy" --format json --budget-lines 5
+assert_exit "find returns OKF topic" 0
+assert_json_expr "OKF topic metadata is exposed" "$WORK/out" \
+  'any(result["kind"] == "topic" and result["summary"] == "Verification Policy" and result["type"] == "AgentMemoryTopic" and result["description"].startswith("How to scope") and result["resource"] == "repo://agent-skills/verification-policy" and result["tags"] == ["verification", "docs"] and result["timestamp"] == "2026-07-01T00:00:00Z" and result["metadata"].get("owner") == "agents" for result in data["results"])'
+
+cat >"$TOPIC_DIR/quoted-verification-policy.md" <<'EOF'
+---
+type: AgentMemoryTopic
+title: "Quoted: Verification Policy"
+description: "Handles: quoted scalars"
+resource: repo://agent-skills/quoted-verification-policy
+tags:
+  - verification
+  - docs
+timestamp: "2026-07-01T01:00:00Z"
+owner: "agent:memory"
+---
+
+# Quoted Policy
+
+Use simple YAML block lists for readable tag metadata.
+EOF
+
+run_mem find --cwd "$PROJ" --query "Quoted: Verification" --format json --budget-lines 5
+assert_exit "find returns OKF topic with YAML block tags" 0
+assert_json_expr "OKF topic parser accepts block lists and quoted scalars" "$WORK/out" \
+  'any(result["kind"] == "topic" and result["summary"] == "Quoted: Verification Policy" and result["description"] == "Handles: quoted scalars" and result["tags"] == ["verification", "docs"] and result["timestamp"] == "2026-07-01T01:00:00Z" and result["metadata"].get("owner") == "agent:memory" for result in data["results"])'
+
+run_mem find --cwd "$PROJ" --query "Verification Policy" --type AgentMemoryTopic --format json --budget-lines 10
+assert_exit "find filters OKF topics by topic type" 0
+assert_json_expr "OKF topic type filter returns topic results" "$WORK/out" \
+  'data["total"] >= 2 and all(result["kind"] == "topic" and result["type"] == "AgentMemoryTopic" for result in data["results"])'
+
+cat >"$TOPIC_DIR/malformed-topic.md" <<'EOF'
+---
+type AgentMemoryTopic
+title: Broken Topic
+---
+
+# Broken Topic
+
+Malformed topic frontmatter should not break memory search.
+EOF
+
+run_mem find --cwd "$PROJ" --query "Broken Topic" --format json --budget-lines 5
+assert_exit "find tolerates malformed topic frontmatter" 0
+assert_json_expr "malformed topic remains searchable as plain text" "$WORK/out" \
+  'any(result["kind"] == "topic" and "Broken Topic" in result["text"] for result in data["results"])'
+
+# Test CRLF line endings in topic frontmatter
+CRLF_TOPIC="$TOPIC_DIR/crlf-topic.md"
+printf -- "---\r\ntype: AgentMemoryTopic\r\ntitle: CRLF Topic\r\ndescription: Testing CRLF endings\r\ntags: [crlf, test]\r\ntimestamp: 2026-07-01T02:00:00Z\r\n---\r\n\r\n# CRLF Topic\r\nBody here\r\n" > "$CRLF_TOPIC"
+
+run_mem find --cwd "$PROJ" --query "CRLF Topic" --format json
+assert_exit "find parses CRLF topic" 0
+assert_json_expr "CRLF topic metadata is successfully parsed" "$WORK/out" \
+  'any(result["kind"] == "topic" and result["title"] == "CRLF Topic" and result["tags"] == ["crlf", "test"] for result in data["results"])'
+
+# Test YAML comment lines in topic frontmatter
+COMMENT_TOPIC="$TOPIC_DIR/comment-topic.md"
+cat >"$COMMENT_TOPIC" <<'EOF'
+---
+type: AgentMemoryTopic
+# This is a YAML comment line
+title: Commented Topic
+# Another comment
+tags:
+  - comment
+  # comment inside list
+  - yaml
+timestamp: 2026-07-01T03:00:00Z
+---
+
+# Commented Topic
+Body here
+EOF
+
+run_mem find --cwd "$PROJ" --query "Commented Topic" --format json
+assert_exit "find parses topic with frontmatter comments" 0
+assert_json_expr "commented topic metadata is successfully parsed" "$WORK/out" \
+  'any(result["kind"] == "topic" and result["title"] == "Commented Topic" and result["tags"] == ["comment", "yaml"] for result in data["results"])'
+
+# Test index.md and log.md exclusion in find search
+cat >"$TOPIC_DIR/index.md" <<'EOF'
+---
+type: AgentMemoryIndex
+title: Topic Index
+---
+# Index
+Table of contents
+EOF
+
+cat >"$TOPIC_DIR/log.md" <<'EOF'
+---
+type: AgentMemoryLog
+title: Topic Log
+---
+# Log
+Chronological history
+EOF
+
+run_mem find --cwd "$PROJ" --query "Topic Index" --format json
+assert_exit "find query for index.md succeeds" 0
+assert_json_expr "index.md is excluded from concept search" "$WORK/out" \
+  'not any(result["kind"] == "topic" and result["title"] == "Topic Index" for result in data["results"])'
+
+run_mem find --cwd "$PROJ" --query "Topic Log" --format json
+assert_exit "find query for log.md succeeds" 0
+assert_json_expr "log.md is excluded from concept search" "$WORK/out" \
+  'not any(result["kind"] == "topic" and result["title"] == "Topic Log" for result in data["results"])'
+
+# Test check command validation of topics (check reports malformed topic)
+run_mem check --cwd "$PROJ"
+assert_exit "check command fails on malformed topic" 1
+assert_contains "check reports malformed topic" "$WORK/err" "ERROR=malformed frontmatter line"
+
+# Remove malformed-topic.md to check if validation passes
+rm "$TOPIC_DIR/malformed-topic.md"
+
+# Test check command validation of topics (check reports missing type)
+cat >"$TOPIC_DIR/missing-type.md" <<'EOF'
+---
+title: Missing Type
+---
+Body
+EOF
+
+run_mem check --cwd "$PROJ"
+assert_exit "check command fails on topic missing type" 1
+assert_contains "check reports missing type" "$WORK/err" "ERROR=missing type in topic"
+
+rm "$TOPIC_DIR/missing-type.md"
+
+# Test check command validation of sensitive topic frontmatter
+cat >"$TOPIC_DIR/sensitive-frontmatter-topic.md" <<'EOF'
+---
+type: AgentMemoryTopic
+title: Sensitive Frontmatter Topic
+description: token: abcdefghijklmnop
+---
+
+Body is harmless.
+EOF
+
+run_mem check --cwd "$PROJ"
+assert_exit "check command fails on sensitive topic frontmatter" 1
+assert_contains "check reports sensitive topic frontmatter" "$WORK/err" "ERROR=sensitive content detected"
+
+run_mem review --cwd "$PROJ" --stale-days 90 --format json
+assert_exit "review command succeeds with sensitive topic issue" 0
+assert_json_expr "review reports sensitive topic frontmatter" "$WORK/out" \
+  'any(item["kind"] == "invalid_topic" and "sensitive content detected" in item["detail"] for item in data["findings"])'
+
+rm "$TOPIC_DIR/sensitive-frontmatter-topic.md"
+
+# Verify review command reports topic issues
+cat >"$TOPIC_DIR/invalid-topic-for-review.md" <<'EOF'
+---
+title: Invalid Topic for Review
+---
+Body
+EOF
+
+run_mem review --cwd "$PROJ" --stale-days 90 --format json
+assert_exit "review command succeeds with topic issues" 0
+assert_json_expr "review reports missing type in topics" "$WORK/out" \
+  'any(item["kind"] == "invalid_topic" and "missing type" in item["detail"] for item in data["findings"])'
+
+rm "$TOPIC_DIR/invalid-topic-for-review.md"
+rm "$CRLF_TOPIC"
+rm "$COMMENT_TOPIC"
+rm "$TOPIC_DIR/index.md"
+rm "$TOPIC_DIR/log.md"
+
+# ---------------------------------------------------------------------------
 # cleanup: remove old inbox notes based on age.
 # ---------------------------------------------------------------------------
 run_mem cleanup --cwd "$PROJ" --older-than-days 9999 --dry-run

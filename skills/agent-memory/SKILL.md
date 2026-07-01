@@ -46,6 +46,35 @@ creates the store and never overwrites unrelated user data.
 - `inbox/explicit`: user-directed memories; always check when reading memory.
 - `inbox/auto`: agent-captured candidates; search only when relevant.
 
+### OKF-Compatible Topics
+
+Use OKF-style Markdown frontmatter for manually maintained topic concept files
+when metadata helps agents search, exchange, or cite longer knowledge documents.
+This does not change the skill's own `SKILL.md` frontmatter contract.
+
+Recommended topic shape:
+
+```markdown
+---
+type: AgentMemoryTopic
+title: Verification Policy
+description: How to scope checks for documentation and small edits.
+resource: repo://agent-skills/verification-policy
+tags: [verification, docs]
+timestamp: 2026-07-01T00:00:00Z
+---
+
+# Verification Policy
+...
+```
+
+Only `type` is required for OKF compatibility. Prefer `title`, `description`,
+`resource`, `tags`, and `timestamp` when known; `tags` may use inline YAML
+list syntax or a simple block list. Keep the Markdown body as the source of
+truth; frontmatter is for discovery and exchange. Use `index.md` for a local
+table of contents and `log.md` for chronological notes when a topic directory
+needs them; treat those names as reserved support files, not concept files.
+
 The helper computes `<repo-key>` from normalized git `origin`, then git
 toplevel path, then cwd path:
 
@@ -73,10 +102,13 @@ When memory is relevant:
    or pass `--include-auto` when explicitly reviewing pending candidates.
 4. Verify drift-prone memory against repo/system truth when practical. If live
    verification is expensive, say the fact is memory-derived and may be stale.
-5. Use filters when the target is known:
+5. Use filters when the target is known. The `find --type` filter accepts
+   memory note types such as `command` and OKF topic types such as
+   `AgentMemoryTopic`:
 
    ```bash
    python3 <skill-dir>/scripts/memory.py find --cwd "$PWD" --scope project --type command --query "docs"
+   python3 <skill-dir>/scripts/memory.py find --cwd "$PWD" --type AgentMemoryTopic --query "verification"
    ```
 
 6. Do not flood context. Increase `--budget-lines` only when the current task
@@ -321,7 +353,10 @@ Inbox note results keep their note metadata (`summary`, `type`, `priority`,
 `source`, `confidence`, `created_at`, `agent_id`, `repo_key`, `tags`,
 `evidence`, and `body`). Canonical `MEMORY.md` bullet entries also expose parsed
 metadata when available, including `id`, `type`, `summary`, `confidence`,
-`source_note`, `last_verified`, and `tags`.
+`source_note`, `last_verified`, and `tags`. Topic results expose OKF-compatible
+frontmatter when present, including `type`, `title`, `description`, `resource`,
+`tags`, `timestamp`, and any extra scalar or simple-list fields under
+`metadata`.
 
 ## Helper Contract
 

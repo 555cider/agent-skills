@@ -31,6 +31,7 @@ PROMOTABLE_EVIDENCE_KINDS = {"command", "repo-file", "test-result"}
 SUMMARY_MAX = 240
 MEMORY_MAX_LINES = 120
 INBOX_MAX_FILES = 500
+TOPIC_SUPPORT_FILENAMES = {"index.md", "log.md"}
 
 SENSITIVE_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
@@ -167,6 +168,8 @@ def unquote_value(value: str) -> str:
     if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
         inner = value[1:-1]
         return inner.replace('\\"', '"').replace("\\\\", "\\")
+    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+        return value[1:-1].replace("''", "'")
     return value
 
 
@@ -178,10 +181,15 @@ def parse_evidence_arg(raw: str) -> dict[str, str]:
     return {"kind": kind.strip(), "ref": ref.strip()}
 
 
-def parse_tags(raw: str | None) -> list[str]:
+def parse_tags(raw: str | list[str] | None) -> list[str]:
     if not raw:
         return []
-    return [tag.strip() for tag in raw.split(",") if tag.strip()]
+    if isinstance(raw, list):
+        return [tag.strip() for tag in raw if tag.strip()]
+    text = raw.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    return [tag.strip().strip("\"'") for tag in text.split(",") if tag.strip().strip("\"'")]
 
 
 def format_tags(tags: list[str]) -> str:
@@ -280,13 +288,14 @@ def note_text(meta: dict[str, str], evidence: list[dict[str, str]], body: str) -
 
 
 def split_frontmatter(text: str) -> tuple[list[str], str]:
-    if not text.startswith("---\n"):
+    text_norm = text.replace("\r\n", "\n")
+    if not text_norm.startswith("---\n"):
         raise MemoryError("missing frontmatter")
-    end = text.find("\n---", 4)
+    end = text_norm.find("\n---", 4)
     if end < 0:
         raise MemoryError("unterminated frontmatter")
-    fm = text[4:end].splitlines()
-    body = text[end + 4 :].lstrip("\n")
+    fm = text_norm[4:end].splitlines()
+    body = text_norm[end + 4 :].lstrip("\n")
     return fm, body
 
 
@@ -301,10 +310,16 @@ def parse_note(path: Path) -> tuple[dict[str, str], list[dict[str, str]], str]:
         if not line.strip():
             i += 1
             continue
+        if line.strip().startswith("#"):
+            i += 1
+            continue
         if line == "evidence:":
             i += 1
             current: dict[str, str] | None = None
-            while i < len(fm) and fm[i].startswith("  "):
+            while i < len(fm) and (fm[i].startswith("  ") or fm[i].strip().startswith("#")):
+                if fm[i].strip().startswith("#"):
+                    i += 1
+                    continue
                 stripped = fm[i].strip()
                 if stripped.startswith("- kind:"):
                     if current:
@@ -753,18 +768,44 @@ def note_result(path: Path, kind: str, scope: str) -> dict[str, object]:
 
 
 def topic_result(path: Path, scope: str, text: str) -> dict[str, object]:
+    meta: dict[str, object] = {}
+    text_norm = text.replace("\r\n", "\n")
+    body = text_norm
+    if text_norm.startswith("---\n"):
+        try:
+            meta, body = parse_simple_frontmatter_text(text_norm)
+        except MemoryError:
+            meta = {}
+            body = text_norm
+
     summary = ""
-    for line in text.splitlines():
+    for line in body.splitlines():
         if line.strip():
             summary = line.strip()
             break
-    return {
+    metadata = {
+        key: value
+        for key, value in meta.items()
+        if key not in {"type", "title", "description", "resource", "tags", "timestamp"} and value not in ("", [])
+    }
+    title = str(meta.get("title", "")) if isinstance(meta.get("title"), str) else ""
+    description = str(meta.get("description", "")) if isinstance(meta.get("description"), str) else ""
+    result: dict[str, object] = {
         "kind": "topic",
         "scope": scope,
         "path": str(path),
-        "summary": summary,
-        "text": text,
+        "summary": title or description or summary,
+        "text": body,
     }
+    for key in ["type", "title", "description", "resource", "timestamp"]:
+        value = meta.get(key)
+        if isinstance(value, str) and value:
+            result[key] = value
+    if meta.get("tags"):
+        result["tags"] = parse_tags(meta.get("tags"))
+    if metadata:
+        result["metadata"] = metadata
+    return result
 
 
 def record_date(record: dict[str, object]) -> str:
@@ -822,19 +863,25 @@ def score_record(record: dict[str, object], queries: list[str]) -> dict[str, obj
     scope_weight = 15 if record.get("scope") == "project" else 0
     fields = {
         "summary": str(record.get("summary", "")),
+        "title": str(record.get("title", "")),
+        "description": str(record.get("description", "")),
         "tags": " ".join(record.get("tags", [])) if isinstance(record.get("tags"), list) else str(record.get("tags", "")),
         "body": str(record.get("body", "")),
         "text": str(record.get("text", "")),
         "evidence": evidence_text(record),
+        "resource": str(record.get("resource", "")),
         "type": str(record.get("type", "")),
         "source": str(record.get("source", "")),
     }
     boosts = {
         "summary": 100,
+        "title": 100,
+        "description": 60,
         "tags": 80,
         "body": 45,
         "text": 45,
         "evidence": 30,
+        "resource": 20,
         "type": 15,
         "source": 15,
     }
@@ -877,6 +924,8 @@ def command_find(args: argparse.Namespace) -> int:
         for path in iter_note_files(base / "inbox" / "explicit"):
             candidates.append(note_result(path, "explicit", scope))
         for path in iter_note_files(base / "topics"):
+            if path.name in TOPIC_SUPPORT_FILENAMES:
+                continue
             text = path.read_text(encoding="utf-8", errors="replace")
             if keyword_match(text, queries):
                 candidates.append(topic_result(path, scope, text))
@@ -925,6 +974,13 @@ def command_check(args: argparse.Namespace) -> int:
                     errors.extend(f"{err} in {path}" for err in validate_note(meta, evidence, body, check_summary_len=True))
                 except Exception as exc:
                     errors.append(f"{exc} in {path}")
+
+    for topics_dir in home.glob("**/topics"):
+        files = iter_note_files(topics_dir)
+        for path in files:
+            if path.name in TOPIC_SUPPORT_FILENAMES:
+                continue
+            errors.extend(f"{err} in topic {path}" for err in validate_topic(path))
 
     for mem in home.glob("**/MEMORY.md"):
         text = mem.read_text(encoding="utf-8", errors="replace")
@@ -1200,6 +1256,15 @@ def command_review(args: argparse.Namespace) -> int:
                 if not errors and eligible_for_promotion(meta, evidence):
                     findings.append(review_finding("promotion_candidate", path, meta.get("summary", path.name)))
 
+        topics_dir = scope_dir / "topics"
+        if topics_dir.exists():
+            files = iter_note_files(topics_dir)
+            for path in files:
+                if path.name in TOPIC_SUPPORT_FILENAMES:
+                    continue
+                for err in validate_topic(path):
+                    findings.append(review_finding("invalid_topic", path, path.name, err))
+
     for summary, records in summaries.items():
         if summary and len(records) > 1:
             for record in records:
@@ -1232,18 +1297,79 @@ def session_text(meta: dict[str, str], body: str) -> str:
     return "\n".join(lines)
 
 
-def parse_simple_frontmatter(path: Path) -> tuple[dict[str, str], str]:
-    text = path.read_text(encoding="utf-8")
+def parse_frontmatter_value(raw: str) -> str | list[str]:
+    value = raw.strip()
+    if value.startswith("[") and value.endswith("]"):
+        return parse_tags(value)
+    return unquote_value(value)
+
+
+def parse_simple_frontmatter_text(text: str) -> tuple[dict[str, object], str]:
     fm, body = split_frontmatter(text)
-    meta: dict[str, str] = {}
-    for line in fm:
+    meta: dict[str, object] = {}
+    i = 0
+    while i < len(fm):
+        line = fm[i]
         if not line.strip():
+            i += 1
             continue
+        if line.strip().startswith("#"):
+            i += 1
+            continue
+        if line.startswith((" ", "\t")):
+            raise MemoryError(f"malformed frontmatter line: {line}")
         if ":" not in line:
             raise MemoryError(f"malformed frontmatter line: {line}")
         key, value = line.split(":", 1)
-        meta[key.strip()] = unquote_value(value)
+        key = key.strip()
+        value = value.strip()
+        if value:
+            meta[key] = parse_frontmatter_value(value)
+            i += 1
+            continue
+
+        items: list[str] = []
+        j = i + 1
+        while j < len(fm):
+            child = fm[j]
+            if not child.strip():
+                j += 1
+                continue
+            if child.strip().startswith("#"):
+                j += 1
+                continue
+            stripped = child.strip()
+            if child.startswith((" ", "\t")) and stripped.startswith("- "):
+                items.append(unquote_value(stripped[2:]))
+                j += 1
+                continue
+            if child.startswith((" ", "\t")):
+                raise MemoryError(f"unsupported frontmatter block line: {child}")
+            break
+        meta[key] = items if items else ""
+        i = j if items else i + 1
     return meta, body
+
+
+def parse_simple_frontmatter(path: Path) -> tuple[dict[str, object], str]:
+    text = path.read_text(encoding="utf-8")
+    return parse_simple_frontmatter_text(text)
+
+
+def validate_topic(path: Path) -> list[str]:
+    errors: list[str] = []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        check_sensitive(text)
+    except MemoryError as exc:
+        errors.append(str(exc))
+    try:
+        meta, _ = parse_simple_frontmatter_text(text)
+        if not meta.get("type"):
+            errors.append("missing type")
+    except Exception as exc:
+        errors.append(str(exc))
+    return errors
 
 
 def session_to_dict(path: Path) -> dict[str, str]:
@@ -1428,7 +1554,7 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("--include-auto", action="store_true", help="Include auto inbox notes even without keyword matches")
     find.add_argument("--budget-lines", type=int, default=40)
     find.add_argument("--scope", choices=sorted(SCOPES), default=None, help="Filter by scope")
-    find.add_argument("--type", choices=sorted(TYPES), default=None, help="Filter by type")
+    find.add_argument("--type", default=None, help="Filter by memory note type or OKF topic type")
     find.add_argument("--priority", choices=sorted(PRIORITIES), default=None, help="Filter by priority")
     find.add_argument("--source", choices=sorted(SOURCES), default=None, help="Filter by source")
     find.add_argument("--since", help="Filter records on or after YYYY-MM-DD")
