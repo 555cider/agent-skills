@@ -75,6 +75,30 @@ the screenshot alone.
 11. **Return** the result in the shape of `references/output.schema.json` (see Report Format).
 12. **Apply only on explicit approval**, and only when the Hard Rules allow it.
 
+### Driving the user's own visible browser (CDP)
+
+Playwright/MCP drives a browser the *agent* controls — the user can't click in it. To let the
+**user** pick in their **own** visible browser (and type the fix there), use `scripts/cdp.mjs`,
+which speaks the Chrome DevTools Protocol over Node's built-in `WebSocket` (Node ≥ 21; no deps):
+
+1. **Launch** a visible Chrome with debugging on: `node scripts/cdp.mjs launch <url>` (or start any
+   Chrome with `--remote-debugging-port=9222 --user-data-dir=<temp>`). Set `CHROME=` if not auto-found.
+2. **Keep the picker alive** across reloads — run in the background: `node scripts/cdp.mjs keep`.
+   A reload wipes the transient picker; `keep` re-injects it within ~1s from a long-lived connection
+   (a one-shot `addScriptToEvaluateOnNewDocument` does not survive its client disconnecting). `--arm`
+   auto-enters picking mode.
+3. The **user picks** element(s) and types the fix in the panel, then presses 보내기 (⌘/Ctrl+Enter).
+4. **Receive it** — run `node scripts/cdp.mjs wait` in the background; it blocks until the user
+   submits, prints `REQUEST {instruction + full picks}`, and exits — which re-invokes a host that
+   launched it as a background task. Then continue at step 5 (find source → diff). It handles one
+   request per run; re-launch `wait` for the next.
+
+Helpers: `read` (dump lastPick/picks/request), `pick <selector>` (snapshot programmatically),
+`clear`. Options: `--port=<n>`, `--match=<url-substr>` to select the right tab.
+
+These are **session-scoped background processes** — they stop when the session/terminal closes (the
+launched Chrome, a GUI app, may linger and can be closed manually). Re-launch them each session.
+
 ## Report Format
 
 Return an object matching `references/output.schema.json`:
@@ -98,6 +122,9 @@ than forcing a shaky diff.
 
 ## Files
 
+- `scripts/cdp.mjs` — CDP driver for the user's own visible browser: `launch` Chrome with
+  debugging, `keep` the picker alive across reloads, `wait` for a submitted fix request
+  (browser→host bridge), plus `read` / `pick` / `clear`. Node built-in WebSocket; no dependencies.
 - `assets/element-picker.js` — transiently-injected DOM picker (idempotent; self-contained; every
   node tagged `data-s2p` so it never selects its own UI). On-screen: hover inspector chip,
   persistent selection highlights, a list panel, and a full-selector tooltip. API on `window.__s2p`:
