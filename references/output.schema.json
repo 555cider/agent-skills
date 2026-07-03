@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dom-picker output",
+  "type": "object",
+  "required": [
+    "summary",
+    "confidence",
+    "diagnosis",
+    "candidateFiles",
+    "changes",
+    "warnings",
+    "canAutoApply"
+  ],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "One line: what the fix does."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "diagnosis": {
+      "type": "string",
+      "description": "Why the element looks wrong and which source construct causes it."
+    },
+    "candidateFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "reason", "score"],
+        "properties": {
+          "path": { "type": "string" },
+          "reason": { "type": "string" },
+          "score": { "type": "number" }
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "reason", "diff"],
+        "properties": {
+          "file": { "type": "string" },
+          "reason": { "type": "string" },
+          "diff": {
+            "type": "string",
+            "description": "Unified diff for this file, validated with an apply-check."
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "canAutoApply": {
+      "type": "boolean",
+      "description": "True only when confidence is high, the diff validated, and the user approved."
+    }
+  }
+}
