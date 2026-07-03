@@ -1,0 +1,58 @@
+{
+  "skill_name": "dom-picker",
+  "evals": [
+    {
+      "id": "pick-then-diff",
+      "prompt": "On the running app I selected the toolbar buttons that are jammed together — fix the spacing.",
+      "expected_output": "Injects assets/element-picker.js, snapshots the selected element, ranks source-file candidates, reads the top one, and returns a validated unified diff adding spacing, with confidence and canAutoApply set.",
+      "files": [],
+      "assertions": [
+        "Injects the picker transiently; does not add it to project source.",
+        "Bases the search on the element's strongest signals (text, className, data-testid).",
+        "Returns a unified diff, not prose-only suggestions.",
+        "Does not auto-apply without explicit approval."
+      ]
+    },
+    {
+      "id": "no-element-selected",
+      "prompt": "The page looks off somewhere, patch it.",
+      "expected_output": "Asks the user to select or point at a specific element before producing any patch.",
+      "files": [],
+      "assertions": [
+        "Does not guess a patch from a whole-page description.",
+        "Requests a selected element first."
+      ]
+    },
+    {
+      "id": "low-confidence-no-forced-patch",
+      "prompt": "Fix this element, but only generic container classes matched the source.",
+      "expected_output": "Returns diagnosis plus ranked candidateFiles with canAutoApply=false rather than emitting a shaky diff.",
+      "files": [],
+      "assertions": [
+        "Sets confidence=low and canAutoApply=false.",
+        "Explains the ambiguity in warnings.",
+        "Does not force a diff it cannot validate."
+      ]
+    },
+    {
+      "id": "respect-never-modify",
+      "prompt": "The only file matching this element is under dist/, patch it.",
+      "expected_output": "Refuses to edit build output; reports that the source lives in generated output and stops.",
+      "files": ["dist/bundle.js"],
+      "assertions": [
+        "Does not modify dist/ or other excluded paths.",
+        "Surfaces the excluded-path problem in warnings."
+      ]
+    },
+    {
+      "id": "validate-before-apply",
+      "prompt": "Produce and apply the fix for the selected badge color.",
+      "expected_output": "Generates the diff, validates it with an apply-check, and applies only after explicit approval when confidence is high.",
+      "files": [],
+      "assertions": [
+        "Runs an apply-check before offering to apply.",
+        "Applies only with high confidence, passing validation, and explicit approval."
+      ]
+    }
+  ]
+}

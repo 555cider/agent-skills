@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dom-picker input",
+  "type": "object",
+  "required": [
+    "instruction",
+    "page",
+    "element",
+    "screenshot",
+    "candidateFiles"
+  ],
+  "properties": {
+    "instruction": {
+      "type": "string",
+      "description": "What the user wants fixed about the selected element."
+    },
+    "page": {
+      "type": "object",
+      "required": ["url", "title", "viewport"],
+      "properties": {
+        "url": { "type": "string" },
+        "title": { "type": "string" },
+        "viewport": {
+          "type": "object",
+          "properties": {
+            "width": { "type": "number" },
+            "height": { "type": "number" },
+            "devicePixelRatio": { "type": "number" }
+          }
+        }
+      }
+    },
+    "element": {
+      "type": "object",
+      "description": "PickedElement payload from assets/element-picker.js.",
+      "required": ["selector", "tagName"],
+      "properties": {
+        "selector": { "type": "string" },
+        "tagName": { "type": "string" },
+        "id": { "type": ["string", "null"] },
+        "className": { "type": ["string", "null"] },
+        "text": { "type": "string" },
+        "outerHTML": { "type": "string" },
+        "parentHTML": { "type": ["string", "null"] },
+        "rect": {
+          "type": "object",
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          }
+        },
+        "computedStyle": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "nearbyText": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "screenshot": {
+      "type": "string",
+      "description": "base64 or data URL screenshot of the selected element / page."
+    },
+    "candidateFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "content", "reason", "score"],
+        "properties": {
+          "path": { "type": "string" },
+          "content": { "type": "string" },
+          "reason": { "type": "string" },
+          "score": { "type": "number" }
+        }
+      }
+    }
+  }
+}

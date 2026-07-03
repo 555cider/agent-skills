@@ -1,0 +1,46 @@
+[
+  {
+    "query": "I selected this button on the running app — fix the spacing so they aren't jammed together.",
+    "should_trigger": true
+  },
+  {
+    "query": "This element I picked looks wrong, generate a patch for the source.",
+    "should_trigger": true
+  },
+  {
+    "query": "The badge on this element should be green, not gray — patch the frontend code.",
+    "should_trigger": true
+  },
+  {
+    "query": "Open localhost:3000, let me pick the element that overflows on mobile, and produce a diff.",
+    "should_trigger": true
+  },
+  {
+    "query": "This card row I highlighted breaks the layout on my phone — give me a minimal frontend fix.",
+    "should_trigger": true
+  },
+  {
+    "query": "Refactor this backend service to use async database calls.",
+    "should_trigger": false
+  },
+  {
+    "query": "Review my implementation plan and give a second opinion.",
+    "should_trigger": false
+  },
+  {
+    "query": "Run the unit tests and fix any failures.",
+    "should_trigger": false
+  },
+  {
+    "query": "Write documentation for the payment module.",
+    "should_trigger": false
+  },
+  {
+    "query": "The whole site feels slow, profile it.",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain how flexbox gap works.",
+    "should_trigger": false
+  }
+]

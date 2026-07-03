@@ -1,0 +1,4 @@
+interface:
+  display_name: "DOM Picker"
+  short_description: "Turn a UI element selected in a running web app into a minimal, validated frontend diff."
+  default_prompt: "Use $dom-picker when the user points at or selects a specific on-screen element in a running web app and wants it fixed, and browser automation plus repo access are available. Inject the picker, collect the element's DOM/style/screenshot, rank source-file candidates, and return a validated unified diff — never auto-applying low-confidence changes."
