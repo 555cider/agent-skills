@@ -73,8 +73,11 @@ deps: [2]
 ```
 
 Omit `x` when the graph node has no state. Omit `deps` when the plan has no
-base IDs. Preserve the graph's `deps` order in frontmatter because order is used
-as a deterministic tie-breaker in `--show` output. The validation script warns
+base IDs. Keep the frontmatter `deps` in the same order as the graph node's
+bases: `--fix` compares them order-sensitively and rewrites the file on any
+reordering. (The graph's own `deps` order is separately the deterministic
+tie-breaker for `--show`'s critical path, so keep the graph order intentional.)
+The validation script warns
 when frontmatter is absent from an existing legacy plan file and errors when
 existing frontmatter conflicts with the graph. Running with `--fix` prepends or
 updates frontmatter fields from the graph.
@@ -171,7 +174,16 @@ Propagation: 4 updated (assumption changed); 6 left, unaffected
 - Removing a base plan without checking active dependents.
 - Using the graph as a history log instead of active planning context.
 
-### Cycle Resolution
+## When NOT to use
+
+- A one-off standalone plan with no cross-plan lineage — write it as a plain
+  plan file; don't stand up a graph for a single node.
+- Ephemeral task lists, checklists, or changelogs — the graph tracks active
+  planning context and dependencies, not history or to-dos.
+- Repos that already have a different planning-index convention — follow it
+  rather than adding a parallel `.agents/plan/graph.yaml`.
+
+## Cycle Resolution
 
 If a cycle is detected during validation, the check fails with the error
 `cycle detected: <chain>` (exit 1); the cyclic nodes are also dropped from the
@@ -265,81 +277,22 @@ Example output:
     ├── [1] Auth/session ↑
     └── [2] Error strategy
 
-[6] Logging plan
-
-[7] Legacy approach (dropped)
-
-Suggested Implementation Roadmap (Active Plans):
-  1. [1] Auth/session
-  2. [2] Error strategy
-  3. [3] Checkout recovery
-  4. [4] DB schema
-  5. [5] Migration plan
-  6. [6] Logging plan
-
 Critical Path (Longest unresolved chain):
   [1] ➔ [3] ➔ [5]
 ```
 
+A `Suggested Implementation Roadmap (Active Plans)` list of the active nodes in
+dependency order prints after the tree; separate root trees and inline
+non-active states (e.g. `[7] Legacy approach (dropped)`) render as described
+above.
+
 ## Command Output Contract
 
-The script writes machine-readable lines that callers (this skill, or any other
-agent chaining on plan-graph) can parse. Streams are split deliberately —
-state-change records go to stdout, problems go to stderr.
+The script emits machine-readable lines: `CHANGE=<verb> <id> [reason]` and
+`OK plan graph` on stdout; `WARN=`, `ERROR=`, and `FAIL plan graph` on stderr.
+Exit codes: `0` valid, `1` validation errors (or lock/missing-graph failure),
+`2` unparseable graph. Add `--json` (any mode) for a single stdout object.
 
-stdout:
-
-```
-CHANGE=<verb> <node_id> [reason]   # one line per --fix mutation
-OK plan graph                       # success sentinel (exit 0)
-```
-
-`<verb>` ∈ `{mark, clear, dedup, remove, add-frontmatter, sync-frontmatter}`:
-- `mark <id> missing` — active plan file is gone; node marked `x: missing`
-- `clear <id> missing` — previously-missing file is back; `x` cleared
-- `dedup <id>` — duplicate base IDs removed from the dep list
-- `remove <id> empty-deps` — dep entry became empty after dedup and was removed
-- `add-frontmatter <id> <path>` — added missing YAML frontmatter to plan file
-- `sync-frontmatter <id> <path> <fields>` — synchronized mismatched frontmatter fields; `<fields>` is comma-separated with no spaces
-
-stderr:
-
-```
-WARN=<message>                      # advisory (e.g. done w/o active dependent)
-ERROR=<message>                     # validation error
-ERROR=parse: <exception>            # graph file failed to parse (exit 2)
-FAIL plan graph                     # failure sentinel (exit 1)
-```
-
-Exit codes: `0` = valid (with or without changes); `1` = validation errors;
-`2` = graph file unparseable.
-
-### JSON output (`--json`)
-
-Add `--json` (works with check, `--fix`, and `--show`) when another agent or
-script will consume the result; for your own report use the text mode above. In
-JSON mode the `CHANGE=`/`WARN=`/`ERROR=`/`OK`/`FAIL` line contracts are
-suppressed and everything goes to stdout as one object (exit codes are
-unchanged). Check / `--fix`:
-
-```json
-{"status": "OK|FAIL|ERROR", "changes": [{"verb": "...", "id": 1, "path": "...", "extra": "..."}], "errors": [], "warnings": []}
-```
-
-`status` is `OK` (exit 0), `FAIL` (exit 1, validation errors), or `ERROR`
-(exit 1 for a lock/missing-graph failure, or exit 2 for a parse failure). Each
-`changes[]` object carries the same verb/id as a `CHANGE=` line (`path`/`extra`
-hold the trailing fields). `--show --json` instead returns
-`{status, tree: [...lines], roadmap: [{id, summary}], excluded: [{id, summary}], critical_path: [ids], changes: [], errors: [], warnings: []}`.
-`--suggest-deps --json` returns
-`{status, suggestions: [{dependent, base, confidence, reason}], changes: [], errors: [], warnings: []}`.
-
-Write ordering with `--fix`: drift repairs (`CHANGE=` lines) are persisted
-*before* validation runs, so a `--fix` invocation that exits `1` may still have
-mutated the graph file. Use `--fix` only when you intend to accept the drift
-repairs; run without `--fix` first if you want a pure read-only check.
-Parse failure (exit `2`) is the one case where the graph is guaranteed not
-touched.
-
-Maintainers: `tests/run.sh` is the CLI regression suite (exit 0 = all pass);
-`tests/README.md` catalogues the fixtures and the contract each guards.
+**Full contract** — verbs, JSON shapes, and the `--fix` write-ordering hazard —
+is in `references/output-contract.md`. Read it when parsing the output
+programmatically.

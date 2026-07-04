@@ -688,5 +688,143 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# deepchain — a long linear dependency chain must not RecursionError: --show
+# exercises get_longest_path + render_tree, plain check exercises has_cycle.
+# (These were recursive; a ~1500-node chain overflowed the default limit.)
+# ---------------------------------------------------------------------------
+D=$(newcase deepchain)
+python3 - "$D" <<'PY'
+import sys
+d = sys.argv[1]
+n = 1500
+g = [f"next: {n+1}", "", "nodes:"]
+for i in range(1, n + 1):
+    g.append(f'  {i}: {{p: "p{i}.md", s: "node {i}"}}')
+g += ["", "deps:"]
+for i in range(1, n):
+    g.append(f"  {i}: [{i + 1}]")
+open(f"{d}/.agents/plan/graph.yaml", "w").write("\n".join(g) + "\n")
+# Active plan files with matching frontmatter so both --show and check stay clean.
+for i in range(1, n + 1):
+    deps = f"deps: [{i + 1}]\n" if i < n else ""
+    open(f"{d}/p{i}.md", "w").write(f'---\nid: {i}\nsummary: "node {i}"\n{deps}---\n\nbody {i}\n')
+PY
+pg "$D" --show
+assert_exit   "deepchain-show" 0
+assert_nogrep "deepchain-show no traceback"  "$WORK/err" "Traceback"
+assert_grepF  "deepchain-show critical path" "$WORK/out" "Critical Path"
+pg "$D"
+assert_exit   "deepchain-check" 0
+assert_nogrep "deepchain-check no traceback" "$WORK/err" "Traceback"
+assert_grep   "deepchain-check OK"           "$WORK/out" "OK plan graph"
+
+# ---------------------------------------------------------------------------
+# show-fix-missing — --show takes precedence over --fix, so --show --fix on a
+# MISSING graph must error (exit 1) and must NOT initialize a graph file.
+# ---------------------------------------------------------------------------
+D=$(newcase showfixmissing); rm -rf "$D/.agents"
+python3 "$PG" "$D/.agents/plan/graph.yaml" --root "$D" --show --fix >"$WORK/out" 2>"$WORK/err"; EC=$?
+assert_exit "showfixmissing-noinit" 1
+if [ ! -e "$D/.agents/plan/graph.yaml" ]; then
+  pass "showfixmissing did not create graph"
+else
+  fail "showfixmissing did not create graph" "graph.yaml was initialized despite --show"
+fi
+
+# ---------------------------------------------------------------------------
+# mark/clear missing lifecycle — --fix marks a vanished active file x:missing
+# and clears it when the file returns (headline --fix drift repair).
+# ---------------------------------------------------------------------------
+D=$(newcase marklifecycle)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "ghost.md", s: "Ghost"}
+
+deps:
+EOF
+pg "$D" --fix
+assert_exit  "marklifecycle-mark" 0
+assert_grepF "marklifecycle mark CHANGE"     "$WORK/out" "CHANGE=mark 1 missing"
+assert_fgrep "marklifecycle graph x:missing" "$D/.agents/plan/graph.yaml" 'x: "missing"'
+printf '# ghost\n\nback\n' >"$D/ghost.md"
+pg "$D" --fix
+assert_exit    "marklifecycle-clear" 0
+assert_grepF   "marklifecycle clear CHANGE" "$WORK/out" "CHANGE=clear 1 missing"
+assert_fnogrep "marklifecycle x cleared"    "$D/.agents/plan/graph.yaml" 'x: "missing"'
+
+# ---------------------------------------------------------------------------
+# suggest-deps INFERRED — weaker keyword-overlap candidate (not a direct
+# path/name/summary reference) with dependency language present.
+# ---------------------------------------------------------------------------
+D=$(newcase inferdep)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 3
+
+nodes:
+  1: {p: "auth.md", s: "session token rotation"}
+  2: {p: "checkout.md", s: "checkout flow"}
+
+deps:
+EOF
+printf '# session token rotation\n\nRotate session tokens on login.\n' >"$D/auth.md"
+cat >"$D/checkout.md" <<'EOF'
+# checkout flow
+
+This work must land after the session rotation groundwork; it also refreshes the token.
+EOF
+pg "$D" --suggest-deps
+assert_exit  "inferdep-show" 0
+assert_grepF "inferdep INFERRED provenance" "$WORK/out" "SUGGEST=2->1 INFERRED"
+
+# ---------------------------------------------------------------------------
+# validate-errors — dangling dep, self dep, absolute path, and duplicate path
+# each surface as ERROR (exit 1) with no traceback; duplicate cites the FIRST id.
+# ---------------------------------------------------------------------------
+D=$(newcase valerrors)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 5
+
+nodes:
+  1: {p: "a.md", s: "A", x: "done"}
+  2: {p: "a.md", s: "dup path", x: "done"}
+  3: {p: "/etc/passwd", s: "absolute", x: "done"}
+  4: {p: "d.md", s: "D", x: "done"}
+
+deps:
+  4: [9]
+EOF
+pg "$D"
+assert_exit   "valerrors-check" 1
+assert_grep   "valerrors dangling"      "$WORK/err" "ERROR=dangling dep: 4->9"
+assert_grep   "valerrors absolute"      "$WORK/err" "ERROR=3 has absolute path"
+assert_grep   "valerrors duplicate 1st" "$WORK/err" "ERROR=duplicate node path: 1 and 2 use a.md"
+assert_nogrep "valerrors no traceback"  "$WORK/err" "Traceback"
+
+D=$(newcase selfdep)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "a.md", s: "A", x: "done"}
+
+deps:
+  1: [1]
+EOF
+pg "$D"
+assert_exit "selfdep-check" 1
+assert_grep "selfdep error" "$WORK/err" "ERROR=self dependency: 1"
+
+# ---------------------------------------------------------------------------
+# empty-graph --show — a graph with no nodes prints the empty sentinel, exit 0.
+# ---------------------------------------------------------------------------
+D=$(newcase emptyshow)
+printf 'next: 1\n\nnodes:\n\ndeps:\n' >"$D/.agents/plan/graph.yaml"
+pg "$D" --show
+assert_exit  "emptyshow-show" 0
+assert_grepF "emptyshow sentinel" "$WORK/out" "(empty plan graph)"
+
+# ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

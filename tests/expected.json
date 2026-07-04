@@ -30,6 +30,18 @@
     { "case": "traversal-fix", "fixture": "traversal", "args": ["--fix"], "expectExit": 1, "note": "outside ../escape file left untouched (no frontmatter written outside root)" },
     { "case": "forestrepeat-show", "fixture": "forestrepeat", "args": ["--show"], "expectExit": 0, "noGrepStdout": ["^[2] beta as a top-level line"], "note": "a cycle/forest node is printed once, not twice" },
     { "case": "lockfresh-fix", "fixture": "lockfresh", "args": ["--fix"], "expectExit": 1, "grepStderr": ["ERROR=graph locked by another process"], "note": "foreign fresh lock blocks and is NOT deleted (~3s retry)" },
-    { "case": "lockstale-fix", "fixture": "lockstale", "args": ["--fix"], "expectExit": 0, "grepStdout": ["OK plan graph"], "note": "stale (>10s) lock overtaken; our lock released on exit" }
+    { "case": "lockstale-fix", "fixture": "lockstale", "args": ["--fix"], "expectExit": 0, "grepStdout": ["OK plan graph"], "note": "stale (>10s) lock overtaken; our lock released on exit" },
+    { "case": "release_lock", "fixture": "(in-process)", "args": [], "expectExit": 0, "note": "release_lock() must keep a lockfile owned by another pid (ownership guard)" },
+    { "case": "writefail-fix", "fixture": "writefail", "args": ["--fix"], "expectExit": 1, "grepStderr": ["ERROR=failed to write graph"], "noGrep": ["Traceback"], "note": "graph.yaml.tmp is a dir so write_graph fails: clean ERROR, not a traceback" },
+    { "case": "showfixlock-show", "fixture": "showfixlock", "args": ["--show", "--fix"], "expectExit": 0, "grepStdout": ["[1] alpha"], "noGrepStderr": ["graph locked"], "note": "--show takes precedence and never locks, so a fresh foreign lock does not block it" },
+    { "case": "deepchain-show", "fixture": "deepchain", "args": ["--show"], "expectExit": 0, "grepStdout": ["Critical Path"], "noGrep": ["Traceback"], "note": "1500-node linear chain: get_longest_path + render_tree are iterative, no RecursionError" },
+    { "case": "deepchain-check", "fixture": "deepchain", "args": [], "expectExit": 0, "grepStdout": ["OK plan graph"], "noGrep": ["Traceback"], "note": "1500-node chain: has_cycle is iterative, no RecursionError" },
+    { "case": "showfixmissing-noinit", "fixture": "showfixmissing", "args": ["--show", "--fix"], "expectExit": 1, "note": "--show precedence: --show --fix on a MISSING graph errors and does NOT initialize a graph file" },
+    { "case": "marklifecycle-mark", "fixture": "marklifecycle", "args": ["--fix"], "expectExit": 0, "grepStdout": ["CHANGE=mark 1 missing"], "fileContains": { ".agents/plan/graph.yaml": ["x: \"missing\""] }, "note": "vanished active file marked x:missing" },
+    { "case": "marklifecycle-clear", "fixture": "marklifecycle", "args": ["--fix"], "expectExit": 0, "grepStdout": ["CHANGE=clear 1 missing"], "note": "file returns -> x:missing cleared (run after the file is recreated)" },
+    { "case": "inferdep-show", "fixture": "inferdep", "args": ["--suggest-deps"], "expectExit": 0, "grepStdout": ["SUGGEST=2->1 INFERRED"], "note": "weaker keyword-overlap + dependency language yields an INFERRED (not EXTRACTED) candidate" },
+    { "case": "valerrors-check", "fixture": "valerrors", "args": [], "expectExit": 1, "grepStderr": ["ERROR=dangling dep: 4->9", "ERROR=3 has absolute path", "ERROR=duplicate node path: 1 and 2 use a.md"], "noGrep": ["Traceback"], "note": "duplicate cites the FIRST id (keep-first)" },
+    { "case": "selfdep-check", "fixture": "selfdep", "args": [], "expectExit": 1, "grepStderr": ["ERROR=self dependency: 1"] },
+    { "case": "emptyshow-show", "fixture": "emptyshow", "args": ["--show"], "expectExit": 0, "grepStdout": ["(empty plan graph)"], "note": "a graph with no nodes prints the empty sentinel" }
   ]
 }

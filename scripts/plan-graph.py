@@ -36,15 +36,38 @@ def record_change(verb: str, node_id: int, path: str | None = None, extra: str |
 
 
 def acquire_lock(lock_path: Path) -> bool:
+    """Atomically claim the lockfile via O_CREAT|O_EXCL so two concurrent
+    --fix runs can never both believe they hold it (the old exists()->write
+    sequence had a TOCTOU race). Returns True only if we created it.
+
+    A lock older than 10s is treated as stale: removed and re-claimed once.
+    A genuine I/O error (e.g. a read-only plan dir) raises OSError so the
+    caller can distinguish it from live contention rather than silently
+    reporting 'locked by another process'."""
     try:
-        if lock_path.exists():
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        try:
             mtime = lock_path.stat().st_mtime
-            if time.time() - mtime < 10:
-                return False
-        lock_path.write_text(str(os.getpid()), encoding="utf-8")
-        return True
-    except Exception:
-        return False
+        except FileNotFoundError:
+            # Lock vanished between the failed create and the stat — retry once.
+            return acquire_lock(lock_path)
+        if time.time() - mtime < 10:
+            return False  # a live lock holds it
+        # Stale: drop it and re-claim atomically.
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            return False  # someone else won the re-claim race
+    try:
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True
 
 
 def release_lock(lock_path: Path):
@@ -218,31 +241,37 @@ def fix_missing_files(root: Path, nodes: dict[int, Node], deps: dict[int, list[i
 
 
 def has_cycle(deps: dict[int, list[int]]) -> tuple[bool, list[int]]:
-    visiting: set[int] = set()
-    visited: set[int] = set()
-    stack: list[int] = []
+    # Iterative DFS (explicit stack) so a very long dependency chain can't blow
+    # the Python recursion limit. `color` is shared across roots so already-
+    # settled subtrees are not re-walked (the old `visited` memo).
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[int, int] = {}
 
-    def visit(node_id: int) -> bool:
-        if node_id in visiting:
-            start = stack.index(node_id)
-            stack[:] = stack[start:] + [node_id]
-            return True
-        if node_id in visited:
-            return False
-        visiting.add(node_id)
-        stack.append(node_id)
-        for base_id in deps.get(node_id, []):
-            if visit(base_id):
-                return True
-        visiting.remove(node_id)
-        visited.add(node_id)
-        stack.pop()
-        return False
-
-    for node_id in deps:
-        stack.clear()
-        if visit(node_id):
-            return True, stack
+    for root in deps:
+        if color.get(root, WHITE) != WHITE:
+            continue
+        # Each frame is [node, next-base-index]; `path` is the live DFS path.
+        stack: list[list[int]] = [[root, 0]]
+        path: list[int] = [root]
+        color[root] = GRAY
+        while stack:
+            node, i = stack[-1]
+            bases = deps.get(node, [])
+            if i < len(bases):
+                stack[-1][1] = i + 1
+                base = bases[i]
+                state = color.get(base, WHITE)
+                if state == GRAY:
+                    start = path.index(base)
+                    return True, path[start:] + [base]
+                if state == WHITE:
+                    color[base] = GRAY
+                    stack.append([base, 0])
+                    path.append(base)
+            else:
+                color[node] = BLACK
+                stack.pop()
+                path.pop()
     return False, []
 
 
@@ -313,6 +342,9 @@ def sync_markdown_frontmatter(
     if not path.exists() or path.is_dir():
         return None
     try:
+        # utf-8-sig read + utf-8 write intentionally normalizes away a BOM on
+        # any --fix that rewrites the file; plan files are managed markdown, not
+        # BOM-sensitive.
         content = path.read_text(encoding="utf-8-sig")
     except Exception as e:
         return f"failed to read {node.path}: {e}"
@@ -403,29 +435,42 @@ def get_roadmap_and_critical_path(
     path_active = set(roadmap)
     memo_depth: dict[int, int] = {}
     memo_next: dict[int, int | None] = {}
-    visiting: set[int] = set()
 
-    def get_longest_path(u: int) -> int:
-        if u in memo_depth:
-            return memo_depth[u]
-        if u in visiting:
-            return 0
-        visiting.add(u)
-        max_d = 0
-        best_next = None
-        for v in deps.get(u, []):
-            if v in path_active:
-                d = get_longest_path(v)
-                if d > max_d:
-                    max_d = d
-                    best_next = v
-        visiting.remove(u)
-        memo_depth[u] = 1 + max_d
-        memo_next[u] = best_next
-        return memo_depth[u]
+    def compute_longest(start: int) -> None:
+        # Iterative post-order over the active DAG so a deep chain can't recurse
+        # past the stack limit. path_active is acyclic (cycle nodes are excluded
+        # from the roadmap), but `on_stack` still guards against re-expansion.
+        stack: list[tuple[int, bool]] = [(start, False)]
+        on_stack: set[int] = set()
+        while stack:
+            u, processed = stack.pop()
+            if u in memo_depth:
+                continue
+            if not processed:
+                if u in on_stack:
+                    memo_depth[u] = 0  # defensive: only reachable via an unexpected cycle
+                    memo_next[u] = None
+                    continue
+                on_stack.add(u)
+                stack.append((u, True))
+                for v in deps.get(u, []):
+                    if v in path_active and v not in memo_depth:
+                        stack.append((v, False))
+            else:
+                on_stack.discard(u)
+                max_d = 0
+                best_next = None
+                for v in deps.get(u, []):
+                    if v in path_active:
+                        d = memo_depth.get(v, 0)
+                        if d > max_d:
+                            max_d = d
+                            best_next = v
+                memo_depth[u] = 1 + max_d
+                memo_next[u] = best_next
 
     for u in sorted(path_active):
-        get_longest_path(u)
+        compute_longest(u)
 
     critical_path: list[int] = []
     if path_active:
@@ -476,10 +521,13 @@ def validate(root: Path, next_id: int, nodes: dict[int, Node], deps: dict[int, l
         elif ".." in node_path.parts:
             errors.append(f"{node_id} path escapes root: {node.path}")
             invalid_path = True
-        if not invalid_path and node.path in seen_paths:
-            errors.append(f"duplicate node path: {seen_paths[node.path]} and {node_id} use {node.path}")
         if not invalid_path:
-            seen_paths[node.path] = node_id
+            if node.path in seen_paths:
+                # Keep the first id as the cited original so a 3rd duplicate
+                # still names the earliest offender, not the previous one.
+                errors.append(f"duplicate node path: {seen_paths[node.path]} and {node_id} use {node.path}")
+            else:
+                seen_paths[node.path] = node_id
         if not invalid_path and not node.x and not (root / node.path).exists():
             errors.append(f"{node_id} missing file: {node.path}")
     for dependent, bases in sorted(deps.items()):
@@ -610,36 +658,44 @@ def render_tree(nodes: dict[int, Node], deps: dict[int, list[int]]) -> list[str]
         repeat = " ↑" if repeated else ""
         return f"[{node_id}] {node.summary}{state}{repeat}"
 
-    def walk(node_id: int, prefix: str, connector: str) -> None:
-        repeated = node_id in shown
-        lines.append(f"{prefix}{connector}{label(node_id, repeated)}")
-        if repeated or node_id not in nodes:
-            return
-        shown.add(node_id)
-        children = sorted(set(deps.get(node_id, [])))
-        for index, child_id in enumerate(children):
-            last = index == len(children) - 1
-            child_connector = "└── " if last else "├── "
+    def walk(root_id: int) -> None:
+        # Iterative pre-order DFS: children are pushed in reverse so they pop
+        # left-to-right, reproducing the recursive line order without a call
+        # stack that a deep tree could overflow.
+        work: list[tuple[int, str, str]] = [(root_id, "", "")]
+        while work:
+            node_id, prefix, connector = work.pop()
+            repeated = node_id in shown
+            lines.append(f"{prefix}{connector}{label(node_id, repeated)}")
+            if repeated or node_id not in nodes:
+                continue
+            shown.add(node_id)
+            children = sorted(set(deps.get(node_id, [])))
             if connector == "":
                 extension = ""
             elif connector.startswith("└"):
                 extension = "    "
             else:
                 extension = "│   "
-            walk(child_id, prefix + extension, child_connector)
+            frames: list[tuple[int, str, str]] = []
+            for index, child_id in enumerate(children):
+                last = index == len(children) - 1
+                child_connector = "└── " if last else "├── "
+                frames.append((child_id, prefix + extension, child_connector))
+            work.extend(reversed(frames))
 
     for index, root_id in enumerate(roots):
         if root_id in shown:
             continue
         if index > 0:
             lines.append("")
-        walk(root_id, "", "")
+        walk(root_id)
     for node_id in sorted(node_id for node_id in nodes if node_id not in shown):
         if node_id in shown:
             continue  # a node pulled in by walking an earlier component must not reprint
         if lines:
             lines.append("")
-        walk(node_id, "", "")
+        walk(node_id)
     return lines
 
 
@@ -663,18 +719,33 @@ def default_root(graph: Path) -> Path:
 
 def main(argv: list[str]) -> int:
     CHANGES.clear()  # reset the module-level accumulator so repeated in-process calls don't report stale changes
-    # The tree/roadmap output uses box-drawing and arrow glyphs; the Windows
-    # console defaults to cp949 and would crash with UnicodeEncodeError mid-print.
-    # Force UTF-8 with replacement where the runtime supports reconfigure().
-    for _stream in (sys.stdout, sys.stderr):
+    # The tree renderer prints box-drawing (└──) and arrows (➔); force UTF-8 so a
+    # non-UTF-8 console (e.g. Windows cp1252) degrades gracefully instead of
+    # dying with UnicodeEncodeError.
+    for stream in (sys.stdout, sys.stderr):
         try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
             pass
-    parser = argparse.ArgumentParser(description="Check or fix a plan graph.")
+    parser = argparse.ArgumentParser(
+        description="Check or repair a compact plan-graph YAML index (.agents/plan/graph.yaml).",
+        epilog=(
+            "modes (precedence: --show > --suggest-deps > --fix):\n"
+            "  (default)       validate; exit 0 valid, 1 errors, 2 unparseable\n"
+            "  --fix           persist drift repairs, then validate (writes files; takes a lock)\n"
+            "  --show          print the plan tree + roadmap (read-only)\n"
+            "  --suggest-deps  print read-only dependency candidates\n"
+            "add --json to any mode for a single machine-readable object.\n"
+            "examples:\n"
+            "  plan-graph.py .agents/plan/graph.yaml\n"
+            "  plan-graph.py .agents/plan/graph.yaml --fix\n"
+            "  plan-graph.py .agents/plan/graph.yaml --show --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("graph", type=Path)
-    parser.add_argument("--fix", action="store_true", help="repair missing-file graph drift")
-    parser.add_argument("--show", action="store_true", help="print the plan tree and exit")
+    parser.add_argument("--fix", action="store_true", help="repair missing-file graph drift (writes files)")
+    parser.add_argument("--show", action="store_true", help="print the plan tree and exit (read-only)")
     parser.add_argument(
         "--suggest-deps",
         action="store_true",
@@ -687,7 +758,7 @@ def main(argv: list[str]) -> int:
     root = (args.root.resolve() if args.root else default_root(graph.resolve()).resolve())
 
     if not graph.exists():
-        if args.fix and not args.suggest_deps:
+        if args.fix and not args.suggest_deps and not args.show:
             graph.parent.mkdir(parents=True, exist_ok=True)
             write_graph(graph, 1, {}, {})
         else:
@@ -703,13 +774,18 @@ def main(argv: list[str]) -> int:
     lock_acquired = False
     if args.fix and not args.show and not args.suggest_deps:
         # Only write-capable fix mode locks; read-only modes take precedence.
+        lock_error: str | None = None
         for _ in range(3):
-            if acquire_lock(lock_path):
-                lock_acquired = True
+            try:
+                if acquire_lock(lock_path):
+                    lock_acquired = True
+                    break
+            except OSError as exc:
+                lock_error = f"cannot create lockfile {lock_path}: {exc}"
                 break
             time.sleep(1)
         if not lock_acquired:
-            err_msg = f"graph locked by another process (lockfile: {lock_path})"
+            err_msg = lock_error or f"graph locked by another process (lockfile: {lock_path})"
             if args.json:
                 print(json.dumps({"status": "ERROR", "errors": [err_msg], "warnings": [], "changes": []}, ensure_ascii=False, indent=2))
             else:
