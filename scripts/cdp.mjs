@@ -1,6 +1,8 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const ASSET = fileURLToPath(new URL("../assets/element-picker.js", import.meta.url));
 const argv = process.argv.slice(2);
@@ -15,6 +17,12 @@ const PORT = process.env.CDP_PORT || opt("port", "9222");
 const BASE = "http://localhost:" + PORT;
 const MATCH = opt("match", "");
 const src = () => readFileSync(ASSET, "utf8");
+// Atomically read + clear the in-page request queue and return it as JSON (or null when
+// empty). The page is single-threaded, so slice()+reset inside one evaluate can't race a
+// concurrent Send. Draining the WHOLE queue in one shot is what makes batching lossless.
+const DRAIN =
+  "(function(){var s=window.__s2p;if(!s||!s.queue||!s.queue.length)return null;" +
+  "var o=s.queue.slice();s.queue=[];s.request=null;return JSON.stringify(o);})()";
 
 async function pageTarget() {
   let list;
@@ -67,11 +75,21 @@ switch (cmd) {
     const url = pos[0] || "about:blank";
     const bin = chromeBin();
     if (!bin) { console.error("chrome not found — set CHROME=/path/to/chrome"); process.exit(2); }
-    const dir = opt("user-data-dir", (process.env.TEMP || "/tmp") + "/dom-picker-cdp");
+    // Fresh, unpredictable profile dir by default (avoids clobbering a running Chrome and the
+    // multi-user /tmp symlink hazard of a fixed path). Reuse one only if the caller names it.
+    const dir = opt("user-data-dir", mkdtempSync(join(tmpdir(), "dom-picker-")));
     const child = spawn(bin, ["--remote-debugging-port=" + PORT, "--user-data-dir=" + dir, "--new-window", url], { detached: true, stdio: "ignore" });
     child.unref();
-    console.log("launched chrome (pid " + child.pid + ") on :" + PORT + " -> " + url);
-    process.exit(0);
+    // Wait until the debug endpoint answers so a following keep/wait doesn't hit NO_TARGET.
+    const deadline = Date.now() + 15000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      try { const r = await fetch(BASE + "/json/version"); if (r.ok) { ready = true; break; } } catch { }
+      await new Promise((res) => setTimeout(res, 200));
+    }
+    console.log("launched chrome (pid " + child.pid + ") on :" + PORT + " -> " + url + (ready ? "" : " (debug port not confirmed within 15s)"));
+    console.error("WARNING: --remote-debugging-port=" + PORT + " lets any local process fully control this browser. Use a throwaway profile and close it when done.");
+    process.exit(ready ? 0 : 2);
   }
   case "inject": {
     const c = await attach();
@@ -108,19 +126,45 @@ switch (cmd) {
     }, 1000);
     break;
   }
+  case "serve": {
+    // Preferred interactive listener: keep the picker alive across reloads (like `keep`)
+    // AND deliver queued fix requests. On the first non-empty queue, drain ALL of it in one
+    // shot, print `REQUEST {requests:[...]}`, and exit — the exit re-invokes a host that
+    // launched this as a background task. Requests the user submits while the host works
+    // survive in the in-page queue and are returned immediately by the next `serve`, so the
+    // host must re-launch `serve` right after receiving (before processing) to stay armed.
+    let c = await attach();
+    await c.send("Page.addScriptToEvaluateOnNewDocument", { source: src() });
+    console.log("[serve] watching :" + PORT + (flag("arm") ? " (auto-arm)" : ""));
+    const iv = setInterval(async () => {
+      try {
+        const inst = await evalJs(c, "!!(window.__s2p&&window.__s2p.__installed)");
+        if (inst.result.value === false) {
+          await evalJs(c, src(), false);
+          if (flag("arm")) await evalJs(c, "window.__s2p&&window.__s2p.enable&&window.__s2p.enable()");
+          console.log("[serve] re-injected after reload");
+          return;
+        }
+        const drained = await evalJs(c, DRAIN);
+        if (drained.result.value) {
+          clearInterval(iv);
+          console.log("REQUEST " + JSON.stringify({ requests: JSON.parse(drained.result.value) }));
+          process.exit(0);
+        }
+      } catch {
+        c.close();
+        try { c = await attach(); await c.send("Page.addScriptToEvaluateOnNewDocument", { source: src() }); } catch { }
+      }
+    }, 800);
+    break;
+  }
   case "wait": {
-    // Block until the user submits a fix request in the picker; print it and exit
-    // (exiting is what re-invokes a host that launched this as a background task).
-    // --timeout=<sec> bounds the wait (exit 3) so a host task can't hang forever
-    // when the picker never re-appears (e.g. `keep` isn't also running).
+    // One-shot drainer (no keep-alive). Blocks until the queue has >=1 request, drains the
+    // WHOLE queue, prints `REQUEST {requests:[...]}`, and exits. Prefer `serve` interactively;
+    // `wait` remains for hosts that keep the picker alive separately. --timeout=<sec> bounds
+    // the wait (exit 3) so a host task can't hang forever if no request is submitted.
     const timeoutSec = Number(opt("timeout", "0"));
     const c = await attach();
-    const read = async () => {
-      const r = await evalJs(c, "JSON.stringify((window.__s2p&&window.__s2p.request)||null)");
-      return r.result.value ? JSON.parse(r.result.value) : null;
-    };
-    let baseline = null;
-    try { const cur = await read(); baseline = cur ? cur.seq : null; } catch { }
     const started = Date.now();
     console.log("[wait] waiting for a submitted fix request…" + (timeoutSec > 0 ? " (timeout " + timeoutSec + "s)" : ""));
     const iv = setInterval(async () => {
@@ -130,13 +174,10 @@ switch (cmd) {
         process.exit(3);
       }
       try {
-        const req = await read();
-        // _seq survives reloads via sessionStorage, so a post-reload submit is
-        // strictly greater than the baseline captured here.
-        if (req && req.seq !== baseline) {
+        const drained = await evalJs(c, DRAIN);
+        if (drained.result.value) {
           clearInterval(iv);
-          const full = await evalJs(c, "JSON.stringify(window.__s2p.picks||[])");
-          console.log("REQUEST " + JSON.stringify({ request: req, picks: JSON.parse(full.result.value || "[]") }));
+          console.log("REQUEST " + JSON.stringify({ requests: JSON.parse(drained.result.value) }));
           process.exit(0);
         }
       } catch { }
@@ -145,7 +186,7 @@ switch (cmd) {
   }
   case "read": {
     const c = await attach();
-    const r = await evalJs(c, "JSON.stringify({lastPick:(window.__s2p&&window.__s2p.lastPick)||null,picks:(window.__s2p&&window.__s2p.picks)||[],request:(window.__s2p&&window.__s2p.request)||null})");
+    const r = await evalJs(c, "JSON.stringify({lastPick:(window.__s2p&&window.__s2p.lastPick)||null,picks:(window.__s2p&&window.__s2p.picks)||[],request:(window.__s2p&&window.__s2p.request)||null,queue:(window.__s2p&&window.__s2p.queue)||[]})");
     console.log(r.result.value);
     process.exit(0);
   }
@@ -164,6 +205,6 @@ switch (cmd) {
     process.exit(0);
   }
   default:
-    console.log("usage: node cdp.mjs <launch [url] | keep [--arm] | wait [--timeout=<sec>] | read | pick <sel> | inject [--arm] | clear> [--port=9222] [--match=<url-substr>]");
+    console.log("usage: node cdp.mjs <launch [url] | serve [--arm] | keep [--arm] | wait [--timeout=<sec>] | read | pick <sel> | inject [--arm] | clear> [--port=9222] [--match=<url-substr>]");
     process.exit(cmd ? 2 : 0);
 }

@@ -1,6 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "dom-picker output",
+  "$comment": "One fix result. When the picker delivered a batch of N queued requests, return a JSON array of N objects, each matching this schema (one per request) — see definitions.batch and references/io-contract.md.",
   "type": "object",
   "required": [
     "summary",
@@ -9,7 +10,8 @@
     "candidateFiles",
     "changes",
     "warnings",
-    "canAutoApply"
+    "canAutoApply",
+    "applyDecision"
   ],
   "properties": {
     "summary": {
@@ -32,7 +34,7 @@
         "properties": {
           "path": { "type": "string" },
           "reason": { "type": "string" },
-          "score": { "type": "number" }
+          "score": { "type": "number", "minimum": 0, "maximum": 1 }
         }
       }
     },
@@ -57,7 +59,38 @@
     },
     "canAutoApply": {
       "type": "boolean",
-      "description": "True only when confidence is high, the diff validated, and the user approved."
+      "description": "True only when the current request is authorized and the safe-apply gate holds without another prompt."
+    },
+    "applyDecision": {
+      "type": "object",
+      "required": ["authorizedBy", "eligible", "applied", "reason"],
+      "properties": {
+        "authorizedBy": {
+          "type": "string",
+          "enum": ["trusted-chat", "confirmed-browser-request", "none"],
+          "description": "Trusted source that authorized safe apply, or none when the patch must be returned for review."
+        },
+        "eligible": {
+          "type": "boolean",
+          "description": "True only when authorization, confidence, validation, and safe-scope checks all pass."
+        },
+        "applied": {
+          "type": "boolean",
+          "description": "True only when the patch was actually applied to the working tree."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Short explanation of why the patch was applied or returned for review."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "definitions": {
+    "batch": {
+      "type": "array",
+      "description": "One result per queued request when a drained batch is processed together.",
+      "items": { "$ref": "#" }
     }
   }
 }

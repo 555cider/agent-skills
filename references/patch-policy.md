@@ -23,5 +23,7 @@ The skill returns **unified diffs**, one per changed file, each carried in `chan
 
 ## Applying
 
-Apply only when **all** hold (see `safety-policy.md`): confidence is `high`, the diff validated,
-and the user explicitly approved. Otherwise return the diff with `canAutoApply: false` for review.
+Apply without a second approval only when **all** safe-apply conditions hold (see
+`safety-policy.md`): the request is authorized, confidence is `high`, the diff validated, and the
+edit stays within the safe scope. Otherwise return the diff with `canAutoApply: false` and
+`applyDecision.applied: false` for review.
