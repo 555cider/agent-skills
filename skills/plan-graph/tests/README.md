@@ -42,6 +42,12 @@ each case proves.
 | `lockfresh` / `lockstale` | `--fix` | a fresh foreign lock blocks and survives; a stale lock is overtaken and our lock released |
 | `writefail` | `--fix` | a graph-write failure surfaces `ERROR=failed to write graph` + exit 1, no traceback |
 | `showfixlock` | `--show --fix` | `--show` never locks: it prints the tree (exit 0) even under a fresh foreign lock |
+| `deepchain` | `--show` / check | a 1500-node linear chain does not `RecursionError` (get_longest_path / render_tree / has_cycle are iterative) |
+| `showfixmissing` | `--show --fix` | `--show` precedence: on a **missing** graph it errors (exit 1) and does **not** initialize a graph file |
+| `marklifecycle` | `--fix` ×2 | a vanished active file is marked `x:missing`, then cleared when the file returns |
+| `inferdep` | `--suggest-deps` | weak keyword-overlap + dependency language yields an `INFERRED` (not `EXTRACTED`) candidate |
+| `valerrors` / `selfdep` | check | dangling dep, self dep, absolute path, and duplicate path each error (exit 1); duplicate cites the **first** id |
+| `emptyshow` | `--show` | a graph with no nodes prints `(empty plan graph)` |
 
 Plus one unit-style check that calls `release_lock` directly on a foreign-pid
 lockfile and asserts it survives — the contention path can't exercise the
