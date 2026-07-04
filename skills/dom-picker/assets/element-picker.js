@@ -25,6 +25,41 @@
   var MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
   var SANS = "system-ui,-apple-system,Segoe UI,Roboto,sans-serif";
 
+  // UI text follows the browser language: Korean for `ko*`, English otherwise.
+  var I18N = {
+    ko: {
+      armAria: "요소 선택 중", armLabel: "선택 중… Esc로 취소",
+      pickedAria: function (n) { return n + "개 선택됨, 더 선택"; },
+      pickedLabel: function (n) { return n + "개 선택됨"; },
+      startAria: "요소 선택 시작 (Alt+Shift+S)", startLabel: "요소 선택 · Alt+Shift+S",
+      panelTitle: function (n) { return "선택한 요소 " + n + "개"; },
+      resolvedNote: function (leaf, kind) { return leaf + " 아이콘을 감싼 " + kind + "으로 인식"; },
+      removeAria: function (i) { return i + "번 선택 해제"; },
+      placeholder: "이 요소를 어떻게 고칠까요?  (예: 색을 초록으로)",
+      send: "보내기  (⌘/Ctrl+Enter)", addMore: "＋ 더 선택", clearAll: "모두 해제",
+      needPick: "⚠ 먼저 요소를 선택하세요", needText: "⚠ 수정 내용을 입력하세요",
+      sent: function (n) { return "✓ 대기열에 추가됨 (" + n + ") — 에이전트가 곧 가져갑니다"; },
+      hintMulti: "요소를 클릭해 계속 담기 · Esc로 끝내기",
+      hintSingle: "요소 위에 올려 클릭 · Esc로 취소"
+    },
+    en: {
+      armAria: "Selecting element", armLabel: "Selecting… Esc to cancel",
+      pickedAria: function (n) { return n + " selected, pick more"; },
+      pickedLabel: function (n) { return n + " selected"; },
+      startAria: "Start selecting element (Alt+Shift+S)", startLabel: "Select element · Alt+Shift+S",
+      panelTitle: function (n) { return n + " selected element" + (n === 1 ? "" : "s"); },
+      resolvedNote: function (leaf, kind) { return "resolved to the " + kind + " wrapping the " + leaf + " icon"; },
+      removeAria: function (i) { return "Deselect " + i; },
+      placeholder: "How should this element be fixed?  (e.g. make it green)",
+      send: "Send  (⌘/Ctrl+Enter)", addMore: "＋ Pick more", clearAll: "Clear all",
+      needPick: "⚠ Select an element first", needText: "⚠ Enter what to fix",
+      sent: function (n) { return "✓ Queued (" + n + ") — the agent will pick it up"; },
+      hintMulti: "Click elements to keep adding · Esc to finish",
+      hintSingle: "Hover and click an element · Esc to cancel"
+    }
+  };
+  var T = ((navigator.language || "en").toLowerCase().indexOf("ko") === 0) ? I18N.ko : I18N.en;
+
   function trunc(s, n) { if (s == null) return null; s = String(s); return s.length > n ? s.slice(0, n) + "…" : s; }
   function cssEscape(s) {
     if (window.CSS && CSS.escape) return CSS.escape(s);
@@ -244,10 +279,10 @@
   btn.type = "button";
   function renderLauncher() {
     var n = api.picks.length, base = "position:fixed;right:16px;bottom:16px;z-index:" + (Z + 2) + ";display:inline-flex;align-items:center;gap:7px;font:600 12px/1 " + SANS + ";color:" + C.text + ";background:" + C.ink + ";border:1px solid " + C.line + ";padding:9px 13px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.35);cursor:pointer;";
-    btn.innerHTML = "";
-    if (api.active) { btn.setAttribute("aria-label", "요소 선택 중"); btn.append(dot(C.pick, true), txt("선택 중… Esc로 취소")); btn.style.cssText = base + "border-color:" + C.pick + ";box-shadow:0 0 0 3px " + C.pickSoft + ",0 6px 20px rgba(0,0,0,.35);"; }
-    else if (n) { btn.setAttribute("aria-label", n + "개 선택됨, 더 선택"); btn.append(dot(C.sel), txt(n + "개 선택됨"), countChip(String(n))); btn.style.cssText = base; }
-    else { btn.setAttribute("aria-label", "요소 선택 시작"); btn.append(dot(C.pick), txt("요소 선택")); btn.style.cssText = base; }
+    btn.replaceChildren();
+    if (api.active) { btn.setAttribute("aria-label", T.armAria); btn.append(dot(C.pick, true), txt(T.armLabel)); btn.style.cssText = base + "border-color:" + C.pick + ";box-shadow:0 0 0 3px " + C.pickSoft + ",0 6px 20px rgba(0,0,0,.35);"; }
+    else if (n) { btn.setAttribute("aria-label", T.pickedAria(n)); btn.append(dot(C.sel), txt(T.pickedLabel(n)), countChip(String(n))); btn.style.cssText = base; }
+    else { btn.setAttribute("aria-label", T.startAria); btn.append(dot(C.pick), txt(T.startLabel)); btn.style.cssText = base; }
   }
   function dot(color, pulse) {
     var d = document.createElement("span");
@@ -271,7 +306,7 @@
     var head = mk("div", "display:flex;align-items:center;gap:8px;min-height:46px;padding:0 13px;border-bottom:1px solid " + C.line + ";", panel);
     head.appendChild(dot(C.sel));
     var htitle = mk("div", "font:600 12px/1.3 " + SANS + ";color:" + C.text + ";", head);
-    htitle.textContent = "선택한 요소 " + api.picks.length + "개";
+    htitle.textContent = T.panelTitle(api.picks.length);
 
     var list = mk("div", "max-height:190px;overflow:auto;", panel);
     api.picks.forEach(function (p, i) {
@@ -286,10 +321,10 @@
       bindTip(sel, p.selector || "");
       if (p.resolvedFromLeaf) {
         var note = mk("div", "margin-top:1px;font:10.5px/1.3 " + SANS + ";color:" + C.dim + ";", body);
-        note.textContent = p.resolvedFromLeaf + " 아이콘을 감싼 " + p.kind + "으로 인식";
+        note.textContent = T.resolvedNote(p.resolvedFromLeaf, p.kind);
       }
       var x = mk("button", "flex:none;font:600 11px/1 " + SANS + ";color:" + C.dim + ";background:transparent;border:0;padding:3px 5px;border-radius:6px;cursor:pointer;", row);
-      x.type = "button"; x.textContent = "✕"; x.setAttribute("aria-label", (i + 1) + "번 선택 해제");
+      x.type = "button"; x.textContent = "✕"; x.setAttribute("aria-label", T.removeAria(i + 1));
       x.addEventListener("mouseenter", function () { x.style.color = C.danger; });
       x.addEventListener("mouseleave", function () { x.style.color = C.dim; });
       x.addEventListener("click", function (e) { e.stopPropagation(); removeAt(i); });
@@ -301,16 +336,16 @@
       msg.textContent = api._sentMsg;
     }
     var ta = mk("textarea", "width:100%;box-sizing:border-box;resize:none;height:46px;font:12px/1.4 " + SANS + ";color:" + C.text + ";background:" + C.ink + ";border:1px solid " + C.line + ";border-radius:8px;padding:7px 9px;outline:none;", form);
-    ta.placeholder = "이 요소를 어떻게 고칠까요?  (예: 색을 초록으로)";
+    ta.placeholder = T.placeholder;
     ta.value = api._draft || "";
     ta.addEventListener("input", function () { api._draft = ta.value; api._sentMsg = ""; saveState(); });
     ta.addEventListener("keydown", function (e) { e.stopPropagation(); if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submitRequest(); });
     var sendWrap = mk("div", "margin-top:7px;", form);
-    sendWrap.appendChild(primaryBtn("보내기  (⌘/Ctrl+Enter)", submitRequest));
+    sendWrap.appendChild(primaryBtn(T.send, submitRequest));
 
     var foot = mk("div", "display:flex;gap:8px;padding:9px 13px 12px;", panel);
-    foot.appendChild(action("＋ 더 선택", C.pick, function () { api.enable(); }));
-    foot.appendChild(action("모두 해제", C.danger, function () { api.clear(); }));
+    foot.appendChild(action(T.addMore, C.pick, function () { api.enable(); }));
+    foot.appendChild(action(T.clearAll, C.danger, function () { api.clear(); }));
   }
   function action(labelText, color, fn) {
     var b = document.createElement("button");
@@ -328,22 +363,26 @@
     b.addEventListener("click", function (e) { e.stopPropagation(); fn(); });
     return b;
   }
-  // The one bridge browser → agent: stash the fix request; a CDP watcher reads it.
+  // The one bridge browser → agent: enqueue the fix request; a CDP watcher drains it.
+  // A durable queue (not a single slot) so rapid submissions and ones sent while the
+  // agent is busy are never overwritten — each Send snapshots its own picks.
   function submitRequest() {
     var text = (api._draft || "").trim();
-    if (!api.picks.length) { api._sentMsg = "⚠ 먼저 요소를 선택하세요"; renderPanel(); return; }
-    if (!text) { api._sentMsg = "⚠ 수정 내용을 입력하세요"; renderPanel(); return; }
-    api.request = {
+    if (!api.picks.length) { api._sentMsg = T.needPick; renderPanel(); return; }
+    if (!text) { api._sentMsg = T.needText; renderPanel(); return; }
+    var req = {
       text: text, seq: ++api._seq,
       picks: api.picks.map(function (p) { return { selector: p.selector, label: p.label, tagName: p.tagName }; })
     };
-    api._draft = ""; api._sentMsg = "✓ 전송됨 — 에이전트가 받는 중…"; renderPanel();
+    api.queue.push(req);
+    api.request = req; // back-compat: latest enqueued request
+    api._draft = ""; api._sentMsg = T.sent(api.queue.length); renderPanel();
     saveState(); // persist the bumped _seq so a reload cannot rewind the bridge counter
   }
 
   function showHint(on) {
     if (!hint) hint = mk("div", "position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:" + (Z + 2) + ";font:600 12px/1 " + SANS + ";color:" + C.text + ";background:" + C.ink + ";border:1px solid " + C.pick + ";padding:8px 13px;border-radius:999px;box-shadow:0 6px 20px rgba(0,0,0,.35);");
-    hint.textContent = api.multi ? "요소를 클릭해 계속 담기 · Esc로 끝내기" : "요소 위에 올려 클릭 · Esc로 취소";
+    hint.textContent = api.multi ? T.hintMulti : T.hintSingle;
     hint.style.display = on ? "block" : "none";
   }
 
@@ -383,7 +422,7 @@
 
   var api = {
     __installed: true, active: false, multi: false, lastPick: null, picks: [],
-    _seq: 0, _draft: "", _sentMsg: "", request: null,
+    _seq: 0, _draft: "", _sentMsg: "", request: null, queue: [],
     snapshot: snapshot,
     enable: function (opts) {
       api.multi = !!(opts && opts.multi); api.active = true;
@@ -397,6 +436,8 @@
       api.active = false; hover(null); showHint(false);
       document.removeEventListener("mousemove", onMove, true);
       document.removeEventListener("click", onClick, true);
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition, true);
       renderLauncher();
     },
     clear: function () {
@@ -406,17 +447,35 @@
       selBoxes = [];
       renderPanel(); renderLauncher(); saveState();
     },
-    toggle: function () { api.active ? api.disable() : api.enable(); }
+    toggle: function () { api.active ? api.disable() : api.enable(); },
+    // Full teardown: leave the page exactly as it was before injection.
+    destroy: function () {
+      api.disable();
+      document.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition, true);
+      var nodes = document.querySelectorAll("[data-s2p]");
+      for (var i = 0; i < nodes.length; i++) nodes[i].remove();
+      selBoxes = []; hoverBox = hoverChip = panel = hint = tip = null;
+      api.active = false; api.picks = []; api.lastPick = null; api.request = null; api.queue = [];
+      try { delete window.__s2p; } catch (e) { window.__s2p = undefined; }
+    }
   };
 
   var st = mk("style", "");
   st.textContent = "@keyframes s2pPulse{0%{box-shadow:0 0 0 0 " + C.pick + "80}70%{box-shadow:0 0 0 6px " + C.pick + "00}100%{box-shadow:0 0 0 0 " + C.pick + "00}}@media (prefers-reduced-motion:reduce){[data-s2p]{animation:none!important}}";
   btn.addEventListener("click", function (e) { e.stopPropagation(); api.toggle(); });
-  document.addEventListener("keydown", function (e) {
+  // Alt+Shift+S toggles picking so the user never has to mouse over to the launcher;
+  // Esc leaves picking. `code === "KeyS"` is layout-independent (works on non-QWERTY).
+  function onKeydown(e) {
+    if (e.altKey && e.shiftKey && (e.code === "KeyS" || e.key === "S" || e.key === "s")) {
+      e.preventDefault(); e.stopPropagation(); api.toggle(); return;
+    }
     // Only intercept Escape while actively picking, so we don't swallow the host
     // page's own Escape handling (closing its modals/menus) the rest of the time.
     if (e.key === "Escape" && api.active) { e.preventDefault(); e.stopPropagation(); api.disable(); }
-  });
+  }
+  document.addEventListener("keydown", onKeydown);
 
   function mount() { if (document.body && !document.body.contains(btn)) { document.body.appendChild(btn); renderLauncher(); } }
   if (document.body) mount(); else document.addEventListener("DOMContentLoaded", mount);

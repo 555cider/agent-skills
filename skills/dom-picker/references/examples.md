@@ -20,7 +20,7 @@ illustrative; always re-validate against the actual repo.
 ```diff
 --- a/src/components/SettingsToolbar.tsx
 +++ b/src/components/SettingsToolbar.tsx
-@@ -12,7 +12,7 @@ export function SettingsToolbar() {
+@@ -12,5 +12,5 @@ export function SettingsToolbar() {
    return (
 -    <div className="flex">
 +    <div className="flex gap-2">
@@ -28,7 +28,7 @@ illustrative; always re-validate against the actual repo.
        <button onClick={onCancel}>Cancel</button>
      </div>
 ```
-**confidence:** high · **canAutoApply:** false (pending user approval)
+**confidence:** high · **canAutoApply:** true · **applyDecision:** `{ "authorizedBy": "trusted-chat", "eligible": true, "applied": true, "reason": "trusted chat request, high confidence, validated safe-scope diff" }`
 
 ## 2. Layout breaks on mobile
 
@@ -47,11 +47,17 @@ overflow. Make columns responsive.
 ```diff
 --- a/src/components/CardRow.tsx
 +++ b/src/components/CardRow.tsx
-@@ -8,7 +8,7 @@ export function CardRow({ items }) {
--    <div className="grid grid-cols-3 gap-4">
-+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+@@ -6,7 +6,7 @@ export function CardRow({ items }) {
+     <section className="card-row">
+       <h2>Items</h2>
+       <div className="p-4">
+-        <div className="grid grid-cols-3 gap-4">
++        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+           {items.map((it) => <Card key={it.id} {...it} />)}
+         </div>
+       </div>
 ```
-**confidence:** high · **canAutoApply:** false
+**confidence:** high · **canAutoApply:** true · **applyDecision:** `{ "authorizedBy": "trusted-chat", "eligible": true, "applied": true, "reason": "trusted chat request, high confidence, validated safe-scope diff" }`
 
 ## 3. Wrong Tailwind color class
 
@@ -70,8 +76,15 @@ use a success color.
 --- a/src/components/StatusBadge.tsx
 +++ b/src/components/StatusBadge.tsx
 @@ -4,7 +4,7 @@ export function StatusBadge({ label }) {
--    <span className="badge bg-gray-200 text-gray-600">{label}</span>
-+    <span className="badge bg-green-100 text-green-700">{label}</span>
+   if (!label) return null;
+   return (
+     <div className="badge-wrap">
+-      <span className="badge bg-gray-200 text-gray-600">{label}</span>
++      <span className="badge bg-green-100 text-green-700">{label}</span>
+     </div>
+   );
+ }
 ```
 **confidence:** medium · **warnings:** ["Badge may be shared across states; if other states reuse
-this component, gate the color on a status prop instead of hardcoding green."] · **canAutoApply:** false
+this component, gate the color on a status prop instead of hardcoding green."] · **canAutoApply:** false ·
+**applyDecision:** `{ "authorizedBy": "trusted-chat", "eligible": false, "applied": false, "reason": "medium confidence; return diff for review" }`
