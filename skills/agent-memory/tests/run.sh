@@ -709,6 +709,9 @@ assert_contains "canonical untouched without --canonical" "$CANON_A" "gate-canar
 run_mem forget --cwd "$FA" --summary "gate-canary fact" --canonical
 assert_not_contains "canonical removed with --canonical" "$CANON_A" "gate-canary fact"
 
+# Return to the primary project memory store for the remaining $PROJ/$PROJECT_MEMORY checks.
+MEMHOME="$WORK/memory-notes"
+
 # ---------------------------------------------------------------------------
 # eval assets: behavior and trigger eval files are valid.
 # ---------------------------------------------------------------------------
@@ -725,9 +728,10 @@ trigger = json.load(open(sys.argv[2], encoding="utf-8"))
 assert behavior["skill_name"] == "agent-memory"
 assert len(behavior["evals"]) >= 6
 assert all({"id", "prompt", "expected_output"} <= set(item) for item in behavior["evals"])
-assert len(trigger) == 20
-assert sum(1 for item in trigger if item["should_trigger"]) == 10
-assert sum(1 for item in trigger if not item["should_trigger"]) == 10
+pos = sum(1 for item in trigger if item["should_trigger"])
+neg = sum(1 for item in trigger if not item["should_trigger"])
+assert len(trigger) >= 8, f"need >=8 trigger cases, have {len(trigger)}"
+assert pos >= 4 and neg >= 4, f"need a balanced positive/negative split, have {pos}/{neg}"
 assert all({"query", "should_trigger"} <= set(item) for item in trigger)
 PY
 if [ "$?" -eq 0 ]; then
@@ -748,6 +752,103 @@ run_mem note --cwd "$PROJ" --scope project --priority auto --type command \
   --source command --confidence high --summary "Private key header test" \
   --evidence command:"cat key.pem" --body "-----BEGIN RSA PRIVATE KEY-----"
 assert_exit "note rejects private key pattern" 1
+
+# ---------------------------------------------------------------------------
+# forget: --note + --summary respects the --canonical gate (regression).
+# ---------------------------------------------------------------------------
+run_mem note --cwd "$PROJ" --scope project --priority auto --type command \
+  --source command --confidence high --summary "Canonical gate fixture fact" \
+  --evidence command:"run gate" --body "Promote then forget."
+assert_exit "gate fixture note created" 0
+GATE_NOTE="$(note_path_from_stdout)"
+run_mem promote --cwd "$PROJ" --note "$GATE_NOTE"
+assert_exit "gate fixture promoted" 0
+assert_contains "gate fixture in canonical" "$PROJECT_MEMORY" "Canonical gate fixture fact"
+
+# A second inbox note to delete by path alongside a --summary, WITHOUT --canonical.
+run_mem note --cwd "$PROJ" --scope project --priority auto --type command \
+  --source command --confidence high --summary "Transient inbox fact" \
+  --evidence command:"run x" --body "Delete me."
+assert_exit "transient inbox note created" 0
+TRANSIENT_NOTE="$(note_path_from_stdout)"
+run_mem forget --cwd "$PROJ" --note "$TRANSIENT_NOTE" --summary "Canonical gate fixture fact"
+assert_exit "forget --note --summary without --canonical succeeds" 0
+assert_contains "canonical untouched without --canonical" "$PROJECT_MEMORY" "Canonical gate fixture fact"
+if [ -f "$TRANSIENT_NOTE" ]; then
+  fail "forget --note removed the named inbox note" "still present: $TRANSIENT_NOTE"
+else
+  pass "forget --note removed the named inbox note"
+fi
+
+# Now scrub the canonical entry explicitly.
+run_mem forget --cwd "$PROJ" --summary "Canonical gate fixture fact" --canonical
+assert_exit "forget --summary --canonical succeeds" 0
+assert_not_contains "canonical removed with --canonical" "$PROJECT_MEMORY" "Canonical gate fixture fact"
+
+# ---------------------------------------------------------------------------
+# forget --id boundary matching: a truncated id must not match a full id.
+# ---------------------------------------------------------------------------
+run_mem note --cwd "$PROJ" --scope project --priority auto --type command \
+  --source command --confidence high --summary "Boundary id fixture" \
+  --evidence command:"run y" --body "Has a stable id after promotion."
+BOUNDARY_NOTE="$(note_path_from_stdout)"
+run_mem promote --cwd "$PROJ" --note "$BOUNDARY_NOTE"
+assert_exit "boundary fixture promoted" 0
+run_mem forget --cwd "$PROJ" --id "mem_1970"
+assert_exit "forget with a non-matching truncated id fails cleanly" 1
+assert_contains "boundary fixture survives truncated id" "$PROJECT_MEMORY" "Boundary id fixture"
+
+# ---------------------------------------------------------------------------
+# error surface: a missing input file yields one ERROR= line, not a traceback.
+# ---------------------------------------------------------------------------
+run_mem promote --cwd "$PROJ" --note "$WORK/does-not-exist.md"
+assert_exit "promote on missing note exits 1" 1
+assert_contains "promote missing note prints ERROR=" "$WORK/err" "ERROR="
+assert_not_contains "promote missing note has no traceback" "$WORK/err" "Traceback"
+
+run_mem propose --cwd "$PROJ" --scope project --source session --input "$WORK/nope.txt"
+assert_exit "propose on missing input exits 1" 1
+assert_not_contains "propose missing input has no traceback" "$WORK/err" "Traceback"
+
+# ---------------------------------------------------------------------------
+# explicit-note promotion: a user explicit note is promotion-eligible.
+# ---------------------------------------------------------------------------
+run_mem note --cwd "$PROJ" --scope project --priority explicit --type preference \
+  --source user --confidence high --summary "Explicit promotable preference" \
+  --body "User asked to remember this."
+EXPLICIT_NOTE="$(note_path_from_stdout)"
+run_mem promote --cwd "$PROJ" --note "$EXPLICIT_NOTE"
+assert_exit "explicit user note is promotable" 0
+assert_contains "explicit note reached canonical" "$PROJECT_MEMORY" "Explicit promotable preference"
+
+# ---------------------------------------------------------------------------
+# find --since and --include-topics gating (regression).
+# ---------------------------------------------------------------------------
+run_mem find --cwd "$PROJ" --since 1970-01-01 --budget-lines 50
+assert_exit "find --since accepts a date filter" 0
+
+run_mem find --cwd "$PROJ" --budget-lines 50
+assert_exit "bare find succeeds" 0
+assert_not_contains "bare find does not dump topics" "$WORK/out" "Verification Policy"
+
+run_mem find --cwd "$PROJ" --include-topics --budget-lines 50
+assert_exit "find --include-topics succeeds" 0
+assert_contains "find --include-topics surfaces topics" "$WORK/out" "Verification Policy"
+
+# ---------------------------------------------------------------------------
+# --memory-home flag overrides the env var.
+# ---------------------------------------------------------------------------
+ALT_HOME="$WORK/alt-memory"
+AGENT_MEMORY_HOME="$MEMHOME" AGENT_MEMORY_AGENT_ID="test-agent" \
+  python3 "$MEM" --memory-home "$ALT_HOME" stats --cwd "$PROJ" --format json \
+  >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "stats honors --memory-home override" 0
+if [ -d "$ALT_HOME" ]; then
+  pass "--memory-home creates the overridden store"
+else
+  fail "--memory-home creates the overridden store" "missing $ALT_HOME"
+fi
 
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

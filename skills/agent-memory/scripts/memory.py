@@ -41,7 +41,7 @@ SENSITIVE_PATTERNS = [
 ]
 
 
-class MemoryError(Exception):
+class MemoryStoreError(Exception):
     pass
 
 
@@ -151,7 +151,7 @@ def check_sensitive(*parts: str) -> None:
     text = "\n".join(part for part in parts if part)
     for pattern in SENSITIVE_PATTERNS:
         if pattern.search(text):
-            raise MemoryError("sensitive content detected")
+            raise MemoryStoreError("sensitive content detected")
 
 
 def quote_if_needed(value: str) -> str:
@@ -208,6 +208,8 @@ def agent_id() -> str:
     harness = os.environ.get("CLAUDECODE") and "claude"
     if not harness and os.environ.get("CODEX_SANDBOX"):
         harness = "codex"
+    if not harness and (os.environ.get("OPENCODE") or os.environ.get("OPENCODE_BIN")):
+        harness = "opencode"
     if not harness:
         harness = "agent"
     return f"{harness}-{os.getpid()}-{random.randint(1000, 9999)}"
@@ -234,13 +236,13 @@ class Lock:
                 try:
                     age = time.time() - self.path.stat().st_mtime
                 except FileNotFoundError:
-                    # Lock released between the failed mkdir and the stat; retry immediately.
+                    # Another process removed the lock between mkdir and stat; retry.
                     continue
                 if age > self.stale_seconds:
                     shutil.rmtree(self.path, ignore_errors=True)
                     continue
                 if time.time() >= deadline:
-                    raise MemoryError("memory locked by another process")
+                    raise MemoryStoreError("memory locked by another process")
                 time.sleep(0.1)
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -294,10 +296,10 @@ def note_text(meta: dict[str, str], evidence: list[dict[str, str]], body: str) -
 def split_frontmatter(text: str) -> tuple[list[str], str]:
     text_norm = text.replace("\r\n", "\n")
     if not text_norm.startswith("---\n"):
-        raise MemoryError("missing frontmatter")
+        raise MemoryStoreError("missing frontmatter")
     end = text_norm.find("\n---", 4)
     if end < 0:
-        raise MemoryError("unterminated frontmatter")
+        raise MemoryStoreError("unterminated frontmatter")
     fm = text_norm[4:end].splitlines()
     body = text_norm[end + 4 :].lstrip("\n")
     return fm, body
@@ -336,7 +338,7 @@ def parse_note(path: Path) -> tuple[dict[str, str], list[dict[str, str]], str]:
                 evidence.append(current)
             continue
         if ":" not in line:
-            raise MemoryError(f"malformed frontmatter line: {line}")
+            raise MemoryStoreError(f"malformed frontmatter line: {line}")
         key, value = line.split(":", 1)
         meta[key.strip()] = unquote_value(value)
         i += 1
@@ -365,7 +367,7 @@ def validate_note(meta: dict[str, str], evidence: list[dict[str, str]], body: st
         errors.append("summary too long")
     try:
         check_sensitive(meta.get("summary", ""), body, "\n".join(item.get("ref", "") for item in evidence))
-    except MemoryError as exc:
+    except MemoryStoreError as exc:
         errors.append(str(exc))
     if (
         meta.get("priority") == "auto"
@@ -399,7 +401,7 @@ def memory_path(home: Path, scope: str, repo_key: str | None) -> Path:
     if scope == "global":
         return home / "global" / "MEMORY.md"
     if not repo_key:
-        raise MemoryError("project memory requires repo_key")
+        raise MemoryStoreError("project memory requires repo_key")
     return home / "projects" / repo_key / "MEMORY.md"
 
 
@@ -545,7 +547,9 @@ def infer_proposals(text: str, default_tags: list[str]) -> list[dict[str, object
             continue
 
         lowered = line.lower()
-        if "user correction" in lowered or "prefer" in lowered or "preference" in lowered:
+        # Anchor signals to the start of the line so an incidental "prefer" or
+        # "command" mid-sentence does not stage a spurious candidate.
+        if lowered.startswith(("user correction", "prefer", "preference")):
             proposals.append({
                 "type": "preference",
                 "confidence": "medium",
@@ -556,14 +560,14 @@ def infer_proposals(text: str, default_tags: list[str]) -> list[dict[str, object
             })
             continue
 
-        if (
-            "repeated failure" in lowered
-            or "lesson learned" in lowered
-            or "verified" in lowered
-            or "run " in lowered
-            or "restart " in lowered
-            or "command" in lowered
-        ):
+        if lowered.startswith((
+            "repeated failure",
+            "lesson learned",
+            "verified",
+            "run ",
+            "restart ",
+            "command",
+        )):
             evidence = pending_evidence
             pending_evidence = []
             proposals.append({
@@ -591,7 +595,7 @@ def command_propose(args: argparse.Namespace) -> int:
     elif not sys.stdin.isatty():
         text = sys.stdin.read()
     else:
-        raise MemoryError("propose requires --input or piped stdin")
+        raise MemoryStoreError("propose requires --input or piped stdin")
 
     proposals = infer_proposals(text, args.tag or [])
     candidates: list[dict[str, object]] = []
@@ -644,12 +648,22 @@ def canonical_metadata_text(values: dict[str, str]) -> str:
     return "; ".join(f"{key}: {value}" for key, value in values.items() if value)
 
 
+def is_duplicate_canonical(existing: str, summary: str, source_note: str) -> bool:
+    """A promotion is a duplicate only if the same source note is already
+    recorded, or an existing canonical bullet carries the exact same summary.
+    (A raw ``summary in existing`` substring test silently dropped distinct
+    entries whose summary happened to be a substring of another line.)"""
+    if f"source_note: {source_note}" in existing:
+        return True
+    for line in existing.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("- [") and f"] {summary} (" in stripped:
+            return True
+    return False
+
+
 def build_memory_update(existing: str, title: str, bullet: str, summary: str, source_note: str) -> str:
-    # Dedup on the note provenance, or on an existing bullet carrying this exact
-    # summary. Match the bullet structure "] {summary} (" rather than a raw
-    # substring so a short summary that merely appears inside another line does
-    # not suppress a genuinely new entry.
-    if f"source_note: {source_note}" in existing or f"] {summary} (" in existing:
+    if is_duplicate_canonical(existing, summary, source_note):
         return existing
     start = "<!-- agent-memory:start -->"
     end = "<!-- agent-memory:end -->"
@@ -670,9 +684,9 @@ def command_promote(args: argparse.Namespace) -> int:
     meta, evidence, body = parse_note(note)
     errors = validate_note(meta, evidence, body, check_summary_len=True)
     if errors:
-        raise MemoryError("; ".join(errors))
+        raise MemoryStoreError("; ".join(errors))
     if not eligible_for_promotion(meta, evidence):
-        raise MemoryError("note is not eligible for promotion")
+        raise MemoryStoreError("note is not eligible for promotion")
 
     repo_key = meta.get("repo_key") or (compute_repo_key(cwd_from_args(args)) if meta.get("scope") == "project" else None)
     ensure_layout(home, repo_key)
@@ -695,13 +709,13 @@ def command_promote(args: argparse.Namespace) -> int:
     with Lock(home):
         existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
         updated = build_memory_update(existing, title, bullet, meta["summary"], source_note)
-        wrote = updated != existing
-        if wrote:
+        changed = updated != existing
+        if changed:
             atomic_write(dest, updated)
-    if wrote:
-        print(f"PROMOTE={dest}")
-    else:
-        print(f"SKIP={dest}: already present (duplicate summary or source_note)")
+    if not changed:
+        print(f"SKIPPED=duplicate {dest}")
+        return 0
+    print(f"PROMOTE={dest}")
     return 0
 
 
@@ -808,7 +822,7 @@ def topic_result(path: Path, scope: str, text: str) -> dict[str, object]:
     if text_norm.startswith("---\n"):
         try:
             meta, body = parse_simple_frontmatter_text(text_norm)
-        except MemoryError:
+        except MemoryStoreError:
             meta = {}
             body = text_norm
 
@@ -968,7 +982,9 @@ def command_find(args: argparse.Namespace) -> int:
             if path.name in TOPIC_SUPPORT_FILENAMES:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            if keyword_match(text, queries):
+            # Topics load only when a query (or --include-topics) selects them,
+            # so a bare `find` does not dump the entire topic corpus.
+            if args.include_topics or (queries and keyword_match(text, queries)):
                 candidates.append(topic_result(path, scope, text))
         for path in iter_note_files(base / "inbox" / "auto"):
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -1027,7 +1043,7 @@ def command_check(args: argparse.Namespace) -> int:
         text = mem.read_text(encoding="utf-8", errors="replace")
         try:
             check_sensitive(text)
-        except MemoryError as exc:
+        except MemoryStoreError as exc:
             errors.append(f"{exc} in {mem}")
         if len(text.splitlines()) > MEMORY_MAX_LINES:
             errors.append(f"MEMORY.md too long {mem}")
@@ -1041,6 +1057,23 @@ def command_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def line_has_canonical_id(line: str, wanted: str) -> bool:
+    """Match ``id: <wanted>`` only at a token boundary so a truncated id like
+    ``mem_2026`` never matches ``id: mem_20260627_ab12cd34``."""
+    return re.search(rf"\bid:\s*{re.escape(wanted)}(?![\w])", line) is not None
+
+
+def strip_canonical_lines(mem: Path, predicate) -> list[str]:
+    """Remove canonical MEMORY.md lines matching ``predicate`` and return the
+    removed lines so the caller can report exactly what was deleted."""
+    lines = mem.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines if not predicate(line)]
+    removed = [line for line in lines if predicate(line)]
+    if removed:
+        atomic_write(mem, "\n".join(kept) + "\n")
+    return removed
+
+
 def command_forget(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
@@ -1048,20 +1081,22 @@ def command_forget(args: argparse.Namespace) -> int:
     ensure_layout(home, repo_key)
 
     if getattr(args, "id", None):
-        removed: list[str] = []
+        removed_files: list[str] = []
+        removed_lines: list[str] = []
         with Lock(home):
             for mem in home.glob("**/MEMORY.md"):
                 if not mem.exists():
                     continue
-                lines = mem.read_text(encoding="utf-8").splitlines()
-                new_lines = [line for line in lines if f"id: {args.id}" not in line]
-                if len(new_lines) < len(lines):
-                    atomic_write(mem, "\n".join(new_lines) + "\n")
-                    removed.append(str(mem))
-        for path in removed:
+                gone = strip_canonical_lines(mem, lambda line: line_has_canonical_id(line, args.id))
+                if gone:
+                    removed_files.append(str(mem))
+                    removed_lines.extend(gone)
+        for path in removed_files:
             print(f"FORGET={path}")
-        if not removed:
-            raise MemoryError(f"no canonical entry found for id: {args.id}")
+        for line in removed_lines:
+            print(f"REMOVED={line.strip()}")
+        if not removed_files:
+            raise MemoryStoreError(f"no canonical entry found for id: {args.id}")
         return 0
 
     all_projects = getattr(args, "all_projects", False)
@@ -1069,28 +1104,32 @@ def command_forget(args: argparse.Namespace) -> int:
     if args.note:
         target = Path(args.note).expanduser().resolve()
         if not target.exists():
-            raise MemoryError(f"note not found: {target}")
+            raise MemoryStoreError(f"note not found: {target}")
         # Confine to the store: relative_to compares path components, so a sibling
         # like <home>-backup is correctly rejected (a str.startswith prefix check
         # would let it through).
         try:
             target.relative_to(home)
         except ValueError:
-            raise MemoryError("note is not in memory store")
+            raise MemoryStoreError("note is not in memory store")
+        removed_lines = []
         with Lock(home):
             target.unlink()
+            # Canonical MEMORY.md is only scrubbed with an explicit --canonical,
+            # matching the --summary-only branch below.
             if args.summary and args.canonical:
                 for mem in scoped_memory_files(home, repo_key, all_projects):
-                    existing = mem.read_text(encoding="utf-8")
-                    lines = existing.splitlines()
-                    new_lines = [l for l in lines if args.summary not in l]
-                    if len(new_lines) < len(lines):
-                        atomic_write(mem, "\n".join(new_lines) + "\n")
+                    removed_lines.extend(
+                        strip_canonical_lines(mem, lambda line: args.summary in line)
+                    )
         print(f"FORGET={target}")
+        for line in removed_lines:
+            print(f"REMOVED={line.strip()}")
         return 0
 
     if args.summary:
         removed: list[str] = []
+        removed_lines = []
         with Lock(home):
             for base in scoped_bases(home, repo_key, all_projects):
                 for path in iter_note_files(base / "inbox"):
@@ -1103,19 +1142,19 @@ def command_forget(args: argparse.Namespace) -> int:
                         continue
             if args.canonical:
                 for mem in scoped_memory_files(home, repo_key, all_projects):
-                    existing = mem.read_text(encoding="utf-8")
-                    lines = existing.splitlines()
-                    new_lines = [l for l in lines if args.summary not in l]
-                    if len(new_lines) < len(lines):
-                        atomic_write(mem, "\n".join(new_lines) + "\n")
+                    gone = strip_canonical_lines(mem, lambda line: args.summary in line)
+                    if gone:
                         removed.append(str(mem))
+                        removed_lines.extend(gone)
         for r in removed:
             print(f"FORGET={r}")
+        for line in removed_lines:
+            print(f"REMOVED={line.strip()}")
         if not removed:
-            raise MemoryError(f"no matching notes found for summary: {args.summary}")
+            raise MemoryStoreError(f"no matching notes found for summary: {args.summary}")
         return 0
 
-    raise MemoryError("must specify --note, --summary, or --id")
+    raise MemoryStoreError("must specify --note, --summary, or --id")
 
 
 def command_verify(args: argparse.Namespace) -> int:
@@ -1133,7 +1172,7 @@ def command_verify(args: argparse.Namespace) -> int:
             changed = False
             new_lines: list[str] = []
             for line in mem.read_text(encoding="utf-8").splitlines():
-                if f"id: {args.id}" not in line:
+                if not line_has_canonical_id(line, args.id):
                     new_lines.append(line)
                     continue
                 if "last_verified:" in line:
@@ -1151,7 +1190,7 @@ def command_verify(args: argparse.Namespace) -> int:
     for path in updated:
         print(f"VERIFY={path}")
     if not updated:
-        raise MemoryError(f"no canonical entry found for id: {args.id}")
+        raise MemoryStoreError(f"no canonical entry found for id: {args.id}")
     return 0
 
 
@@ -1221,6 +1260,7 @@ def command_stats(args: argparse.Namespace) -> int:
                     meta, _, _ = parse_note(path)
                 except Exception:
                     continue
+                stats["total_memory_bytes"] = stats.get("total_memory_bytes", 0) + path.stat().st_size
                 stats[scope_key]["notes"] = stats[scope_key].get("notes", 0) + 1  # type: ignore
                 t = meta.get("type", "unknown")
                 stats[scope_key]["types"][t] = stats[scope_key]["types"].get(t, 0) + 1  # type: ignore
@@ -1360,9 +1400,9 @@ def parse_simple_frontmatter_text(text: str) -> tuple[dict[str, object], str]:
             i += 1
             continue
         if line.startswith((" ", "\t")):
-            raise MemoryError(f"malformed frontmatter line: {line}")
+            raise MemoryStoreError(f"malformed frontmatter line: {line}")
         if ":" not in line:
-            raise MemoryError(f"malformed frontmatter line: {line}")
+            raise MemoryStoreError(f"malformed frontmatter line: {line}")
         key, value = line.split(":", 1)
         key = key.strip()
         value = value.strip()
@@ -1387,7 +1427,7 @@ def parse_simple_frontmatter_text(text: str) -> tuple[dict[str, object], str]:
                 j += 1
                 continue
             if child.startswith((" ", "\t")):
-                raise MemoryError(f"unsupported frontmatter block line: {child}")
+                raise MemoryStoreError(f"unsupported frontmatter block line: {child}")
             break
         meta[key] = items if items else ""
         i = j if items else i + 1
@@ -1404,7 +1444,7 @@ def validate_topic(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8", errors="replace")
     try:
         check_sensitive(text)
-    except MemoryError as exc:
+    except MemoryStoreError as exc:
         errors.append(str(exc))
     try:
         meta, _ = parse_simple_frontmatter_text(text)
@@ -1449,10 +1489,10 @@ def find_session_file(base: Path, wanted: str | None, latest: bool = False) -> P
             sid = meta.get("session_id")
             if sid == wanted or sid == wanted_slug or path.stem in (wanted, wanted_slug):
                 return path
-        raise MemoryError(f"session not found: {wanted}")
+        raise MemoryStoreError(f"session not found: {wanted}")
     if latest and files:
         return max(files, key=lambda path: path.stat().st_mtime)
-    raise MemoryError("must specify --id or --latest")
+    raise MemoryStoreError("must specify --id or --latest")
 
 
 def command_session_save(args: argparse.Namespace) -> int:
@@ -1599,6 +1639,7 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("--cwd", help="Project directory")
     find.add_argument("--query", action="append", help="Keyword to search for")
     find.add_argument("--include-auto", action="store_true", help="Include auto inbox notes even without keyword matches")
+    find.add_argument("--include-topics", action="store_true", help="Include all topic files even without keyword matches")
     find.add_argument("--budget-lines", type=int, default=40)
     find.add_argument("--scope", choices=sorted(SCOPES), default=None, help="Filter by scope")
     find.add_argument("--type", default=None, help="Filter by memory note type or OKF topic type")
@@ -1700,7 +1741,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except MemoryError as exc:
+    except MemoryStoreError as exc:
+        print(f"ERROR={exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # Missing files, permission errors, etc. must surface as a one-line
+        # ERROR= for agents driving this tool blindly, not a raw traceback.
         print(f"ERROR={exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

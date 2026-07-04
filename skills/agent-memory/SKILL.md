@@ -16,7 +16,19 @@ python3 <skill-dir>/scripts/memory.py --help
 ```
 
 Set `AGENT_MEMORY_HOME` to override the data store root. The helper lazily
-creates the store and never overwrites unrelated user data.
+creates the store and never overwrites unrelated user data. Set
+`AGENT_MEMORY_AGENT_ID` to pin the agent identity stamped on captured notes
+(otherwise it is derived from the harness — Claude Code, Codex, opencode — or
+falls back to a generic id). The store itself is agent-agnostic: any harness
+that can run `python3` can share it.
+
+## When NOT to use
+
+- Storing secrets, tokens, or personal data — the helper rejects these; never
+  route them here or into `inbox/auto`.
+- Ordinary progress logs or one-off paths that will not matter next session.
+- Facts already recorded in the repo (code, `CLAUDE.md`, git history) — memory is
+  for context that is *not* derivable from the checkout.
 
 ## Storage Model
 
@@ -48,32 +60,11 @@ creates the store and never overwrites unrelated user data.
 
 ### OKF-Compatible Topics
 
-Use OKF-style Markdown frontmatter for manually maintained topic concept files
-when metadata helps agents search, exchange, or cite longer knowledge documents.
-This does not change the skill's own `SKILL.md` frontmatter contract.
-
-Recommended topic shape:
-
-```markdown
----
-type: AgentMemoryTopic
-title: Verification Policy
-description: How to scope checks for documentation and small edits.
-resource: repo://agent-skills/verification-policy
-tags: [verification, docs]
-timestamp: 2026-07-01T00:00:00Z
----
-
-# Verification Policy
-...
-```
-
-Only `type` is required for OKF compatibility. Prefer `title`, `description`,
-`resource`, `tags`, and `timestamp` when known; `tags` may use inline YAML
-list syntax or a simple block list. Keep the Markdown body as the source of
-truth; frontmatter is for discovery and exchange. Use `index.md` for a local
-table of contents and `log.md` for chronological notes when a topic directory
-needs them; treat those names as reserved support files, not concept files.
+`topics/` concept files may carry OKF-style Markdown frontmatter (`type:
+AgentMemoryTopic`, plus optional `title`/`description`/`resource`/`tags`/
+`timestamp`) so agents can search, exchange, or cite them. Only `type` is
+required. See [references/okf-topics.md](references/okf-topics.md) for the full
+shape and rules.
 
 The helper computes `<repo-key>` from normalized git `origin`, then git
 toplevel path, then cwd path:
@@ -248,12 +239,16 @@ python3 <skill-dir>/scripts/memory.py forget --cwd "$PWD" --id "mem_20260627_ab1
 
 # Also remove matching entries from canonical MEMORY.md
 python3 <skill-dir>/scripts/memory.py forget --cwd "$PWD" --summary "<summary text>" --canonical
+
+# Delete a note AND its promoted canonical entry in one call
+python3 <skill-dir>/scripts/memory.py forget --cwd "$PWD" --note "<note-path>" --summary "<summary text>" --canonical
 ```
 
-Use `--canonical` only when the stale fact has already been promoted to
-`MEMORY.md` and must be removed to prevent reintroduction. Canonical entries are
-touched *only* when `--canonical` is passed — this holds for `--summary` and for
-`--note --summary` alike.
+Canonical `MEMORY.md` is touched **only** with `--canonical`; without it,
+`forget` removes inbox notes (and the named `--note` file) but leaves promoted
+entries intact. Use `--canonical` when a stale fact has already been promoted
+and must be removed to prevent reintroduction. `forget` prints `FORGET=<path>`
+per removed file and `REMOVED=<line>` per deleted canonical entry.
 
 **Scope.** `--summary` matching (inbox and, with `--canonical`, MEMORY.md) is
 confined to the **current repo (`--cwd`) plus global memory**. Pass
@@ -341,42 +336,9 @@ inbox store-wide.
 
 ## JSON Output
 
-The `find`, `list`, `stats`, `propose`, `review`, and `session list`/`session
-resume` commands support `--format json` for programmatic consumption:
-
-```bash
-python3 <skill-dir>/scripts/memory.py find --cwd "$PWD" --query "test" --format json
-```
-
-The top-level JSON shape differs per command:
-
-- `find` → `{ "results": [...], "truncated": <bool>, "total": <int> }`
-- `list` → `{ "results": [...], "total": <int> }`
-- `propose` → `{ "candidates": [...], "total": <int> }`
-- `stats` → `{ "global": {...}, "project": {...}, "total_memory_bytes": <int> }`
-- `review` → `{ "findings": [...], "total": <int> }`
-- `session list` → `{ "results": [...], "total": <int> }`;
-  `session resume` → a single session record object
-
-`find --format json` preserves the text-mode read surface while returning
-normalized ranked result records:
-
-- `kind`: `canonical`, `explicit`, `auto`, or `topic`
-- `scope`: `global` or `project`
-- `path`: source file path
-- `text`: source text when the result comes from canonical memory or a topic
-- `score`: deterministic relevance score for ordering
-- `matched_fields`: fields that matched the query
-- `snippet`: compact matched context when available
-
-Inbox note results keep their note metadata (`summary`, `type`, `priority`,
-`source`, `confidence`, `created_at`, `agent_id`, `repo_key`, `tags`,
-`evidence`, and `body`). Canonical `MEMORY.md` bullet entries also expose parsed
-metadata when available, including `id`, `type`, `summary`, `confidence`,
-`source_note`, `last_verified`, and `tags`. Topic results expose OKF-compatible
-frontmatter when present, including `type`, `title`, `description`, `resource`,
-`tags`, `timestamp`, and any extra scalar or simple-list fields under
-`metadata`.
+`find`, `list`, `stats`, `propose`, `review`, `session list`, and
+`session resume` accept `--format json`. Full field-by-field schemas are in
+[references/json-output.md](references/json-output.md).
 
 ## Helper Contract
 
@@ -398,7 +360,7 @@ The helper enforces the mechanical parts that agents are bad at doing manually:
 - Stats: store-wide statistics aggregation.
 - Cleanup: age-based inbox pruning with dry-run support.
 
-Validation:
+## Validation
 
 ```bash
 python3 <skill-dir>/scripts/memory.py check --cwd "$PWD"
@@ -411,7 +373,19 @@ budget.
 
 If the helper is unavailable, read memory files directly but do not edit
 canonical `MEMORY.md`. At most, create a uniquely named inbox note manually and
-report that helper validation could not run.
+report that helper validation could not run. Run any subcommand with `--help`
+for its full flag list.
+
+## Common Mistakes
+
+- Editing canonical `MEMORY.md` by hand instead of using `promote`/`forget` —
+  bypasses locking, dedupe, and validation.
+- Expecting `forget --summary` to scrub `MEMORY.md` — it removes inbox notes
+  only; add `--canonical` to touch promoted entries.
+- Running `find` with no query and expecting topics — topics load only with a
+  query or `--include-topics`.
+- Promoting an explicit/user preference as an automatic project fact — only
+  verified automatic project operational facts are promotion-eligible.
 
 ## Report Discipline
 
