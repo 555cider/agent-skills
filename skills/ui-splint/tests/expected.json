@@ -50,6 +50,63 @@
       ]
     },
     {
+      "file": "modal.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "focusTrapLeak", "matches": "bg-action", "note": "M1 open dialog with focusable button reachable behind it" }
+      ]
+    },
+    {
+      "file": "modal-front-overlay.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "missingModalBackdrop", "matches": "dialog", "note": "Backdrop candidate above the modal does not count as a backdrop behind it" }
+      ]
+    },
+    {
+      "file": "paleprimary.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "disabledLookingPrimary", "matches": "Create account", "note": "P1 enabled submit with pale near-white fill reads as disabled" }
+      ]
+    },
+    {
+      "file": "drift.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "designSystemDrift", "matches": "border-radius", "note": "S1 five one-off corner radii" }
+      ]
+    },
+    {
+      "file": "newcases.html",
+      "viewport": { "width": 800, "height": 600, "isMobile": false },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "tinyText", "matches": "tiny", "note": "tinyText Risk" },
+        { "rule": "tinyText", "matches": "small", "note": "tinyText Polish" },
+        { "rule": "unlabeledInput", "matches": "unlabeled-text-input", "note": "unlabeledInput on input" },
+        { "rule": "unlabeledInput", "matches": "unlabeled-textarea", "note": "unlabeledInput on textarea" },
+        { "rule": "unlabeledInput", "matches": "unlabeled-select", "note": "unlabeledInput on select" },
+        { "rule": "lineLength", "matches": "long-paragraph", "note": "lineLength Polish" },
+        { "rule": "inconsistentSiblingsSpacing", "note": "inconsistentSiblingsSpacing Polish" },
+        { "rule": "textLineHeightOverlap", "note": "textLineHeightOverlap Risk" },
+        { "rule": "emptyInteractiveTarget", "note": "emptyInteractiveTarget Fail" },
+        { "rule": "misalignedRowItems", "note": "misalignedRowItems Polish" },
+        { "rule": "accidentalFlexWrap", "note": "accidentalFlexWrap Polish" },
+        { "rule": "nonScrollableOverflow", "note": "nonScrollableOverflow Risk" },
+        { "rule": "inconsistentBorderRadius", "note": "inconsistentBorderRadius Polish" },
+        { "rule": "excessiveFirstViewportSpacing", "note": "excessiveFirstViewportSpacing Polish" },
+        { "rule": "buttonSelfHeightMismatch", "note": "buttonSelfHeightMismatch Polish" },
+        { "rule": "stretchedIconDistortion", "note": "stretchedIconDistortion Risk" },
+        { "rule": "missingClickableCursor", "note": "missingClickableCursor Polish" },
+        { "rule": "missingModalBackdrop", "note": "missingModalBackdrop Risk" }
+      ]
+    },
+    {
       "file": "clean.html",
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "dark",

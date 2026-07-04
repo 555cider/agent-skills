@@ -123,3 +123,77 @@ Segmented/tab/radio groups where the wrong item looks active.
 - **Method:** finds all visible button-like elements, groups them into rows based on vertical overlap (sharing at least 50% height or 10px vertically), and flags any row containing more than `maxButtonsInRow` (default `4`).
 - **Threshold:** count `> 4` (or configured value).
 - **FP guards:** ignores hidden/exempt elements; groups using vertical bounding rect intersection to prevent false groupings.
+
+## tinyText — `Polish` / `Risk` — auto-measured
+- **Method:** TreeWalker scans visible text nodes. Checks computed `fontSize` of parent elements.
+- **Threshold:** computed `fontSize < 11px` (configurable via `tinyTextPx`) is `Polish`; `< 9px` is `Risk` (extremely illegible).
+- **FP guards:** skips hidden/exempt elements; ignores elements inside `pre`, `code`, `svg`, `math`, `script`, or `style`.
+
+## unlabeledInput — `Risk` — auto-measured
+- **Method:** Finds visible, non-exempt form controls (`input`, `select`, `textarea`). Flags controls that lack a `<label>` wrapper, a `<label>` associated via `id`/`for`, or accessible labeling attributes (`aria-label`, `aria-labelledby`, `title`). Excludes non-labeled input types like `hidden`, `submit`, `button`, `image`, `reset`.
+- **Threshold:** presence of form control without accessible label/name.
+
+## lineLength — `Polish` — auto-measured
+- **Method:** Finds visible block-level text containers (`p`, `article`, `section`, `div`, `span`) with direct text content longer than `lineLenMax` (default `95` characters). Checks if the inner rendered width exceeds the readable limit (`lineLenMax * fontSize * 0.45`).
+- **Threshold:** text length `> 95` characters and inner width `> maxLinePixels`.
+- **FP guards:** ignores hidden/exempt elements; ignores elements inside formatting/interactive scopes like code blocks, nav, tables, forms, or buttons.
+
+## inconsistentSiblingsSpacing — `Polish` — auto-measured
+- **Method:** Groups sibling elements by tag name and classes under a parent (minimum 3 items). Compares computed horizontal margins/paddings.
+- **Threshold:** padding/margin differs among sibling elements of the same type.
+- **FP guards:** ignores hidden/exempt elements.
+
+## textLineHeightOverlap — `Risk` — auto-measured
+- **Method:** Scans text-containing elements to check if computed `line-height` is smaller than computed `font-size * 0.95`.
+- **Threshold:** computed `lineHeight < fontSize * 0.95`.
+- **FP guards:** ignores elements with `lineHeight === 'normal'`; ignores hidden/exempt elements.
+
+## emptyInteractiveTarget — `Fail` — auto-measured
+- **Method:** Finds visible interactive elements (`button`, `a`, `[role=button]`) with zero text content, no visible child images/SVGs, and no accessible name (`aria-label`, `title`).
+- **Threshold:** presence of empty, unlabeled interactive control.
+- **FP guards:** ignores hidden/exempt elements.
+
+## misalignedRowItems — `Polish` — auto-measured
+- **Method:** Finds horizontally adjacent siblings with similar heights. Compares vertical center values.
+- **Threshold:** vertical centers differ by `1.5px` to `6px`.
+- **FP guards:** ignores elements with height difference `> 5px`; ignores non-adjacent elements.
+
+## accidentalFlexWrap — `Polish` — auto-measured
+- **Method:** Detects flex containers with `flex-wrap: wrap` where a single item wraps onto its own row.
+- **Threshold:** last row has exactly `1` item while the previous row has `≥ 3` items.
+- **FP guards:** ignores containers with `< 4` visible items.
+
+## nonScrollableOverflow — `Risk` — auto-measured
+- **Method:** Detects containers with overflowing content (`scrollHeight > clientHeight + 4px`) but scrolling is disabled (`overflow-y: hidden|clip`).
+- **Threshold:** overflowing content present with scrolling disabled.
+- **FP guards:** ignores elements with `webkitLineClamp` or single-line text ellipsis; ignores `html`, `body`, and `iframe`.
+
+## inconsistentBorderRadius — `Polish` — auto-measured
+- **Method:** Groups sibling elements under a parent. Compares computed `border-radius` values.
+- **Threshold:** different `border-radius` values among similar sibling elements.
+- **FP guards:** ignores hidden/exempt elements.
+
+## excessiveFirstViewportSpacing — `Polish` — auto-measured
+- **Method:** Measures the vertical position of the first visible content element.
+- **Threshold:** first visible content element is pushed down past `200px` from the top of the viewport.
+- **FP guards:** ignores viewport heights `< 400px`; ignores absolute/fixed elements.
+
+## buttonSelfHeightMismatch — `Polish` — auto-measured
+- **Method:** Compares rendered heights of horizontally adjacent button-like siblings.
+- **Threshold:** adjacent buttons have heights differing by `> 2px`.
+- **FP guards:** ignores non-adjacent buttons or buttons not sharing a row.
+
+## stretchedIconDistortion — `Risk` — auto-measured
+- **Method:** Finds visible SVG elements with a `viewBox` and compares their rendered aspect ratio with the natural aspect ratio defined in the viewBox.
+- **Threshold:** rendered aspect ratio differs from natural aspect ratio by `> 5%`.
+- **FP guards:** ignores icons smaller than `5px` in width/height.
+
+## missingClickableCursor — `Polish` — auto-measured
+- **Method:** Finds visible interactive elements (`button`, `a[href]`, `[role=button]`, `[onclick]`, checkboxes/radios, submit inputs). Checks if their computed style has `cursor: pointer`.
+- **Threshold:** clickable element lacks `cursor: pointer`.
+- **FP guards:** ignores hidden/exempt elements.
+
+## missingModalBackdrop — `Risk` — auto-measured
+- **Method:** Detects open modals (`[role=dialog]`, `[aria-modal=true]`) that lack a full-screen, semi-transparent z-index backdrop overlay to obscure background content.
+- **Threshold:** presence of open modal without a fixed/absolute full-screen overlay behind it. A backdrop candidate must cover at least 90% of the viewport, have semi-transparent background/opacity, and sit below the modal by z-index (or same z-index but earlier DOM order).
+- **FP guards:** ignores closed or invisible modals.

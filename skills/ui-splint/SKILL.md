@@ -42,14 +42,25 @@ Use the user's language in reports. Group findings by failure mode, not discover
      `evaluate_script` (chrome-devtools MCP) the contents of `scripts/audit.js`, then
      call `window.__uiSplintAudit({route, theme, state, isMobile})`. Run it at scroll
      **top and bottom** of each long screen (sticky-bar overlaps only appear at bottom).
-     For CLS, evaluate `audit.js` once before navigation so the observer installs early.
-   - **Batch, zero dependencies (preferred):** `node scripts/audit-chrome.mjs <url> --config audit-config.json`
+     CLS needs the observer installed *before* first paint: inject `audit.js` **and call
+     `window.__uiSplintInstallCLS()`** via an init script that runs on the new document
+     (`Page.addScriptToEvaluateOnNewDocument` / `add_init_script`) — a plain `evaluate`
+     after navigation is too late and CLS will read "not measured". If your MCP can't run
+     an init script, treat interactive CLS as unmeasured and rely on a batch runner for it.
+   - **Batch, zero dependencies (preferred), Node ≥ 22:** `node scripts/audit-chrome.mjs <url> --config audit-config.json`
      — drives an installed Chrome/Chromium over the DevTools Protocol with Node's built-in
-     WebSocket. No pip/npm install. Writes `.ui-splint/findings.json` + `coverage.json`,
-     exits non-zero on any Fail. (Note: the bare `playwright`/Chrome CLI only takes
-     screenshots — it cannot inject and measure, which is the whole point — so it is not enough.)
+     WebSocket (requires **Node ≥ 22**; it exits 2 with a clear message on older Node). No
+     pip/npm install. Writes `.ui-splint/findings.json` + `coverage.json`, exits non-zero on
+     any Fail or unverified matrix cell. It **cannot mock network**, so it renders the default
+     page for every state and records non-`default` cells as `not-forced` in coverage (honest:
+     it did not verify them, and the runner exits non-zero).
+     Use the Playwright runner to actually exercise empty/error/loading. (Note: the bare
+     `playwright`/Chrome CLI only takes screenshots — it cannot inject and measure — so it is not enough.)
    - **Batch, Playwright (if already set up):** `python3 scripts/run-ui-splint.py <url> --config audit-config.json`
-     (same outputs; needs `pip install playwright && playwright install chromium`).
+     — same `findings.json`/`coverage.json` shape, and additionally **forces data states**
+     (mocks `**/api/**` for empty/error/loading), waits on `waitForSelector`/`document.fonts.ready`,
+     and supports `--probes`. This is the runner to use when the matrix has non-`default` states.
+     Needs `pip install playwright && playwright install chromium`.
 3. **Resolve.** Any finding with `confidence: needs-visual` (text over a gradient/image,
    unmeasured CLS) must be confirmed by pixel-sampling a screenshot crop or installing
    the observer — never leave it unresolved or assert a number you didn't measure.
@@ -96,8 +107,8 @@ across the recorded matrix, and the subjective residue was judged.
 ## Files
 
 - `scripts/audit.js` — the deterministic detector (source of truth). Pure DOM/CSSOM/geometry; engine-agnostic.
-- `scripts/audit-chrome.mjs` — zero-dependency batch runner (drives installed Chrome via CDP / Node WebSocket).
-- `scripts/run-ui-splint.py` — Playwright batch runner (same outputs; for envs that already use Playwright).
+- `scripts/audit-chrome.mjs` — zero-dependency batch runner (drives installed Chrome via CDP / Node WebSocket, **Node ≥ 22**). No network mocking: non-`default` states are recorded `not-forced`.
+- `scripts/run-ui-splint.py` — Playwright batch runner (same JSON shape, **plus** state mocking, font/selector waits, `--probes`; for envs that already use Playwright).
 - `scripts/audit-config.default.json` — thresholds, matrix, whitelist/baseline.
 - `references/audit-rules.md` — every audit rule: signal, method, threshold→severity, FP guards.
 - `references/findings-schema.md` — the findings/coverage JSON contract.
@@ -108,3 +119,26 @@ across the recorded matrix, and the subjective residue was judged.
 When you find a new failure mode: if it is measurable, add a rule to `audit.js` (and
 `audit-rules.md`); if it needs taste, add it to `scrutiny-checklist.md`. Keep detection
 in code and taste in the checklist.
+
+## When NOT to use
+
+- Backend/logic/API-only changes with no rendered surface — there is nothing to measure.
+- Terminal/CLI output, native mobile, or non-DOM canvases — the detector is DOM/CSSOM only.
+- As a substitute for functional/interaction tests — it audits the rendered frame, not behavior.
+
+## Common Mistakes
+
+- **Trusting `not-forced` as coverage.** The zero-dependency runner labels non-`default`
+  data states `not-forced` because it cannot mock network. That is *not* a verified cell,
+  and it blocks the runner's completion gate — use the Playwright runner (or MCP with route
+  mocks) to actually force empty/error/loading.
+- **Claiming "no findings" from one cell.** "No findings" holds only across the recorded
+  matrix (viewports × themes × states); a single default-desktop pass is not coverage.
+- **`isMobile:true` with `dpr>1` in interactive mode.** CDP mobile emulation + a device
+  pixel ratio distorts `innerHeight`/geometry and breaks the layout rules. The batch runners
+  keep `mobile:false` and pass `isMobile` to the audit instead — do the same if you drive
+  the audit by hand.
+- **Downgrading a measured `Fail` to taste.** Severity is computed from thresholds; only
+  `visual-judgment` findings are yours to weigh, and they are already capped at `Risk`.
+- **Evaluating `audit.js` and expecting CLS.** That only defines the observer installer —
+  you must call `__uiSplintInstallCLS()` via an init script before navigation (see step 2).

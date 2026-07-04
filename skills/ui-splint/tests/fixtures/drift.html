@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Design-system drift</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#ffffff;color:#111827;font-family:system-ui,sans-serif;padding:20px}
+  h1{font-size:22px;margin:0 0 16px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  /* G: five one-off corner radii instead of a shared radius scale — design-system drift (Polish). */
+  .box{width:56px;height:56px;background:#dddddd}
+  .r1{border-radius:2px}
+  .r2{border-radius:5px}
+  .r3{border-radius:9px}
+  .r4{border-radius:13px}
+  .r5{border-radius:17px}
+</style></head>
+<body>
+  <h1>Card gallery</h1>
+  <div class="row">
+    <div class="box r1"></div>
+    <div class="box r2"></div>
+    <div class="box r3"></div>
+    <div class="box r4"></div>
+    <div class="box r5"></div>
+  </div>
+</body></html>

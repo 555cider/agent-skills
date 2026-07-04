@@ -29,6 +29,19 @@
 (function (root) {
   'use strict';
 
+  var cachedElements = [];
+  var _getComputedStyle = root.getComputedStyle;
+  function getComputedStyle(el, pseudo) {
+    if (pseudo) return _getComputedStyle(el, pseudo);
+    if (!el || el.nodeType !== 1) return null;
+    if (!el.__cs) {
+      el.__cs = _getComputedStyle(el);
+      cachedElements.push(el);
+    }
+    return el.__cs;
+  }
+  var _getBoundingClientRect = root.Element ? root.Element.prototype.getBoundingClientRect : null;
+
   // ----- layout-shift (CLS) observer; install BEFORE navigation for full capture -----
   function installCLS() {
     if (root.__uiSplint && root.__uiSplint.clsInstalled) return;
@@ -61,7 +74,7 @@
     collapsePx: 3,
     cls: { risk: 0.1, fail: 0.25 },
     mediaAspectTolerance: 0.05,
-    polish: { maxRadii: 4, maxShadows: 4, maxAccentHues: 6, maxFontPairs: 10, lineLenMin: 45, lineLenMax: 95 },
+    polish: { maxRadii: 4, maxShadows: 4, maxAccentHues: 6, maxFontPairs: 10, lineLenMin: 45, lineLenMax: 95, tinyTextPx: 11 },
     layout: { loneNarrowWidth: 180, maxButtonsInRow: 4 },
     // selectors matching authenticated destinations for the auth-mode-conflict rule
     authedNavWords: ['my', 'account', 'profile', 'mypage', '마이', '계정', '프로필', '내정보'],
@@ -79,6 +92,27 @@
     var rulesRun = [];
     var rulesSkipped = [];
     var ctx = { cfg: cfg, isMobile: isMobile, findings: findings, scanned: 0 };
+
+    if (_getBoundingClientRect) {
+      root.Element.prototype.getBoundingClientRect = function () {
+        if (!this.__rect) {
+          this.__rect = _getBoundingClientRect.call(this);
+          cachedElements.push(this);
+        }
+        return this.__rect;
+      };
+    }
+
+    function clearCache() {
+      cachedElements.forEach(function (el) {
+        delete el.__cs;
+        delete el.__rect;
+      });
+      cachedElements = [];
+      if (_getBoundingClientRect) {
+        root.Element.prototype.getBoundingClientRect = _getBoundingClientRect;
+      }
+    }
 
     var RULES = [
       ['effectiveContrast', ruleContrast],
@@ -98,27 +132,46 @@
       ['layoutShiftCLS', ruleCLS],
       ['designSystemDrift', ruleDrift],
       ['loneNarrowElement', ruleLoneNarrow],
-      ['excessiveButtonsInRow', ruleExcessiveButtons]
+      ['excessiveButtonsInRow', ruleExcessiveButtons],
+      ['tinyText', ruleTinyText],
+      ['unlabeledInput', ruleUnlabeledInput],
+      ['lineLength', ruleLineLength],
+      ['inconsistentSiblingsSpacing', ruleInconsistentSpacing],
+      ['textLineHeightOverlap', ruleTextLineHeightOverlap],
+      ['emptyInteractiveTarget', ruleEmptyInteractiveTarget],
+      ['misalignedRowItems', ruleMisalignedRowItems],
+      ['accidentalFlexWrap', ruleAccidentalFlexWrap],
+      ['nonScrollableOverflow', ruleNonScrollableOverflow],
+      ['inconsistentBorderRadius', ruleInconsistentBorderRadius],
+      ['excessiveFirstViewportSpacing', ruleExcessiveFirstViewportSpacing],
+      ['buttonSelfHeightMismatch', ruleButtonHeightMismatch],
+      ['stretchedIconDistortion', ruleStretchedIconDistortion],
+      ['missingClickableCursor', ruleMissingClickableCursor],
+      ['missingModalBackdrop', ruleMissingModalBackdrop]
     ];
 
-    RULES.forEach(function (pair) {
-      var name = pair[0], fn = pair[1];
-      try {
-        var before = findings.length;
-        fn(ctx);
-        rulesRun.push(name);
-        // cap volume per rule
-        var added = findings.length - before;
-        if (added > cfg.maxFindingsPerRule) {
-          findings.splice(before + cfg.maxFindingsPerRule, added - cfg.maxFindingsPerRule);
-          ctx.findings.push(mk('coverage', 'Polish', 'auto-measured', 'html',
-            name + ' produced ' + added + ' findings; capped at ' + cfg.maxFindingsPerRule, {}, {}, null,
-            'Fix the shared component/token; this defect repeats.'));
+    try {
+      RULES.forEach(function (pair) {
+        var name = pair[0], fn = pair[1];
+        try {
+          var before = findings.length;
+          fn(ctx);
+          rulesRun.push(name);
+          // cap volume per rule
+          var added = findings.length - before;
+          if (added > cfg.maxFindingsPerRule) {
+            findings.splice(before + cfg.maxFindingsPerRule, added - cfg.maxFindingsPerRule);
+            ctx.findings.push(mk('coverage', 'Polish', 'auto-measured', 'html',
+              name + ' produced ' + added + ' findings; capped at ' + cfg.maxFindingsPerRule, {}, {}, null,
+              'Fix the shared component/token; this defect repeats.'));
+          }
+        } catch (err) {
+          rulesSkipped.push(name + ': ' + (err && err.message || err));
         }
-      } catch (err) {
-        rulesSkipped.push(name + ': ' + (err && err.message || err));
-      }
-    });
+      });
+    } finally {
+      clearCache();
+    }
 
     // suppress whitelist + baseline
     var clean = findings.filter(function (f) {
@@ -190,9 +243,8 @@
       if (ratio >= min) continue;
 
       var txt = el.textContent.trim().slice(0, 40);
-      var sev = ratio < cfg.contrast.washedOut ? 'Fail' : (ratio < min ? (large ? 'Risk' : 'Fail') : 'Risk');
-      // normal text under 4.5 is a real Fail; large text under 3.0 we treat as Risk unless washed-out
-      if (!large) sev = 'Fail';
+      // normal text below its min is a real Fail; large text is Risk unless washed-out (near 1:1).
+      var sev = large ? (ratio < cfg.contrast.washedOut ? 'Fail' : 'Risk') : 'Fail';
       var conf = bg.indeterminate ? 'needs-visual' : 'auto-measured';
       if (bg.indeterminate && ratio >= cfg.contrast.washedOut) {
         // can't be sure over gradient/image unless it's near 1:1
@@ -206,7 +258,7 @@
         'Text "' + txt + '" contrast ' + round2(ratio) + ':1 is below ' + min + ':1.',
         { ratio: round2(ratio), fg: rgbStr(fgOnBg), bg: rgbStr(bg.rgb), fontPx: px, bold: bold, large: large },
         { min: min }, rectOf(el),
-        brandFix(cs, bg.rgb) || ('Raise foreground/background contrast to at least ' + min + ':1.')));
+        brandFix(bg.rgb) || ('Raise foreground/background contrast to at least ' + min + ':1.')));
     }
   }
 
@@ -807,6 +859,402 @@
     }
   }
 
+  function ruleTinyText(ctx) {
+    var cfg = ctx.cfg.polish || { tinyTextPx: 11 };
+    var threshold = cfg.tinyTextPx || 11;
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        return n.textContent.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
+    });
+    var seen = new Set();
+    var n;
+    while ((n = walker.nextNode())) {
+      if (!/[\p{L}\p{N}]/u.test(n.textContent)) continue;
+      var el = n.parentElement;
+      if (!el || seen.has(el)) continue;
+      seen.add(el);
+      if (!isVisible(el) || isExempt(el)) continue;
+      if (el.closest('pre, code, svg, math, script, style')) continue;
+
+      var cs = getComputedStyle(el);
+      var px = parseFloat(cs.fontSize);
+      if (isNaN(px) || px >= threshold) continue;
+
+      var txt = el.textContent.trim().slice(0, 30);
+      var sev = px < 9 ? 'Risk' : 'Polish';
+      ctx.findings.push(mk('tinyText', sev, 'auto-measured', cssPath(el),
+        'Text "' + txt + '" is very small (' + round2(px) + 'px) and may be hard to read.',
+        { fontSize: round2(px) }, { min: threshold }, rectOf(el),
+        'Increase font size to at least ' + threshold + 'px for readability.'));
+    }
+  }
+
+  function ruleUnlabeledInput(ctx) {
+    var inputs = qsa('input, select, textarea').filter(function (el) {
+      if (!isVisible(el) || isExempt(el)) return false;
+      var t = el.type || '';
+      if (t === 'hidden' || t === 'submit' || t === 'button' || t === 'image' || t === 'reset') return false;
+      return true;
+    });
+    inputs.forEach(function (el) {
+      if (el.closest('label')) return;
+      if (el.id) {
+        var lbl = document.querySelector('label[for="' + cssEscape(el.id) + '"]');
+        if (lbl) return;
+      }
+      if (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.getAttribute('title')) return;
+
+      ctx.findings.push(mk('unlabeledInput', 'Risk', 'auto-measured', cssPath(el),
+        'Form control lacks an associated label or accessible name (aria-label, aria-labelledby, title, or <label>).',
+        { type: el.type, id: el.id || null }, {}, rectOf(el),
+        'Provide an accessible label using a <label> element or aria-label/title attribute.'));
+    });
+  }
+
+  function ruleLineLength(ctx) {
+    var cfg = ctx.cfg.polish || { lineLenMax: 95 };
+    var maxLen = cfg.lineLenMax || 95;
+    var textEls = qsa('p, article, section, div, span').filter(function (el) {
+      if (!isVisible(el) || isExempt(el) || !hasOwnText(el)) return false;
+      if (el.closest('pre, code, svg, math, script, style, nav, table, form, button, [role=button]')) return false;
+      return true;
+    });
+
+    textEls.forEach(function (el) {
+      var text = '';
+      for (var i = 0; i < el.childNodes.length; i++) {
+        var c = el.childNodes[i];
+        if (c.nodeType === 3) text += c.textContent;
+      }
+      text = text.trim();
+      if (text.length <= maxLen) return;
+
+      var cs = getComputedStyle(el);
+      var fontSize = parseFloat(cs.fontSize) || 16;
+      var padLeft = parseFloat(cs.paddingLeft) || 0;
+      var padRight = parseFloat(cs.paddingRight) || 0;
+      var innerW = el.clientWidth - padLeft - padRight;
+      if (innerW <= 0) return;
+
+      var maxW = maxLen * (fontSize * 0.45);
+      if (innerW > maxW) {
+        ctx.findings.push(mk('lineLength', 'Polish', 'auto-measured', cssPath(el),
+          'Line width is too wide (' + Math.round(innerW) + 'px), causing text lines to exceed ' + maxLen + ' characters.',
+          { innerWidth: Math.round(innerW), fontSize: fontSize, textLen: text.length }, { max: maxLen }, rectOf(el),
+          'Limit the width of the text container (e.g., max-width: 60ch or max-width: ' + Math.round(maxW) + 'px) to improve readability.'));
+      }
+    });
+  }
+
+  function ruleInconsistentSpacing(ctx) {
+    qsa('body *').forEach(function (parent) {
+      if (parent.childElementCount < 3) return;
+      var groups = {};
+      for (var i = 0; i < parent.children.length; i++) {
+        var child = parent.children[i];
+        if (!isVisible(child) || isExempt(child)) continue;
+        var key = child.tagName + '[' + (child.className || '') + ']';
+        groups[key] = groups[key] || [];
+        groups[key].push(child);
+      }
+      Object.keys(groups).forEach(function (key) {
+        var items = groups[key];
+        if (items.length < 3) return;
+        var paddings = items.map(function (el) {
+          var cs = getComputedStyle(el);
+          return Math.round(parseFloat(cs.paddingLeft) || 0);
+        });
+        var margins = items.map(function (el) {
+          var cs = getComputedStyle(el);
+          return Math.round(parseFloat(cs.marginLeft) || 0);
+        });
+        var uniqP = paddings.filter(function (v, idx, self) { return self.indexOf(v) === idx; });
+        var uniqM = margins.filter(function (v, idx, self) { return self.indexOf(v) === idx; });
+        if (uniqP.length > 1 || uniqM.length > 1) {
+          ctx.findings.push(mk('inconsistentSiblingsSpacing', 'Polish', 'auto-measured', cssPath(items[0]),
+            'Inconsistent padding/margin among sibling elements of type ' + key + '.',
+            { paddings: paddings.slice(0, 5), margins: margins.slice(0, 5) }, {}, rectOf(items[0]),
+            'Align the margins and paddings of sibling items to design tokens.'));
+        }
+      });
+    });
+  }
+
+  function ruleTextLineHeightOverlap(ctx) {
+    qsa('p, span, div, h1, h2, h3, h4, h5, h6, a, button').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el) || !hasOwnText(el)) return;
+      var cs = getComputedStyle(el);
+      var fs = parseFloat(cs.fontSize);
+      var lh = cs.lineHeight;
+      if (lh === 'normal') return;
+      var lhPx = parseFloat(lh);
+      if (isNaN(lhPx) || isNaN(fs)) return;
+      if (lhPx < fs * 0.95) {
+        ctx.findings.push(mk('textLineHeightOverlap', 'Risk', 'auto-measured', cssPath(el),
+          'Line height (' + round2(lhPx) + 'px) is smaller than font size (' + round2(fs) + 'px), causing potential text overlapping.',
+          { lineHeight: lhPx, fontSize: fs }, {}, rectOf(el),
+          'Increase line-height to at least 1.2 or 1.5 times the font-size.'));
+      }
+    });
+  }
+
+  function ruleEmptyInteractiveTarget(ctx) {
+    qsa('button, a[href], [role=button]').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      var txt = (el.textContent || '').trim();
+      if (txt.length > 0) return;
+      var media = qsa('img, svg', el).filter(isVisible);
+      if (media.length > 0) return;
+      if (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.getAttribute('title')) return;
+
+      ctx.findings.push(mk('emptyInteractiveTarget', 'Fail', 'auto-measured', cssPath(el),
+        'Interactive element has no text content, visible icon, or accessible name.',
+        {}, {}, rectOf(el),
+        'Add text content, an icon image/svg, or an aria-label attribute.'));
+    });
+  }
+
+  function ruleMisalignedRowItems(ctx) {
+    qsa('body *').forEach(function (parent) {
+      if (parent.childElementCount < 2) return;
+      var kids = Array.prototype.slice.call(parent.children).filter(function (c) {
+        return isVisible(c) && !isExempt(c);
+      });
+      for (var i = 0; i < kids.length - 1; i++) {
+        var a = kids[i], b = kids[i+1];
+        var ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+        if (ar.width === 0 || br.width === 0 || ar.height === 0 || br.height === 0) continue;
+        if (Math.abs(ar.height - br.height) > 5) continue;
+
+        var horizAdjacent = (ar.right <= br.left + 15) && (br.left <= ar.right + 15);
+        if (!horizAdjacent) continue;
+
+        var overlap = Math.min(ar.bottom, br.bottom) - Math.max(ar.top, br.top);
+        if (overlap <= 0) continue;
+
+        var centerA = ar.top + ar.height / 2;
+        var centerB = br.top + br.height / 2;
+        var diff = Math.abs(centerA - centerB);
+        if (diff >= 1.5 && diff <= 6) {
+          ctx.findings.push(mk('misalignedRowItems', 'Polish', 'auto-measured', cssPath(a),
+            'Adjacent elements in row are misaligned vertically by ' + round2(diff) + 'px.',
+            { alignmentOffsetPx: round2(diff) }, {}, rectOf(a),
+            'Use display:flex and align-items:center to align adjacent items.'));
+        }
+      }
+    });
+  }
+
+  function ruleAccidentalFlexWrap(ctx) {
+    qsa('body *').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      var cs = getComputedStyle(el);
+      if (cs.display.indexOf('flex') < 0 || cs.flexWrap !== 'wrap') return;
+
+      var kids = Array.prototype.slice.call(el.children).filter(isVisible);
+      if (kids.length < 4) return;
+
+      var rows = {};
+      kids.forEach(function (c) {
+        var r = c.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        var top = Math.round(r.top);
+        var found = false;
+        Object.keys(rows).forEach(function (k) {
+          if (Math.abs(parseFloat(k) - top) < 5) {
+            rows[k].push(c);
+            found = true;
+          }
+        });
+        if (!found) {
+          rows[top] = [c];
+        }
+      });
+
+      var keys = Object.keys(rows).map(parseFloat).sort(function (a, b) { return a - b; });
+      if (keys.length < 2) return;
+
+      var lastRowKey = keys[keys.length - 1];
+      var lastRowItems = rows[lastRowKey];
+      var prevRowKey = keys[keys.length - 2];
+      var prevRowItems = rows[prevRowKey];
+
+      if (lastRowItems.length === 1 && prevRowItems.length >= 3) {
+        ctx.findings.push(mk('accidentalFlexWrap', 'Polish', 'auto-measured', cssPath(lastRowItems[0]),
+          'A single item wrapped onto its own row in wrap container. Consider adjusting widths.',
+          { lastRowCount: 1, prevRowCount: prevRowItems.length }, {}, rectOf(lastRowItems[0]),
+          'Adjust item widths or use media queries so wrap creates balanced rows.'));
+      }
+    });
+  }
+
+  function ruleNonScrollableOverflow(ctx) {
+    qsa('body *').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      var cs = getComputedStyle(el);
+      if (cs.overflowY !== 'hidden' && cs.overflowY !== 'clip') return;
+      if (el.scrollHeight <= el.clientHeight + 4) return;
+      if (cs.webkitLineClamp && cs.webkitLineClamp !== 'none') return;
+      if (cs.textOverflow === 'ellipsis') return;
+      if (/^(HTML|BODY|IFRAME)$/.test(el.tagName)) return;
+
+      ctx.findings.push(mk('nonScrollableOverflow', 'Risk', 'auto-measured', cssPath(el),
+        'Container has overflowing content (scrollHeight ' + el.scrollHeight + 'px > height ' + el.clientHeight + 'px) but scrolling is disabled (overflow: ' + cs.overflowY + ').',
+        { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }, {}, rectOf(el),
+        'Change overflow to auto/scroll or ensure content fits within container.'));
+    });
+  }
+
+  function ruleInconsistentBorderRadius(ctx) {
+    qsa('body *').forEach(function (parent) {
+      if (parent.childElementCount < 2) return;
+      var groups = {};
+      for (var i = 0; i < parent.children.length; i++) {
+        var child = parent.children[i];
+        if (!isVisible(child) || isExempt(child)) continue;
+        var key = child.tagName + '[' + (child.className || '') + ']';
+        groups[key] = groups[key] || [];
+        groups[key].push(child);
+      }
+      Object.keys(groups).forEach(function (key) {
+        var items = groups[key];
+        if (items.length < 2) return;
+        var radii = items.map(function (el) {
+          var cs = getComputedStyle(el);
+          return cs.borderTopLeftRadius;
+        });
+        var uniq = radii.filter(function (v, idx, self) { return self.indexOf(v) === idx; });
+        if (uniq.length > 1) {
+          ctx.findings.push(mk('inconsistentBorderRadius', 'Polish', 'auto-measured', cssPath(items[0]),
+            'Inconsistent border-radius among sibling elements of type ' + key + ' (' + uniq.join(', ') + ').',
+            { radii: radii.slice(0, 5) }, {}, rectOf(items[0]),
+            'Harmonize the border-radius of sibling components.'));
+        }
+      });
+    });
+  }
+
+  function ruleExcessiveFirstViewportSpacing(ctx) {
+    if (root.innerHeight < 400) return;
+    var elements = qsa('h1, h2, h3, p, button, a, input').filter(function (el) {
+      if (!isVisible(el) || isExempt(el)) return false;
+      var cs = getComputedStyle(el);
+      if (cs.position === 'absolute' || cs.position === 'fixed') return false;
+      var r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && r.top >= 0;
+    });
+    if (!elements.length) return;
+    var tops = elements.map(function (el) { return el.getBoundingClientRect().top; });
+    var minTop = Math.min.apply(null, tops);
+    if (minTop > 200) {
+      ctx.findings.push(mk('excessiveFirstViewportSpacing', 'Polish', 'auto-measured', 'html',
+        'Excessive whitespace at the top of the viewport. First content element is pushed down to ' + Math.round(minTop) + 'px.',
+        { firstElementTop: Math.round(minTop) }, {}, null,
+        'Reduce top padding or margins to pull the primary content above the fold.'));
+    }
+  }
+
+  function ruleButtonHeightMismatch(ctx) {
+    qsa('body *').forEach(function (parent) {
+      if (parent.childElementCount < 2) return;
+      var buttons = Array.prototype.slice.call(parent.children).filter(function (c) {
+        if (!isVisible(c) || isExempt(c)) return false;
+        return c.tagName === 'BUTTON' || c.getAttribute('role') === 'button' || c.classList.contains('btn') || c.classList.contains('button');
+      });
+      if (buttons.length < 2) return;
+      for (var i = 0; i < buttons.length - 1; i++) {
+        var a = buttons[i], b = buttons[i+1];
+        var ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+        if (ar.width === 0 || br.width === 0 || ar.height === 0 || br.height === 0) continue;
+
+        var overlap = Math.min(ar.bottom, br.bottom) - Math.max(ar.top, br.top);
+        if (overlap <= 0) continue;
+
+        var diff = Math.abs(ar.height - br.height);
+        if (diff > 2) {
+          ctx.findings.push(mk('buttonSelfHeightMismatch', 'Polish', 'auto-measured', cssPath(a),
+            'Adjacent sibling buttons have mismatched heights (' + Math.round(ar.height) + 'px vs ' + Math.round(br.height) + 'px).',
+            { heightA: Math.round(ar.height), heightB: Math.round(br.height) }, {}, rectOf(a),
+            'Give adjacent buttons the same height or use display:flex with stretch alignment.'));
+        }
+      }
+    });
+  }
+
+  function ruleStretchedIconDistortion(ctx) {
+    qsa('svg').forEach(function (svg) {
+      if (!isVisible(svg) || isExempt(svg)) return;
+      var r = svg.getBoundingClientRect();
+      if (r.width < 5 || r.height < 5) return;
+      var vb = svg.getAttribute('viewBox');
+      if (!vb) return;
+      var parts = vb.trim().split(/[\s,]+/).map(parseFloat);
+      if (parts.length !== 4) return;
+      var natW = parts[2], natH = parts[3];
+      if (natW <= 0 || natH <= 0) return;
+
+      var natAR = natW / natH;
+      var renAR = r.width / r.height;
+      var diff = Math.abs(renAR - natAR) / natAR;
+      if (diff > 0.05) {
+        ctx.findings.push(mk('stretchedIconDistortion', 'Risk', 'auto-measured', cssPath(svg),
+          'SVG icon is stretched/squished (rendered AR ' + round2(renAR) + ' vs viewBox ' + round2(natAR) + ').',
+          { renderedAR: round2(renAR), naturalAR: round2(natAR) }, { tolerance: 0.05 }, rectOf(svg),
+          'Preserve the aspect ratio of the SVG or adjust width/height styles to match the viewBox.'));
+      }
+    });
+  }
+
+  function ruleMissingClickableCursor(ctx) {
+    qsa('button, a[href], [role=button], [onclick], input[type=checkbox], input[type=radio], input[type=submit], input[type=button]').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      var cs = getComputedStyle(el);
+      if (!cs) return;
+      if (cs.cursor !== 'pointer') {
+        ctx.findings.push(mk('missingClickableCursor', 'Polish', 'auto-measured', cssPath(el),
+          'Clickable element lacks "cursor: pointer" style on hover, reducing affordance.',
+          { cursor: cs.cursor }, {}, rectOf(el),
+          'Add "cursor: pointer" to the clickable element\'s hover state.'));
+      }
+    });
+  }
+
+  function ruleMissingModalBackdrop(ctx) {
+    var modals = qsa('[role=dialog],[aria-modal=true]').filter(function (m) {
+      return isVisible(m) && getComputedStyle(m).display !== 'none';
+    });
+    if (!modals.length) return;
+
+    var vw = root.innerWidth, vh = root.innerHeight;
+    modals.forEach(function (modal) {
+      var mz = zIndexOf(modal, 0);
+      var hasBackdrop = false;
+      qsa('body *').forEach(function (el) {
+        if (hasBackdrop || el === modal || modal.contains(el) || !isVisible(el)) return;
+        var r = el.getBoundingClientRect();
+        if (r.width < vw * 0.9 || r.height < vh * 0.9) return;
+        var cs = getComputedStyle(el);
+        if (cs.position !== 'fixed' && cs.position !== 'absolute') return;
+        var z = zIndexOf(el, 0);
+        var beforeModal = !!(el.compareDocumentPosition(modal) & Node.DOCUMENT_POSITION_FOLLOWING);
+        if (!(z < mz || (z === mz && beforeModal))) return;
+        var bg = parseColor(cs.backgroundColor);
+        var opaque = bg && (bg[3] > 0.05 && bg[3] < 0.95);
+        var opacity = parseFloat(cs.opacity) < 0.99;
+        if (opaque || opacity) {
+          hasBackdrop = true;
+        }
+      });
+      if (!hasBackdrop) {
+        ctx.findings.push(mk('missingModalBackdrop', 'Risk', 'auto-measured', cssPath(modal),
+          'Open modal lacks a visible semi-transparent backdrop overlay to obscure background content.',
+          {}, {}, rectOf(modal),
+          'Add a semi-transparent backdrop overlay behind the modal dialog to focus user attention.'));
+      }
+    });
+  }
+
   // ------------------------------ helpers ------------------------------
   function qsa(sel, root2) { return Array.prototype.slice.call((root2 || document).querySelectorAll(sel)); }
   function area(el) { var r = el.getBoundingClientRect(); return r.width * r.height; }
@@ -909,7 +1357,8 @@
   function rectOf(el) { var r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; }
   function round2(x) { return Math.round(x * 100) / 100; }
   function rgbStr(rgb) { return 'rgb(' + rgb.map(Math.round).join(',') + ')'; }
-  function brandFix(cs, bg) {
+  function zIndexOf(el, fallback) { var z = parseInt(getComputedStyle(el).zIndex, 10); return isNaN(z) ? fallback : z; }
+  function brandFix(bg) {
     // suggest brand-correct foregrounds for common social buttons
     var hex = rgbToHex(bg);
     var BRAND = { '#fee500': 'Kakao spec: #191919 text on #FEE500.', '#ffe600': 'Kakao spec: #191919 text on #FEE500.', '#03c75a': 'Naver spec: #FFFFFF text on #03C75A.' };

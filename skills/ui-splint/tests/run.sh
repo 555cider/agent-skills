@@ -34,7 +34,23 @@ PY
 )"
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$HERE/fixtures" >"$WORK/http.log" 2>&1 &
 SERVER_PID=$!
-sleep 0.5
+# Poll the port instead of a fixed sleep (flaky on slow/loaded CI).
+if python3 - "$PORT" <<'PY'
+import socket, sys, time
+port = int(sys.argv[1])
+deadline = time.time() + 10
+while time.time() < deadline:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            sys.exit(0)
+    except OSError:
+        time.sleep(0.1)
+sys.exit(1)
+PY
+then :; else
+  echo "FAIL  http server did not come up on port $PORT" >&2
+  exit 1
+fi
 
 cat >"$WORK/missing-route.json" <<'EOF'
 {
@@ -122,6 +138,14 @@ for fixture in expected:
     if bad_cells:
         errors.append(f"{file_name}: unverified coverage cells {bad_cells!r}")
 
+    # The exit code is a contract, not a free choice: an un-baselined Fail (or any unverified cell)
+    # must gate with exit 1; a page whose worst finding is Risk/Polish must exit 0.
+    has_fail = any(f.get("severity") == "Fail" for f in findings)
+    expected_exit = 1 if (has_fail or bad_cells) else 0
+    if result.returncode != expected_exit:
+        worst = "Fail" if has_fail else ("unverified" if bad_cells else "Risk/Polish/none")
+        errors.append(f"{file_name}: exit {result.returncode} but expected {expected_exit} (worst signal: {worst})")
+
     if fixture.get("expectZeroFindings") and findings:
         rules = ", ".join(sorted({f.get("rule", "?") for f in findings}))
         errors.append(f"{file_name}: expected zero findings, got {len(findings)} ({rules})")
@@ -167,6 +191,8 @@ if [ "$EC" -ne 0 ]; then
   fail "fixture contract details" "$(cat "$WORK/contract.err" 2>/dev/null | tr '\n' '|' | head -c 800)"
 fi
 
+set +e
+
 # ---------------------------------------------------------------------------
 # whitelist: a selector matching several elements suppresses ALL of them (and
 # their subtree), not just the first — the fixed semantics.
@@ -181,9 +207,7 @@ cat >"$WORK/wl.json" <<'EOF'
   "auditConfig": { "whitelist": [".wl"] }
 }
 EOF
-set +e
 node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/wl.json" --out-dir "$WORK/wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
-set -e
 if python3 - "$WORK/wl/findings.json" <<'PY'
 import json, sys
 findings = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -200,6 +224,73 @@ then
 else
   fail "whitelist suppresses all matching elements + subtree" \
     "$(cat "$WORK/wl/findings.json" 2>/dev/null | tr '\n' '|' | head -c 400)"
+fi
+
+# ---- whitelist suppresses ALL matching instances (safeMatch regression) ----
+# adbanners.html has two low-contrast `.ad-banner` slots. The buggy safeMatch only compared the
+# first match of each selector, so it leaked every finding past the first whitelisted instance.
+node "$RUNNER" "http://127.0.0.1:$PORT" --routes "/adbanners.html" --out-dir "$WORK/wl-off" --no-screenshots >/dev/null 2>&1
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"auditConfig":{"whitelist":[".ad-banner"]}}') \
+  --routes "/adbanners.html" --out-dir "$WORK/wl-on" --no-screenshots >/dev/null 2>&1
+if python3 - "$WORK/wl-off/findings.json" "$WORK/wl-on/findings.json" <<'PY'
+import json, sys
+off = json.load(open(sys.argv[1]))
+on = json.load(open(sys.argv[2]))
+# Baseline must actually surface both banners, or the test proves nothing.
+banners_off = [f for f in off if f.get("rule") == "effectiveContrast"]
+assert len(banners_off) >= 2, f"expected >=2 findings without whitelist, got {len(banners_off)}"
+# With `.ad-banner` whitelisted, EVERY instance must be gone — not just the first.
+leaked = [f for f in on if ".ad-banner" in f.get("selector", "")]
+assert not leaked, f"whitelist leaked {len(leaked)} finding(s): {[f['selector'] for f in leaked]}"
+PY
+then
+  pass "whitelist suppresses all matching instances"
+else
+  fail "whitelist suppresses all matching instances" "off=$(cat "$WORK/wl-off/findings.json" 2>/dev/null | head -c 200) on=$(cat "$WORK/wl-on/findings.json" 2>/dev/null | head -c 200)"
+fi
+
+# ---- non-default data states are recorded as not-forced, not silently 'checked' ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"states":["default","empty"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":3}]}') \
+  --routes "/clean.html" --out-dir "$WORK/nf" --no-screenshots >"$WORK/nf.out" 2>&1
+EC=$?
+if python3 - "$WORK/nf/coverage.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))["matrix"]
+by = {c["state"]: c["status"] for c in m}
+assert by.get("default") == "checked", by
+assert by.get("empty") == "not-forced", by
+PY
+then
+  pass "unmockable data state recorded as not-forced"
+else
+  fail "unmockable data state recorded as not-forced" "$(cat "$WORK/nf/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 300)"
+fi
+# clean.html has no Fail, but the not-forced cell is still unverified and must block completion.
+assert_exit "not-forced cell blocks completion" 1
+
+# ---- rulesSkipped is unverified coverage, not a green audit ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"auditConfig":{"polish":null},"themes":["dark"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"states":["default"],"scrollPositions":["top"]}') \
+  --routes "/clean.html" --out-dir "$WORK/skipped" --no-screenshots >"$WORK/skipped.out" 2>&1
+EC=$?
+if python3 - "$WORK/skipped/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+assert cell["status"] == "error", cell
+assert cell.get("rulesSkipped"), cell
+assert any("designSystemDrift" in item for item in cell["rulesSkipped"]), cell
+PY
+then
+  pass "rule exceptions are recorded as unverified coverage"
+else
+  fail "rule exceptions are recorded as unverified coverage" "$(cat "$WORK/skipped/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"
+fi
+assert_exit "rulesSkipped blocks completion" 1
+
+# ---- main-document response matching uses the navigated frame, not just any Document ----
+if grep -q "p.frameId === nav.frameId" "$RUNNER"; then
+  pass "CDP response filter matches navigated main frame"
+else
+  fail "CDP response filter matches navigated main frame" "Network.responseReceived must be filtered by Page.navigate frameId"
 fi
 
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"

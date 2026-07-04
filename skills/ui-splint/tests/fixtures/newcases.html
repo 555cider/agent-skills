@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>New cases fixture</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: system-ui, sans-serif;
+    }
+    .tiny-text {
+      font-size: 8px; /* Should trigger Risk */
+    }
+    .small-text {
+      font-size: 10px; /* Should trigger Polish */
+    }
+    .long-paragraph {
+      width: 800px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <!-- rule 8: excessiveFirstViewportSpacing -->
+  <div style="height: 250px;">Spacer to push first content below 200px</div>
+
+  <h1>New Cases Fixture</h1>
+  
+  <!-- rule 1: tinyText -->
+  <p class="tiny-text">This text is tiny and should trigger a Risk finding.</p>
+  <p class="small-text">This text is small and should trigger a Polish finding.</p>
+  
+  <!-- rule 2: unlabeledInput -->
+  <div>
+    <input type="text" id="unlabeled-text-input" placeholder="Type here...">
+    <textarea id="unlabeled-textarea"></textarea>
+    <select id="unlabeled-select">
+      <option>Option 1</option>
+    </select>
+  </div>
+  
+  <!-- rule 3: lineLength -->
+  <p class="long-paragraph">
+    This paragraph contains a very long sentence that stretches across a wide container, which will exceed the maximum recommended line length of ninety-five characters. Typography rules suggest that lines shouldn't be too long because the reader's eye has a hard time tracking back to the start of the next line, which reduces overall readability.
+  </p>
+
+  <!-- rule 4: inconsistentSiblingsSpacing -->
+  <div id="spacing-parent">
+    <span style="padding-left: 10px;">Item 1</span>
+    <span style="padding-left: 10px;">Item 2</span>
+    <span style="padding-left: 20px;">Item 3</span>
+  </div>
+
+  <!-- rule 5: textLineHeightOverlap -->
+  <p id="lh-overlap" style="font-size: 16px; line-height: 10px;">
+    Line height is too small for this text block, causing vertical line overlapping.
+  </p>
+
+  <!-- rule 6: emptyInteractiveTarget -->
+  <button id="empty-button" style="width: 40px; height: 40px;"></button>
+
+  <!-- rule 7: misalignedRowItems -->
+  <div style="display: flex;">
+    <button style="height: 40px; margin-top: 0px;">Align A</button>
+    <button style="height: 40px; margin-top: 4px;">Align B</button>
+  </div>
+
+  <!-- rule 9: accidentalFlexWrap -->
+  <div style="display: flex; flex-wrap: wrap; width: 120px;">
+    <div style="width: 35px; height: 20px;">X</div>
+    <div style="width: 35px; height: 20px;">Y</div>
+    <div style="width: 35px; height: 20px;">Z</div>
+    <div style="width: 35px; height: 20px;">W</div>
+  </div>
+
+  <!-- rule 10: nonScrollableOverflow -->
+  <div style="height: 25px; overflow-y: hidden;">
+    <div style="height: 80px;">Overflowing content that is not scrollable.</div>
+  </div>
+
+  <!-- rule 11: inconsistentBorderRadius -->
+  <div>
+    <button style="border-radius: 4px;">Rad 1</button>
+    <button style="border-radius: 12px;">Rad 2</button>
+  </div>
+
+  <!-- rule 12: buttonSelfHeightMismatch -->
+  <div style="display: flex;">
+    <button style="height: 30px;">H 30</button>
+    <button style="height: 38px;">H 38</button>
+  </div>
+
+  <!-- rule 13: stretchedIconDistortion -->
+  <svg viewBox="0 0 24 24" style="width: 60px; height: 20px;">
+    <rect width="24" height="24" fill="red"></rect>
+  </svg>
+
+  <!-- rule 14: missingClickableCursor -->
+  <button id="no-cursor-button" style="cursor: default;">Click me</button>
+
+  <!-- rule 15: missingModalBackdrop -->
+  <div role="dialog" id="no-backdrop-modal" style="position: fixed; z-index: 9999; width: 300px; height: 200px; left: 50%; top: 50%; transform: translate(-50%, -50%); background: white;">
+    Modal with no backdrop
+  </div>
+</body>
+</html>

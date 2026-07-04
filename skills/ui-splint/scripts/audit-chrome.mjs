@@ -20,6 +20,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+if (typeof WebSocket === 'undefined') {
+  console.error('ui-splint audit-chrome.mjs requires Node >= 22 (built-in WebSocket). Detected ' + process.version +
+    '. Upgrade Node, or use the Playwright runner: python3 run-ui-splint.py');
+  process.exit(2);
+}
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AUDIT_JS = readFileSync(join(HERE, 'audit.js'), 'utf8');
 const INIT = AUDIT_JS + '\n;try{window.__uiSplintInstallCLS&&window.__uiSplintInstallCLS();}catch(e){}\n';
@@ -31,14 +37,21 @@ if (!argv[0] || argv[0].startsWith('-')) {
   process.exit(2);
 }
 const baseUrl = argv[0].replace(/\/$/, '');
-const opt = (name, def) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : def; };
-const configPath = opt('--config', join(HERE, 'audit-config.default.json'));
+const opt = (name, def) => { const i = argv.indexOf(name); return (i >= 0 && i + 1 < argv.length) ? argv[i + 1] : def; };
+const DEFAULT_CONFIG = join(HERE, 'audit-config.default.json');
+const configPath = opt('--config', DEFAULT_CONFIG);
 const outDir = opt('--out-dir', '.ui-splint');
 const noShots = argv.includes('--no-screenshots');
 const routesOverride = opt('--routes', null);
 
-const defCfg = JSON.parse(readFileSync(join(HERE, 'audit-config.default.json'), 'utf8'));
-const userCfg = existsSync(configPath) && configPath !== join(HERE, 'audit-config.default.json')
+// A user who explicitly passes --config must not silently fall back to defaults on a typo'd path.
+if (argv.includes('--config') && !existsSync(configPath)) {
+  console.error(`--config file not found: ${configPath}`);
+  process.exit(2);
+}
+
+const defCfg = JSON.parse(readFileSync(DEFAULT_CONFIG, 'utf8'));
+const userCfg = existsSync(configPath) && configPath !== DEFAULT_CONFIG
   ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
 const cfg = { ...defCfg, ...userCfg };
 const routes = routesOverride ? routesOverride.split(',') : cfg.routes || ['/'];
@@ -118,11 +131,12 @@ class CDP {
       this.ws.send(JSON.stringify(payload));
     });
   }
-  once(method, sessionId, timeout = 20000, predicate = null) {
+  once(method, sessionId, timeout = 20000) { return this.onceFiltered(method, sessionId, null, timeout); }
+  onceFiltered(method, sessionId, filter, timeout = 20000) {
     return new Promise((resolve, reject) => {
       const to = setTimeout(() => { reject(new Error('event timeout: ' + method)); cleanup(); }, timeout);
       const w = msg => {
-        if (msg.method === method && (!sessionId || msg.sessionId === sessionId) && (!predicate || predicate(msg.params))) {
+        if (msg.method === method && (!sessionId || msg.sessionId === sessionId) && (!filter || filter(msg.params))) {
           clearTimeout(to); resolve(msg.params); return true;
         }
         return false;
@@ -131,11 +145,28 @@ class CDP {
       this.waiters.push(w);
     });
   }
+  listen(method, sessionId, handler) {
+    const w = msg => {
+      if (msg.method === method && (!sessionId || msg.sessionId === sessionId)) handler(msg.params);
+      return false;
+    };
+    this.waiters.push(w);
+    return () => { this.waiters = this.waiters.filter(x => x !== w); };
+  }
 }
 
 // ---------- aggregation ----------
 function countSev(fs) { const c = { Fail: 0, Risk: 0, Polish: 0 }; for (const f of fs) if (c[f.severity] != null) c[f.severity]++; return c; }
 function slug(r) { return r.replace(/^\//, '').replace(/\//g, '_') || 'root'; }
+async function waitFor(fn, timeout = 20000, interval = 50) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const value = fn();
+    if (value) return value;
+    await sleep(interval);
+  }
+  throw new Error('timed out waiting for condition');
+}
 
 const allFindings = [];
 const matrix = [];
@@ -151,6 +182,7 @@ try {
         for (const state of states) {
           const cell = { route, viewport: vp.name, theme, state };
           let targetId = null;
+          let stopDocumentResponses = null;
           try {
             const created = await cdp.send('Target.createTarget', { url: 'about:blank' });
             targetId = created.targetId;
@@ -165,19 +197,25 @@ try {
               { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
             await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INIT }, sessionId);
             const loaded = cdp.once('Page.loadEventFired', sessionId, 20000).catch(() => null);
-            // Match the MAIN DOCUMENT response, not merely the first network response
-            // to arrive (a redirect, prefetch, or fast subresource can precede it).
-            const mainResponse = cdp.once('Network.responseReceived', sessionId, 20000,
-              p => p && p.type === 'Document').catch(() => null);
+            // Match the navigated main document response, not a redirect, prefetch,
+            // or fast subresource from another frame.
+            const documentResponses = [];
+            stopDocumentResponses = cdp.listen('Network.responseReceived', sessionId, p => {
+              if (p.type === 'Document') documentResponses.push(p);
+            });
             const nav = await cdp.send('Page.navigate', { url }, sessionId);
             if (nav.errorText) throw new Error(`navigation failed for ${url}: ${nav.errorText}`);
             await loaded;
-            const response = await mainResponse;
+            const response = await waitFor(
+              () => documentResponses.find(p => p.frameId === nav.frameId),
+              20000
+            ).catch(() => null);
             const status = response && response.response && response.response.status;
             if (status >= 400) throw new Error(`HTTP ${status} loading ${url}`);
             await sleep(1200); // settle fonts + load-triggered late content (CLS)
 
             const cellFindings = [];
+            const cellRulesSkipped = [];
             for (const sp of scrollPositions) {
               const expr = sp === 'bottom' ? 'window.scrollTo(0, document.body.scrollHeight)'
                 : sp === 'mid' ? 'window.scrollTo(0, document.body.scrollHeight/2)' : 'window.scrollTo(0,0)';
@@ -187,6 +225,9 @@ try {
               const r = await cdp.send('Runtime.evaluate',
                 { expression: `JSON.stringify(window.__uiSplintAudit(${acfg}))`, returnByValue: true }, sessionId);
               const report = JSON.parse(r.result.value);
+              for (const skipped of (report.coverage && report.coverage.rulesSkipped) || []) {
+                if (!cellRulesSkipped.includes(skipped)) cellRulesSkipped.push(skipped);
+              }
               for (const f of report.findings) { f.scroll = sp; f.cell = cell; }
               cellFindings.push(...report.findings);
               if (!noShots && (sp === 'top' || sp === 'bottom')) {
@@ -199,11 +240,25 @@ try {
             const seen = new Set(), deduped = [];
             for (const f of cellFindings) { const k = f.rule + '|' + f.selector + '|' + f.message; if (!seen.has(k)) { seen.add(k); deduped.push(f); } }
             allFindings.push(...deduped);
-            cell.counts = countSev(deduped); cell.status = 'checked';
+            cell.counts = countSev(deduped);
+            if (cellRulesSkipped.length) {
+              cell.rulesSkipped = cellRulesSkipped;
+              cell.status = 'error';
+              cell.error = 'audit rule(s) skipped: ' + cellRulesSkipped.join('; ');
+            // This runner has no network mocking, so it cannot force empty/error/loading data
+            // states — a non-default cell just re-renders the default page. Report it honestly as
+            // not-forced rather than pretending the state was verified (silence is not coverage).
+            } else if (state === 'default') {
+              cell.status = 'checked';
+            } else {
+              cell.status = 'not-forced';
+              cell.reason = 'data state not forced (audit-chrome.mjs has no network mocking); use run-ui-splint.py (Playwright) to mock empty/error/loading';
+            }
           } catch (e) {
             cell.status = 'error'; cell.error = String(e && e.message || e);
             console.error(`  ! ${JSON.stringify(cell)}: ${cell.error}`);
           } finally {
+            if (stopDocumentResponses) stopDocumentResponses();
             if (targetId) {
               try { await cdp.send('Target.closeTarget', { targetId }); } catch {}
             }
@@ -236,6 +291,11 @@ writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({ base_url: baseUrl,
 
 const totals = countSev(findings);
 console.log(`\nUI Splint: ${JSON.stringify(totals)} across ${matrix.length} cells -> ${outDir}/findings.json`);
+const notForced = matrix.filter(c => c.status === 'not-forced');
+if (notForced.length) {
+  console.log(`NOTE: ${notForced.length} non-default data-state cell(s) were NOT forced by this runner (no network mocking). ` +
+    `They are recorded as "not-forced" in coverage.json — use run-ui-splint.py to actually exercise empty/error/loading.`);
+}
 const errors = matrix.filter(c => c.status !== 'checked');
 if (errors.length) { console.log(`BLOCKED: ${errors.length} matrix cell(s) were not verified. Review coverage.json before claiming the work complete.`); process.exit(1); }
 const fails = findings.filter(f => f.severity === 'Fail');

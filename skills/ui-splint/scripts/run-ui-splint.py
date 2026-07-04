@@ -34,8 +34,13 @@ DEFAULT_CONFIG = HERE / "audit-config.default.json"
 
 def load_config(path):
     cfg = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8")) if DEFAULT_CONFIG.exists() else {}
-    if path and Path(path).exists():
-        user = json.loads(Path(path).read_text(encoding="utf-8"))
+    # An explicitly-passed --config must not silently fall back to defaults on a typo'd path.
+    if path:
+        p = Path(path)
+        if not p.exists():
+            sys.stderr.write(f"--config file not found: {path}\n")
+            sys.exit(2)
+        user = json.loads(p.read_text(encoding="utf-8"))
         cfg.update(user)
     return cfg
 
@@ -153,6 +158,7 @@ def main():
                                 run_probes(page, api_mock_pattern)
 
                             cell_findings = []
+                            cell_rules_skipped = []
                             for sp in scroll_positions:
                                 scroll_to(page, sp)
                                 page.wait_for_timeout(120)
@@ -161,6 +167,9 @@ def main():
                                     {**audit_cfg, "route": route, "theme": theme,
                                      "state": state, "isMobile": is_mobile, "baseline": baseline},
                                 )
+                                for skipped in report.get("coverage", {}).get("rulesSkipped", []):
+                                    if skipped not in cell_rules_skipped:
+                                        cell_rules_skipped.append(skipped)
                                 for f in report.get("findings", []):
                                     f["scroll"] = sp
                                     f["cell"] = cell
@@ -171,7 +180,12 @@ def main():
                             deduped = dedupe(cell_findings)
                             all_findings += deduped
                             cell["counts"] = count_sev(deduped)
-                            cell["status"] = "checked"
+                            if cell_rules_skipped:
+                                cell["rulesSkipped"] = cell_rules_skipped
+                                cell["status"] = "error"
+                                cell["error"] = "audit rule(s) skipped: " + "; ".join(cell_rules_skipped)
+                            else:
+                                cell["status"] = "checked"
                         except Exception as e:
                             cell["status"] = "error"
                             cell["error"] = str(e)

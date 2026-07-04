@@ -1,8 +1,9 @@
 # UI Splint — findings & coverage JSON contract
 
 `window.__uiSplintAudit(config)` returns one **report** object per render state.
-`run-ui-splint.py` aggregates per-cell reports into `findings.json` (a flat array of
-findings) and `coverage.json` (the matrix that was actually exercised).
+Either batch runner — `run-ui-splint.py` (Playwright) or `audit-chrome.mjs` (CDP) —
+aggregates per-cell reports into `findings.json` (a flat array of findings) and
+`coverage.json` (the matrix that was actually exercised).
 
 ## `config` (input, all optional)
 
@@ -35,8 +36,8 @@ findings) and `coverage.json` (the matrix that was actually exercised).
     "url": "http://localhost:3000/login",
     "route": "/login", "theme": "dark", "state": "default",
     "viewport": { "w": 390, "h": 844, "dpr": 3 },
-    "isMobile": true, "scrollY": 0, "ts": null   // per-report meta; Date is not read in-page.
-    // The aggregate timestamp is stamped once by the runner as coverage.generated_at.
+    "isMobile": true, "scrollY": 0, "ts": null   // per-report meta; Date is deliberately not read in-page.
+    // Runners discard report meta and stamp coverage.generated_at once in coverage.json.
   },
   "coverage": {
     "rulesRun": ["effectiveContrast", "..."],
@@ -85,7 +86,9 @@ findings) and `coverage.json` (the matrix that was actually exercised).
     { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default",
       "status": "checked", "counts": { "Fail": 1, "Risk": 0, "Polish": 0 } },
     { "route": "/", "viewport": "desktop", "theme": "light", "state": "error",
-      "status": "error", "error": "TimeoutError: ..." }   // surfaces as "Not verified"
+      "status": "error", "error": "TimeoutError: ..." },  // surfaces as "Not verified"
+    { "route": "/", "viewport": "mobile", "theme": "dark", "state": "empty",
+      "status": "not-forced", "reason": "data state not forced ..." }  // audit-chrome.mjs can't mock network
   ],
   "totals": { "Fail": 1, "Risk": 0, "Polish": 0 }
 }
@@ -99,5 +102,9 @@ many were capped. It is not a UI defect — it flags a repeated defect worth fix
 shared-component level. Consumers filtering by the detector rules in `audit-rules.md` should
 expect this extra rule name.
 
-A matrix cell with `status` other than `checked`, or any rule in `rulesSkipped`, must be
-reported as **Not verified** — it is not coverage.
+Cell `status` values: `checked` (audit ran on the intended state), `not-forced` (the CDP
+runner rendered the default page because it cannot mock this data state — honest, but **not
+verified**), `error` (navigation/HTTP failure, or an audit rule threw and was recorded in
+`rulesSkipped`). A cell that is anything other than `checked`, or any rule in `rulesSkipped`,
+must be reported as **Not verified** and blocks the runner's completion gate. Re-run
+`not-forced` cells with the Playwright runner or MCP route mocks to actually exercise them.
