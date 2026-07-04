@@ -51,6 +51,14 @@
 #   *  otherwise (single-reviewer mode) the reviewer CLI's own exit code is propagated
 set -euo pipefail
 
+# Associative arrays (declare -A) require bash >= 4. macOS ships bash 3.2 as
+# /bin/bash and `#!/usr/bin/env bash` may still resolve to it; without this
+# guard the script dies later with a cryptic `declare: -A: invalid option`.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo "run-peer-review.sh requires bash >= 4 (found ${BASH_VERSION:-unknown}); install a newer bash and rerun" >&2
+  exit 2
+fi
+
 PLAN_FILE=""
 FOCUS="all"
 SOURCE="file"
@@ -226,6 +234,10 @@ if [ "$LIST_MODE" -eq 0 ]; then
   else
     [ -n "$PLAN_FILE" ] || { usage; exit 2; }
     [ -f "$PLAN_FILE" ] || { echo "plan file not found: $PLAN_FILE" >&2; exit 2; }
+    if [ "$(tr -d '[:space:]' < "$PLAN_FILE" 2>/dev/null | wc -c)" -eq 0 ]; then
+      echo "plan file is empty: $PLAN_FILE" >&2
+      exit 2
+    fi
   fi
 fi
 
@@ -586,11 +598,6 @@ for r in "${_RAW[@]}"; do
         mark_host_warning "$r"
         ;;
       *)
-        if [ "$LIST_MODE" -eq 1 ]; then
-          # list is more forgiving so it doesn't crash on invalid profiles in a config
-          # that the user isn't trying to invoke.
-          continue
-        fi
         echo "unknown reviewer: $r" >&2
         echo "  known CLIs: codex|claude|opencode|agy" >&2
         [ -n "$CONFIG_PATH" ] && echo "  (config loaded from: $CONFIG_PATH)" >&2
@@ -643,7 +650,10 @@ if [ -n "$REPO_ROOT" ] && [ "${OUT_DIR#"$REPO_ROOT"/}" != "$OUT_DIR" ]; then
     "$REPO_ROOT/.peer-review/"*) EXCLUDE_TARGET="$REPO_ROOT/.peer-review" ;;
   esac
   if command -v realpath >/dev/null 2>&1; then
-    OUT_REL="$(realpath --relative-to="$REPO_ROOT" "$EXCLUDE_TARGET" 2>/dev/null || echo "$EXCLUDE_TARGET")"
+    # macOS realpath lacks --relative-to; fall back to prefix-stripping (a
+    # repo-relative path) rather than echoing the absolute path, which
+    # .git/info/exclude would not match.
+    OUT_REL="$(realpath --relative-to="$REPO_ROOT" "$EXCLUDE_TARGET" 2>/dev/null || echo "${EXCLUDE_TARGET#"$REPO_ROOT"/}")"
   else
     OUT_REL="${EXCLUDE_TARGET#"$REPO_ROOT"/}"
   fi
@@ -681,7 +691,7 @@ for p in "${REVIEWERS_LIST[@]}"; do
   pslug="$(profile_slug "$p")"
   CLAIMED=""
   for _ in 1 2 3 4 5; do
-    EXISTING="$(ls "$OUT_DIR" 2>/dev/null | grep -E -- "-${SLUG}-${pslug}-r[0-9]+\.md$" | grep -oE 'r[0-9]+' | tr -d r | sort -n | tail -1 || true)"
+    EXISTING="$(ls "$OUT_DIR" 2>/dev/null | grep -E -- "-${SLUG}-${pslug}-r[0-9]+\.md$" | sed -E "s/.*-r([0-9]+)\.md$/\1/" | sort -n | tail -1 || true)"
     N=$(( ${EXISTING:-0} + 1 ))
     CANDIDATE="$OUT_DIR/${TODAY}-${SLUG}-${pslug}-r${N}.md"
     if ( set -C; : > "$CANDIDATE" ) 2>/dev/null; then
@@ -755,7 +765,10 @@ cleanup() {
       rmdir "$(dirname "$(dirname "$OPENCODE_AGENT_FILE")")" 2>/dev/null || true
     fi
   fi
-  rm -f "$OUT_DIR"/.peer-review-timeout-* "$OUT_DIR"/.peer-review-prompt-* 2>/dev/null || true
+  # NB: only this run's own temp files are removed. A shared glob over
+  # $OUT_DIR/.peer-review-{timeout,prompt}-* would delete a concurrent run's
+  # in-flight prompt/marker files; PROMPT_FILE is removed above and timeout
+  # markers are removed locally in run_with_timeout.
   for p in "${REVIEWERS_LIST[@]}"; do
     rm -f "${TMP_OUTS[$p]:-}" "${TMP_ERRS[$p]:-}" 2>/dev/null || true
     if [ "${FINALIZED[$p]:-0}" -eq 0 ] && [ -n "${OUT_FILES[$p]:-}" ]; then

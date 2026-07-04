@@ -28,7 +28,19 @@
     "should_trigger": true
   },
   {
+    "query": "이 계획 세컨드 오피니언 받아줘.",
+    "should_trigger": true
+  },
+  {
+    "query": "/peer-review 목록 보여줘",
+    "should_trigger": true
+  },
+  {
     "query": "Summarize the pull request diff and list likely bugs.",
+    "should_trigger": false
+  },
+  {
+    "query": "이 파이썬 함수에서 버그 좀 찾아줘 (외부 리뷰어 없이).",
     "should_trigger": false
   },
   {

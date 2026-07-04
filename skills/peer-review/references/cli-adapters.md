@@ -13,7 +13,11 @@ needs to know when picking or troubleshooting.
 | `agy` | sandbox-restricted | Runs headlessly via `agy -p` with `--sandbox`. Forward model flag if configured. |
 
 The wrapper feeds the prompt over stdin where the CLI supports it; `agy`
-receives the prompt through `-p`. Exact flag spellings, model selection, and
+receives the prompt through `-p` (its headless prompt interface). Because the
+whole prompt is passed as an `agy` argv value, a very large plan (approaching
+the OS `ARG_MAX`, ~1–2 MB) can fail with `E2BIG` on `agy` alone; the other
+CLIs read the prompt from stdin and are unaffected. Prefer a stdin-capable
+reviewer for very large plans. Exact flag spellings, model selection, and
 effort plumbing live in `build_cmd()` — read the function, do not mirror its
 argv here.
 

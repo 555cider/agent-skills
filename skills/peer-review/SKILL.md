@@ -33,18 +33,18 @@ adapt headers/labels to match.
 /peer-review <path> --focus=<area> --reviewer=...  # combine
 ```
 
-`--reviewer` values: `codex`, `claude`, `opencode`, `agy`, `all`,
-`0` (self — the host CLI itself), any **profile name** defined in a JSON
-config, or — when a config is loaded — a **1-based index** (`2`) or **range**
-(`1-3`) into the profile list (default: `codex`). Pass a comma-separated mix
-(e.g. `1,3,my-claude`) to run several in parallel. `all` is a shortcut for
-every configured reviewer; the caller excludes the host model by passing
-`--exclude-cli=<host>` (the slash command does this — see step 3), so `all`
-never accidentally self-reviews. Run `list` to see the index map.
+`--reviewer` accepts a comma-separated mix of these (default `codex`; run
+`list` to see the index map):
 
-**Self-review (`0`).** `--reviewer=0` runs the host CLI as a fresh-context
-reviewer. Weaker signal than a cross-vendor review when models overlap.
-> See: references/cli-adapters.md
+| value | meaning |
+|---|---|
+| `codex` `claude` `opencode` `agy` | a known CLI |
+| `<profile>` | a profile name from JSON config |
+| `2` / `1-3` | 1-based index / range into the profile list (config loaded) |
+| `all` | every profile (or every CLI on PATH); pass `--exclude-cli=<host>` from a slash command unless the user explicitly opts into self-review (step 3) |
+| `0` | self — host CLI as a fresh-context reviewer; weaker signal when models overlap |
+
+> See: references/cli-adapters.md, references/profile-config.md
 
 **Listing reviewers (`list` subcommand).** Prints a `Special` (self) row
 and a `Reviewer CLIs` table, then exits. Always pass `--host=<your-cli>`.
@@ -60,11 +60,6 @@ argument is accepted.
 When the user asks for usage — `/peer-review --help`, `/peer-review help`,
 "peer-review 사용법", or similar natural-language requests — invoke the script
 with `--help`. Do not look for a plan-shaped message and do not run a review.
-
-**Profiles (optional).** A JSON config (`<repo>/.peer-review.json` or
-`~/.config/peer-review/config.json`) names profiles bound to a CLI plus
-optional `model` / `effort`. Profile names accepted on `--reviewer=...`.
-> See: references/profile-config.md
 
 **Codex CLI (natural language).** User typically says one of:
 - "peer-review docs/path/to/plan.md"
@@ -110,14 +105,16 @@ If no file path:
 
 ### 3. Invoke the script
 
+Invoke `scripts/run-peer-review.sh` relative to this skill's directory:
+
 ```bash
-~/.agents/skills/peer-review/scripts/run-peer-review.sh <plan-file> [--reviewer=<list>] [--focus=<v>] [--timeout=<seconds>] --source=file --host=<cli>
+scripts/run-peer-review.sh <plan-file> [--reviewer=<list>] [--focus=<v>] [--timeout=<seconds>] --source=file --host=<cli>
 ```
 
 For chat-sourced input, pipe the exact plan content to:
 
 ```bash
-~/.agents/skills/peer-review/scripts/run-peer-review.sh --stdin-plan [--reviewer=<list>] [--focus=<v>] [--timeout=<seconds>] --host=<cli>
+scripts/run-peer-review.sh --stdin-plan [--reviewer=<list>] [--focus=<v>] [--timeout=<seconds>] --host=<cli>
 ```
 
 Pass `--host=<your-cli>` (`--host=claude` from Claude Code,
@@ -154,14 +151,15 @@ If the user explicitly says they want self-review included (e.g. "all reviewers"
 "claude 포함해서"), omit `--exclude-cli` — the script then expands `all`
 without filtering.
 
-The script writes machine-readable lines to stdout — one `REVIEW=` line per
-successful reviewer:
+The script writes machine-readable lines to stdout. Emission order is
+`WARN=` (if any, before reviewers run), then one `REVIEW=` per successful
+reviewer, then `EXCLUDE_NOTE=` last:
 
 ```
+WARN=<optional machine-readable warning>
 REVIEW=<reviewer-name> <absolute-path-to-saved-review>
 REVIEW=<reviewer-name> <absolute-path-to-saved-review>
 EXCLUDE_NOTE=<optional one-line message about .git/info/exclude update>
-WARN=<optional machine-readable warning>
 ```
 
 Failures (per reviewer) go to stderr as `ERROR=<reviewer> <message>`.
@@ -173,42 +171,12 @@ when all failed.
 ### 4. Report to the user
 
 Capture the script's stdout, stderr, and exit code. Parse stdout for
-`REVIEW=<reviewer> <path>` lines; parse stderr for `ERROR=<reviewer> <msg>`
-lines. Then:
+`REVIEW=<reviewer> <path>` and `WARN=`/`EXCLUDE_NOTE=` lines; parse stderr for
+`ERROR=<reviewer> <msg>` lines. Then branch on exit code and reviewer count
+and render per the templates.
+> See: references/report-format.md
 
-- **Exit non-zero (all reviewers failed):** surface any `WARN=` lines from stdout verbatim, then show stderr inline. Do not invent a summary. Stop.
-- **Exit 0, single REVIEW line, review content size < 1000 bytes (`wc -c < <path>`):** inline the full content to chat.
-- **Exit 0, single REVIEW line, otherwise:** read the review file, extract 3-5 most critical bullets (numbered/bulleted issues, severity language). Report as:
-
-```
-<reviewer> review complete → <path relative to repo or cwd> (<source: file|chat>)
-[+ EXCLUDE_NOTE if present, on its own line]
-[+ for each WARN= on stdout: show the line verbatim]
-
-Key issues:
-- <bullet 1>
-- <bullet 2>
-- <bullet 3-5>
-```
-
-- **Exit 0, multiple REVIEW lines:** for each reviewer's file, extract its 3-5 most critical bullets. Report as:
-
-```
-Peer review complete (<source: file|chat>)
-[+ EXCLUDE_NOTE if present, on its own line]
-[+ for each WARN= on stdout: show the line verbatim]
-[+ for each ERROR= on stderr: "<reviewer> failed: <msg>" line]
-
-<reviewer-1> → <path-1>
-- <bullet>
-- <bullet>
-
-<reviewer-2> → <path-2>
-- <bullet>
-- <bullet>
-```
-
-Translate the header labels to the user's language (e.g. for Korean:
+Translate all header labels to the user's language (e.g. for Korean:
 "리뷰 완료", "주요 지적", "<reviewer> 실패").
 
 ### 5. Add your own judgment
@@ -249,6 +217,18 @@ repo-visible path just to preserve them.
 
 The script's exit codes drive how step 4 reports failure to the user.
 > See: references/exit-codes.md
+
+## Common mistakes
+
+- **Omitting `--host` with `--reviewer=0`** (or a named self-review) — the
+  script can't resolve `0` and exits 2. Always forward `--host=<your-cli>`.
+- **`--list` instead of the `list` subcommand** — only the positional `list`
+  is accepted; `--list` errors as an unknown flag.
+- **Hand-writing a chat temp file** — pipe chat-sourced plans through
+  `--stdin-plan`; the script owns temp-file creation, validation, and cleanup.
+- **Treating a single-reviewer non-zero exit as a script code** — in
+  single-reviewer mode it may be the reviewer CLI's own status; disambiguate
+  via stderr text (references/exit-codes.md).
 
 ## When to self-invoke
 
