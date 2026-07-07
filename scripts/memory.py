@@ -231,7 +231,11 @@ class Lock:
                 self.acquired = True
                 return self
             except FileExistsError:
-                age = time.time() - self.path.stat().st_mtime
+                try:
+                    age = time.time() - self.path.stat().st_mtime
+                except FileNotFoundError:
+                    # Lock released between the failed mkdir and the stat; retry immediately.
+                    continue
                 if age > self.stale_seconds:
                     shutil.rmtree(self.path, ignore_errors=True)
                     continue
@@ -397,6 +401,28 @@ def memory_path(home: Path, scope: str, repo_key: str | None) -> Path:
     if not repo_key:
         raise MemoryError("project memory requires repo_key")
     return home / "projects" / repo_key / "MEMORY.md"
+
+
+def scoped_bases(home: Path, repo_key: str | None, all_projects: bool) -> list[Path]:
+    """Base directories a scoped destructive op should touch. Default: the current
+    project plus global. With all_projects: every project plus global. Prevents
+    `cleanup`/`forget` run inside project A from silently pruning projects B, C."""
+    bases: list[Path] = [home / "global"]
+    if all_projects:
+        projects = home / "projects"
+        if projects.exists():
+            bases.extend(sorted(p for p in projects.iterdir() if p.is_dir()))
+    elif repo_key:
+        bases.append(home / "projects" / repo_key)
+    return [base for base in bases if base.exists()]
+
+
+def scoped_memory_files(home: Path, repo_key: str | None, all_projects: bool) -> list[Path]:
+    return [
+        base / "MEMORY.md"
+        for base in scoped_bases(home, repo_key, all_projects)
+        if (base / "MEMORY.md").exists()
+    ]
 
 
 def command_repo_key(args: argparse.Namespace) -> int:
@@ -619,7 +645,11 @@ def canonical_metadata_text(values: dict[str, str]) -> str:
 
 
 def build_memory_update(existing: str, title: str, bullet: str, summary: str, source_note: str) -> str:
-    if summary in existing or f"source_note: {source_note}" in existing:
+    # Dedup on the note provenance, or on an existing bullet carrying this exact
+    # summary. Match the bullet structure "] {summary} (" rather than a raw
+    # substring so a short summary that merely appears inside another line does
+    # not suppress a genuinely new entry.
+    if f"source_note: {source_note}" in existing or f"] {summary} (" in existing:
         return existing
     start = "<!-- agent-memory:start -->"
     end = "<!-- agent-memory:end -->"
@@ -665,9 +695,13 @@ def command_promote(args: argparse.Namespace) -> int:
     with Lock(home):
         existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
         updated = build_memory_update(existing, title, bullet, meta["summary"], source_note)
-        if updated != existing:
+        wrote = updated != existing
+        if wrote:
             atomic_write(dest, updated)
-    print(f"PROMOTE={dest}")
+    if wrote:
+        print(f"PROMOTE={dest}")
+    else:
+        print(f"SKIP={dest}: already present (duplicate summary or source_note)")
     return 0
 
 
@@ -809,7 +843,14 @@ def topic_result(path: Path, scope: str, text: str) -> dict[str, object]:
 
 
 def record_date(record: dict[str, object]) -> str:
-    value = str(record.get("created_at") or record.get("last_verified") or "")
+    # topic records carry `timestamp` rather than created_at/last_verified;
+    # include it so `find --since` does not silently drop every topic.
+    value = str(
+        record.get("created_at")
+        or record.get("last_verified")
+        or record.get("timestamp")
+        or ""
+    )
     return value[:10]
 
 
@@ -1023,33 +1064,36 @@ def command_forget(args: argparse.Namespace) -> int:
             raise MemoryError(f"no canonical entry found for id: {args.id}")
         return 0
 
+    all_projects = getattr(args, "all_projects", False)
+
     if args.note:
         target = Path(args.note).expanduser().resolve()
         if not target.exists():
             raise MemoryError(f"note not found: {target}")
-        if not str(target).startswith(str(home)):
+        # Confine to the store: relative_to compares path components, so a sibling
+        # like <home>-backup is correctly rejected (a str.startswith prefix check
+        # would let it through).
+        try:
+            target.relative_to(home)
+        except ValueError:
             raise MemoryError("note is not in memory store")
         with Lock(home):
             target.unlink()
-            if args.summary:
-                for mem in home.glob("**/MEMORY.md"):
-                    if mem.exists():
-                        existing = mem.read_text(encoding="utf-8")
-                        updated = existing.replace(f"- ", f"- ", 1)
-                        lines = existing.splitlines()
-                        new_lines = [l for l in lines if args.summary not in l]
-                        if len(new_lines) < len(lines):
-                            atomic_write(mem, "\n".join(new_lines) + "\n")
+            if args.summary and args.canonical:
+                for mem in scoped_memory_files(home, repo_key, all_projects):
+                    existing = mem.read_text(encoding="utf-8")
+                    lines = existing.splitlines()
+                    new_lines = [l for l in lines if args.summary not in l]
+                    if len(new_lines) < len(lines):
+                        atomic_write(mem, "\n".join(new_lines) + "\n")
         print(f"FORGET={target}")
         return 0
 
     if args.summary:
         removed: list[str] = []
         with Lock(home):
-            for inbox_dir in home.glob("**/inbox/**"):
-                if not inbox_dir.is_dir():
-                    continue
-                for path in iter_note_files(inbox_dir):
+            for base in scoped_bases(home, repo_key, all_projects):
+                for path in iter_note_files(base / "inbox"):
                     try:
                         meta, _, _ = parse_note(path)
                         if args.summary in meta.get("summary", ""):
@@ -1058,14 +1102,13 @@ def command_forget(args: argparse.Namespace) -> int:
                     except Exception:
                         continue
             if args.canonical:
-                for mem in home.glob("**/MEMORY.md"):
-                    if mem.exists():
-                        existing = mem.read_text(encoding="utf-8")
-                        lines = existing.splitlines()
-                        new_lines = [l for l in lines if args.summary not in l]
-                        if len(new_lines) < len(lines):
-                            atomic_write(mem, "\n".join(new_lines) + "\n")
-                            removed.append(str(mem))
+                for mem in scoped_memory_files(home, repo_key, all_projects):
+                    existing = mem.read_text(encoding="utf-8")
+                    lines = existing.splitlines()
+                    new_lines = [l for l in lines if args.summary not in l]
+                    if len(new_lines) < len(lines):
+                        atomic_write(mem, "\n".join(new_lines) + "\n")
+                        removed.append(str(mem))
         for r in removed:
             print(f"FORGET={r}")
         if not removed:
@@ -1394,12 +1437,17 @@ def session_dir(home: Path, repo_key: str) -> Path:
 def find_session_file(base: Path, wanted: str | None, latest: bool = False) -> Path:
     files = iter_note_files(base)
     if wanted:
+        # `save` slugs the id before storing it (session_id -> safe_slug); apply the
+        # same slug to the lookup so an id with spaces/uppercase is resumable by the
+        # exact string the user passed to save.
+        wanted_slug = safe_slug(wanted)
         for path in files:
             try:
                 meta, _ = parse_simple_frontmatter(path)
             except Exception:
                 continue
-            if meta.get("session_id") == wanted or path.stem == wanted:
+            sid = meta.get("session_id")
+            if sid == wanted or sid == wanted_slug or path.stem in (wanted, wanted_slug):
                 return path
         raise MemoryError(f"session not found: {wanted}")
     if latest and files:
@@ -1498,12 +1546,11 @@ def command_cleanup(args: argparse.Namespace) -> int:
 
     cutoff = time.time() - (args.older_than_days * 86400)
     removed: list[str] = []
+    all_projects = getattr(args, "all_projects", False)
 
     with Lock(home):
-        for inbox_dir in home.glob("**/inbox/**"):
-            if not inbox_dir.is_dir():
-                continue
-            for path in iter_note_files(inbox_dir):
+        for base in scoped_bases(home, repo_key, all_projects):
+            for path in iter_note_files(base / "inbox"):
                 try:
                     mtime = path.stat().st_mtime
                     if mtime < cutoff:
@@ -1567,6 +1614,7 @@ def build_parser() -> argparse.ArgumentParser:
     forget.add_argument("--summary", help="Summary text to match for deletion")
     forget.add_argument("--id", help="Canonical memory id to remove")
     forget.add_argument("--canonical", action="store_true", help="Also remove matching entries from MEMORY.md")
+    forget.add_argument("--all-projects", action="store_true", help="Match across every project (default: current repo + global only)")
     forget.set_defaults(func=command_forget)
 
     verify = sub.add_parser("verify", help="Update last_verified on a canonical memory entry")
@@ -1636,6 +1684,7 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--cwd", help="Project directory")
     cleanup.add_argument("--older-than-days", type=int, default=90, help="Remove notes older than N days")
     cleanup.add_argument("--dry-run", action="store_true", help="Show what would be removed without deleting")
+    cleanup.add_argument("--all-projects", action="store_true", help="Prune across every project (default: current repo + global only)")
     cleanup.set_defaults(func=command_cleanup)
 
     check = sub.add_parser("check", help="Validate memory store")
