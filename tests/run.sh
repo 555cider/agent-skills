@@ -607,14 +607,17 @@ if [ -f "$LOCK" ]; then fail "lockstale-fix released our lock" "lockfile remaine
 # ---------------------------------------------------------------------------
 FLOCK="$WORK/relown.lock"
 printf '999999' >"$FLOCK"   # a pid that is not ours
+# Pass PG and FLOCK as argv (not embedded in the -c string) so MSYS/Git Bash
+# path-converts them to native paths — an embedded '/tmp/...' literal is not
+# converted and native Windows Python cannot resolve it.
 if python3 -c "
 import importlib.util, sys
 from pathlib import Path
-spec = importlib.util.spec_from_file_location('pg', '$PG')
+spec = importlib.util.spec_from_file_location('pg', sys.argv[1])
 m = importlib.util.module_from_spec(spec); sys.modules['pg'] = m; spec.loader.exec_module(m)
-m.release_lock(Path('$FLOCK'))
-sys.exit(0 if Path('$FLOCK').exists() else 1)
-"; then
+m.release_lock(Path(sys.argv[2]))
+sys.exit(0 if Path(sys.argv[2]).exists() else 1)
+" "$PG" "$FLOCK"; then
   pass "release_lock keeps foreign lock"
 else
   fail "release_lock keeps foreign lock" "release_lock deleted a lockfile owned by another pid"
@@ -660,6 +663,29 @@ pg "$D" --show --fix
 assert_exit   "showfixlock-show" 0
 assert_grepF  "showfixlock tree shown" "$WORK/out" "[1] alpha"
 assert_nogrep "showfixlock not blocked" "$WORK/err" "graph locked"
+
+# ---------------------------------------------------------------------------
+# eval assets — trigger/behavior eval files are well-formed and consistent with
+# the skill name (guards against silent drift; the repo validator checks shape
+# but this keeps the skill self-testing in isolation).
+# ---------------------------------------------------------------------------
+if python3 - "$HERE/../evals/behavior-evals.json" "$HERE/../evals/trigger-evals.json" <<'PY'
+import json, sys
+behavior = json.load(open(sys.argv[1], encoding="utf-8"))
+trigger = json.load(open(sys.argv[2], encoding="utf-8"))
+assert behavior["skill_name"] == "plan-graph", behavior.get("skill_name")
+assert len(behavior["evals"]) >= 4
+assert all({"id", "prompt", "expected_output"} <= set(item) for item in behavior["evals"])
+assert isinstance(trigger, list) and len(trigger) >= 8
+assert sum(1 for x in trigger if x["should_trigger"]) >= 4
+assert sum(1 for x in trigger if not x["should_trigger"]) >= 4
+assert all({"query", "should_trigger"} <= set(x) for x in trigger)
+PY
+then
+  pass "eval assets have expected schema"
+else
+  fail "eval assets have expected schema" "invalid eval JSON"
+fi
 
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"
