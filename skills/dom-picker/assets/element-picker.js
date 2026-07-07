@@ -28,7 +28,36 @@
   function trunc(s, n) { if (s == null) return null; s = String(s); return s.length > n ? s.slice(0, n) + "…" : s; }
   function cssEscape(s) {
     if (window.CSS && CSS.escape) return CSS.escape(s);
-    return String(s).replace(/[^a-zA-Z0-9_-]/g, function (c) { return "\\" + c; });
+    s = String(s).replace(/[^a-zA-Z0-9_-]/g, function (c) { return "\\" + c; });
+    // A leading digit (optionally after a hyphen) is invalid in a CSS identifier;
+    // escape it as \3N , mirroring CSS.escape for the no-native fallback path.
+    return s.replace(/^(-?)([0-9])/, function (_, dash, d) { return dash + "\\3" + d + " "; });
+  }
+  // Escape a value for use inside a double-quoted attribute selector.
+  function attrEscape(s) { return String(s).replace(/["\\]/g, "\\$&"); }
+
+  // ---------- reload-survival state (per-origin sessionStorage) ------------
+  // The picker is re-injected fresh on every reload, resetting _seq (which the
+  // CDP `wait` bridge treats as monotonic) and discarding the user's draft and
+  // selections. Persist just enough to restore continuity across a HARD reload
+  // of the same origin. All access is guarded: sessionStorage throws in
+  // sandboxed iframes / storage-disabled contexts. Not persisted: the transient
+  // `request`/`_sentMsg`. Cross-origin navigation still loses this (per-origin).
+  var STATE_KEY = "__s2p_state_v1";
+  function saveState() {
+    try {
+      window.sessionStorage.setItem(STATE_KEY, JSON.stringify({
+        seq: api._seq,
+        draft: api._draft,
+        picks: api.picks.map(function (p) { return p.selector; }).filter(Boolean)
+      }));
+    } catch (e) { /* storage unavailable — continuity is best-effort */ }
+  }
+  function loadState() {
+    try {
+      var raw = window.sessionStorage.getItem(STATE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
   }
 
   function resolveTarget(el) {
@@ -46,11 +75,29 @@
     return el;
   }
 
+  // True when `sel` resolves to exactly `el` and nothing else — a selector we
+  // can safely hand downstream as a unique locator.
+  function isUnique(sel, el) {
+    try {
+      var hits = document.querySelectorAll(sel);
+      return hits.length === 1 && hits[0] === el;
+    } catch (e) { return false; }
+  }
+
   function buildSelector(el) {
     if (!el || el.nodeType !== 1) return null;
-    if (el.id) return "#" + cssEscape(el.id);
+    if (el.id) {
+      var idSel = "#" + cssEscape(el.id);
+      if (isUnique(idSel, el)) return idSel;
+    }
     var testid = el.getAttribute && el.getAttribute("data-testid");
-    if (testid) return "[data-testid=\"" + testid + "\"]";
+    if (testid) {
+      var tidSel = "[data-testid=\"" + attrEscape(testid) + "\"]";
+      // Only trust the testid selector when it uniquely locates this element;
+      // otherwise fall through to a structural path (several nodes can share a
+      // testid, and the value may need escaping).
+      if (isUnique(tidSel, el)) return tidSel;
+    }
     var parts = [], node = el;
     while (node && node.nodeType === 1 && node !== document.documentElement) {
       var part = node.tagName.toLowerCase();
@@ -108,6 +155,8 @@
     return {
       selector: buildSelector(el), tagName: el.tagName.toLowerCase(),
       id: el.id || null, className: (el.getAttribute && el.getAttribute("class")) || null,
+      ariaLabel: (el.getAttribute && el.getAttribute("aria-label")) || null,
+      name: (el.getAttribute && el.getAttribute("name")) || null,
       text: trunc((el.textContent || "").trim().replace(/\s+/g, " "), 300),
       outerHTML: trunc(el.outerHTML, MAX_HTML),
       parentHTML: el.parentElement ? trunc(el.parentElement.outerHTML, MAX_HTML) : null,
@@ -124,8 +173,13 @@
     if (typeof target === "string") el = document.querySelector(target);
     if (!el || el.nodeType !== 1) return null;
     var p = makePayload(el), marked = p._el; delete p._el;
+    // Ignore a repeat pick of an element already selected.
+    for (var i = 0; i < selBoxes.length; i++) {
+      if (selBoxes[i].__el === marked) { api.lastPick = api.picks[i] || p; return api.picks[i] || null; }
+    }
     api.picks.push(p); api.lastPick = p;
     addBox(marked); renderAll();
+    saveState();
     return p;
   }
 
@@ -182,7 +236,7 @@
     if (!selBoxes[i]) return;
     selBoxes[i].remove(); selBoxes.splice(i, 1); api.picks.splice(i, 1);
     api.lastPick = api.picks[api.picks.length - 1] || null;
-    renumber(); renderAll();
+    renumber(); renderAll(); saveState();
   }
 
   // ---------- launcher ----------
@@ -249,7 +303,7 @@
     var ta = mk("textarea", "width:100%;box-sizing:border-box;resize:none;height:46px;font:12px/1.4 " + SANS + ";color:" + C.text + ";background:" + C.ink + ";border:1px solid " + C.line + ";border-radius:8px;padding:7px 9px;outline:none;", form);
     ta.placeholder = "이 요소를 어떻게 고칠까요?  (예: 색을 초록으로)";
     ta.value = api._draft || "";
-    ta.addEventListener("input", function () { api._draft = ta.value; api._sentMsg = ""; });
+    ta.addEventListener("input", function () { api._draft = ta.value; api._sentMsg = ""; saveState(); });
     ta.addEventListener("keydown", function (e) { e.stopPropagation(); if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submitRequest(); });
     var sendWrap = mk("div", "margin-top:7px;", form);
     sendWrap.appendChild(primaryBtn("보내기  (⌘/Ctrl+Enter)", submitRequest));
@@ -284,6 +338,7 @@
       picks: api.picks.map(function (p) { return { selector: p.selector, label: p.label, tagName: p.tagName }; })
     };
     api._draft = ""; api._sentMsg = "✓ 전송됨 — 에이전트가 받는 중…"; renderPanel();
+    saveState(); // persist the bumped _seq so a reload cannot rewind the bridge counter
   }
 
   function showHint(on) {
@@ -349,7 +404,7 @@
       api._draft = ""; api._sentMsg = "";
       for (var i = 0; i < selBoxes.length; i++) selBoxes[i].remove();
       selBoxes = [];
-      renderPanel(); renderLauncher();
+      renderPanel(); renderLauncher(); saveState();
     },
     toggle: function () { api.active ? api.disable() : api.enable(); }
   };
@@ -357,10 +412,31 @@
   var st = mk("style", "");
   st.textContent = "@keyframes s2pPulse{0%{box-shadow:0 0 0 0 " + C.pick + "80}70%{box-shadow:0 0 0 6px " + C.pick + "00}100%{box-shadow:0 0 0 0 " + C.pick + "00}}@media (prefers-reduced-motion:reduce){[data-s2p]{animation:none!important}}";
   btn.addEventListener("click", function (e) { e.stopPropagation(); api.toggle(); });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && api.active) api.disable(); });
+  document.addEventListener("keydown", function (e) {
+    // Only intercept Escape while actively picking, so we don't swallow the host
+    // page's own Escape handling (closing its modals/menus) the rest of the time.
+    if (e.key === "Escape" && api.active) { e.preventDefault(); e.stopPropagation(); api.disable(); }
+  });
 
   function mount() { if (document.body && !document.body.contains(btn)) { document.body.appendChild(btn); renderLauncher(); } }
   if (document.body) mount(); else document.addEventListener("DOMContentLoaded", mount);
+
+  // Restore continuity after a hard reload of the same origin (best-effort).
+  function restoreState() {
+    var saved = loadState();
+    if (!saved) return;
+    if (typeof saved.seq === "number") api._seq = saved.seq;
+    if (typeof saved.draft === "string") api._draft = saved.draft;
+    if (saved.picks && saved.picks.length) {
+      saved.picks.forEach(function (selstr) {
+        // Re-resolve each stored selector; silently drop any that no longer
+        // uniquely resolve (the page may have changed).
+        try { if (selstr && document.querySelector(selstr)) snapshot(selstr); } catch (e) { /* drop */ }
+      });
+    }
+    renderAll();
+  }
+  if (document.body) restoreState(); else document.addEventListener("DOMContentLoaded", restoreState);
 
   window.__s2p = api;
   return api;

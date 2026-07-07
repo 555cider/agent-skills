@@ -79,7 +79,7 @@ the screenshot alone.
 
 Playwright/MCP drives a browser the *agent* controls — the user can't click in it. To let the
 **user** pick in their **own** visible browser (and type the fix there), use `scripts/cdp.mjs`,
-which speaks the Chrome DevTools Protocol over Node's built-in `WebSocket` (Node ≥ 21; no deps):
+which speaks the Chrome DevTools Protocol over Node's built-in `WebSocket` (Node ≥ 22; no deps):
 
 1. **Launch** a visible Chrome with debugging on: `node scripts/cdp.mjs launch <url>` (or start any
    Chrome with `--remote-debugging-port=9222 --user-data-dir=<temp>`). Set `CHROME=` if not auto-found.
@@ -91,10 +91,22 @@ which speaks the Chrome DevTools Protocol over Node's built-in `WebSocket` (Node
 4. **Receive it** — run `node scripts/cdp.mjs wait` in the background; it blocks until the user
    submits, prints `REQUEST {instruction + full picks}`, and exits — which re-invokes a host that
    launched it as a background task. Then continue at step 5 (find source → diff). It handles one
-   request per run; re-launch `wait` for the next.
+   request per run; re-launch `wait` for the next. Pass `--timeout=<sec>` to bound the wait (exits 3
+   on timeout) so a background host task can't hang forever if the picker never re-appears.
 
 Helpers: `read` (dump lastPick/picks/request), `pick <selector>` (snapshot programmatically),
+`inject [--arm]` (inject the picker into the current page without the long-lived `keep` watcher),
 `clear`. Options: `--port=<n>`, `--match=<url-substr>` to select the right tab.
+
+**Reload semantics.** Across a **hard reload of the same origin**, the picker restores the user's
+draft text, the picked selectors (re-resolved best-effort; selectors that no longer uniquely match
+are silently dropped), and the submit sequence counter (so `wait` cannot miss a post-reload submit).
+It does **not** survive a **cross-origin navigation** (e.g. an auth redirect) — state is per-origin.
+
+**Failure modes.** If `wait`/`keep`/etc. print `NO_TARGET`, nothing is listening on the debug port —
+Chrome isn't launched with `--remote-debugging-port`, the `--port` is wrong, or `--match` matched no
+tab. If `wait` never returns, `keep` is probably not running alongside it, so the picker never
+reappears after a reload; run `keep` in the background too, or give `wait` a `--timeout`.
 
 These are **session-scoped background processes** — they stop when the session/terminal closes (the
 launched Chrome, a GUI app, may linger and can be closed manually). Re-launch them each session.
