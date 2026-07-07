@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: Use when a task may depend on prior user preferences, repo-specific conventions, earlier decisions, recurring command pitfalls, long-running handoff context, or when the user says to remember, forget, update memory, or use memory across Codex, Claude, opencode, or other coding agents.
+description: Use when a task may depend on prior user preferences, repo-specific conventions, earlier decisions, recurring command pitfalls, long-running handoff context, or when the user says to remember, forget, update memory (or 기억해줘 / 잊어버려 / 메모리 업데이트), or use memory across Codex, Claude, opencode, or other coding agents. Not for one-off facts derivable from the code or git history, or ephemeral state that will not matter next session — record those nowhere.
 ---
 
 # Agent Memory
@@ -227,10 +227,10 @@ Do not record:
 - One-off file paths from a temporary branch.
 - Large summaries that belong in `topics/` or a session handoff.
 
-There is no `forget` note type. If the user asks to forget or remove memory,
-inspect the relevant canonical memory and inbox notes, then delete or amend the
-specific entries intentionally. Leave a short explicit note only when a
-tombstone is necessary to prevent reintroducing stale memory.
+There is no `forget` note *type* — the note types are the six listed above. To
+forget or remove memory, use the `forget` command (see **Forget Mode** below),
+not a note. Leave a short explicit note only when a tombstone is necessary to
+prevent reintroducing stale memory.
 
 ## Forget Mode
 
@@ -251,7 +251,14 @@ python3 <skill-dir>/scripts/memory.py forget --cwd "$PWD" --summary "<summary te
 ```
 
 Use `--canonical` only when the stale fact has already been promoted to
-`MEMORY.md` and must be removed to prevent reintroduction.
+`MEMORY.md` and must be removed to prevent reintroduction. Canonical entries are
+touched *only* when `--canonical` is passed — this holds for `--summary` and for
+`--note --summary` alike.
+
+**Scope.** `--summary` matching (inbox and, with `--canonical`, MEMORY.md) is
+confined to the **current repo (`--cwd`) plus global memory**. Pass
+`--all-projects` to match across every project's store. `--note` and `--id`
+target a single path/id and ignore this flag.
 
 ## Verify Mode
 
@@ -328,18 +335,31 @@ python3 <skill-dir>/scripts/memory.py cleanup --cwd "$PWD" --older-than-days 90 
 python3 <skill-dir>/scripts/memory.py cleanup --cwd "$PWD" --older-than-days 90
 ```
 
+Cleanup is confined to the **current repo (`--cwd`) plus global memory**; other
+projects' inboxes are untouched. Pass `--all-projects` to prune every project's
+inbox store-wide.
+
 ## JSON Output
 
-The `find`, `list`, `stats`, and `propose` commands support `--format json` for
-programmatic consumption:
+The `find`, `list`, `stats`, `propose`, `review`, and `session list`/`session
+resume` commands support `--format json` for programmatic consumption:
 
 ```bash
 python3 <skill-dir>/scripts/memory.py find --cwd "$PWD" --query "test" --format json
 ```
 
-JSON output includes `results`, `truncated`, and a `total` count for
-pagination. `find --format json` preserves the text-mode read surface while
-returning normalized ranked result records:
+The top-level JSON shape differs per command:
+
+- `find` → `{ "results": [...], "truncated": <bool>, "total": <int> }`
+- `list` → `{ "results": [...], "total": <int> }`
+- `propose` → `{ "candidates": [...], "total": <int> }`
+- `stats` → `{ "global": {...}, "project": {...}, "total_memory_bytes": <int> }`
+- `review` → `{ "findings": [...], "total": <int> }`
+- `session list` → `{ "results": [...], "total": <int> }`;
+  `session resume` → a single session record object
+
+`find --format json` preserves the text-mode read surface while returning
+normalized ranked result records:
 
 - `kind`: `canonical`, `explicit`, `auto`, or `topic`
 - `scope`: `global` or `project`
@@ -386,7 +406,8 @@ python3 <skill-dir>/scripts/memory.py check --cwd "$PWD"
 
 Run `check` after manual memory maintenance or when memory behavior looks wrong.
 It reports malformed frontmatter, stale locks, missing evidence, oversized
-summaries, and overgrown canonical summaries.
+summaries, sensitive-pattern hits, and a `MEMORY.md` that has grown past its line
+budget.
 
 If the helper is unavailable, read memory files directly but do not edit
 canonical `MEMORY.md`. At most, create a uniquely named inbox note manually and

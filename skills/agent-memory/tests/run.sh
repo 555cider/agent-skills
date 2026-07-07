@@ -667,6 +667,49 @@ assert_json_expr "session list includes closed handoff" "$WORK/out" \
   'any(item["session_id"] == "handoff-1" and item["status"] == "closed" for item in data["results"])'
 
 # ---------------------------------------------------------------------------
+# session id slugging: save/resume/close by an id that needs slugging.
+# ---------------------------------------------------------------------------
+run_mem session save --cwd "$PROJ" --id "Handoff Cleanup" --summary "spaced id" --body "resume me"
+assert_exit "session save with spaced id" 0
+run_mem session resume --cwd "$PROJ" --id "Handoff Cleanup" --format json
+assert_exit "session resume finds slugged id by raw id" 0
+assert_json_expr "resume matches slugged session" "$WORK/out" \
+  '"resume me" in data["body"]'
+run_mem session close --cwd "$PROJ" --id "Handoff Cleanup"
+assert_exit "session close finds slugged id by raw id" 0
+
+# ---------------------------------------------------------------------------
+# forget confinement + canonical gating + scoping.
+# ---------------------------------------------------------------------------
+MEMHOME="$WORK/memory-forget-scope"
+FA="$WORK/forget-proj-a"; FB="$WORK/forget-proj-b"
+mkdir -p "$FA" "$FB"
+git -C "$FA" init -q; git -C "$FB" init -q
+
+# forget --note must reject a path outside the store, even a sibling prefix dir.
+mkdir -p "$MEMHOME" "${MEMHOME}-backup"
+echo "keep" > "${MEMHOME}-backup/x.md"
+run_mem forget --cwd "$FA" --note "${MEMHOME}-backup/x.md"
+assert_exit "forget --note rejects out-of-store sibling path" 1
+assert_file_exists "sibling file survives rejected forget" "${MEMHOME}-backup/x.md"
+
+# forget --note --summary must NOT touch canonical without --canonical.
+run_mem note --cwd "$FA" --scope project --priority explicit --type caveat \
+  --source user --confidence high --summary "gate-canary fact" --body "b"
+GATE_NOTE="$(note_path_from_stdout)"
+run_mem promote --cwd "$FA" --note "$GATE_NOTE"
+CANON_A="$MEMHOME/projects/$(AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" repo-key --cwd "$FA")/MEMORY.md"
+assert_contains "canary promoted to canonical" "$CANON_A" "gate-canary fact"
+run_mem note --cwd "$FA" --scope project --priority explicit --type caveat \
+  --source user --confidence high --summary "gate-canary fact" --body "b2"
+GATE_NOTE2="$(note_path_from_stdout)"
+run_mem forget --cwd "$FA" --note "$GATE_NOTE2" --summary "gate-canary fact"
+assert_exit "forget --note --summary without --canonical succeeds" 0
+assert_contains "canonical untouched without --canonical" "$CANON_A" "gate-canary fact"
+run_mem forget --cwd "$FA" --summary "gate-canary fact" --canonical
+assert_not_contains "canonical removed with --canonical" "$CANON_A" "gate-canary fact"
+
+# ---------------------------------------------------------------------------
 # eval assets: behavior and trigger eval files are valid.
 # ---------------------------------------------------------------------------
 BEHAVIOR_EVALS="$HERE/../evals/behavior-evals.json"
