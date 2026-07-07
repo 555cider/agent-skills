@@ -37,9 +37,10 @@ adapt headers/labels to match.
 `0` (self — the host CLI itself), any **profile name** defined in a JSON
 config, or — when a config is loaded — a **1-based index** (`2`) or **range**
 (`1-3`) into the profile list (default: `codex`). Pass a comma-separated mix
-(e.g. `1,3,my-claude`) to run several in parallel. `all` is a shortcut:
-from a slash command, the host model is auto-excluded (see step 3).
-Run `list` to see the index map.
+(e.g. `1,3,my-claude`) to run several in parallel. `all` is a shortcut for
+every configured reviewer; the caller excludes the host model by passing
+`--exclude-cli=<host>` (the slash command does this — see step 3), so `all`
+never accidentally self-reviews. Run `list` to see the index map.
 
 **Self-review (`0`).** `--reviewer=0` runs the host CLI as a fresh-context
 reviewer. Weaker signal than a cross-vendor review when models overlap.
@@ -265,5 +266,9 @@ Codex CLI authorizes narrow proactive self-invocation:
 
 - Do not auto-trigger on plans you propose (see "When to self-invoke").
 - Do not review git diffs (use `codex review` or equivalent directly).
-- Do not grant the reviewer CLI write access.
+- Do not grant the reviewer CLI write access. `codex`, `opencode`, and `agy` are
+  launched sandbox/read-only; the `claude` adapter runs `claude -p` and relies on
+  Claude's own permission system rather than a hard sandbox flag, so its
+  read-only guarantee is weaker — avoid `claude` as a reviewer where a strict
+  no-write guarantee is required.
 - Do not stream reviewer output; report from the saved review file.

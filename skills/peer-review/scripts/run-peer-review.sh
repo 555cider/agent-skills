@@ -48,6 +48,7 @@
 #   5  reviewer returned empty/whitespace-only output (only when single reviewer)
 #   6  all reviewers failed (multi-reviewer)
 #   124 reviewer timed out (single-reviewer mode)
+#   *  otherwise (single-reviewer mode) the reviewer CLI's own exit code is propagated
 set -euo pipefail
 
 PLAN_FILE=""
@@ -710,6 +711,18 @@ kill_process_tree() {
   local signal="${2:-TERM}"
   local child
   [ -n "$pid" ] || return 0
+
+  # On Git Bash / MSYS there is no pgrep, and `kill` cannot reach the grandchild
+  # processes a reviewer CLI (a native .exe) spawns. Use taskkill to kill the
+  # whole tree by PID. //PID //T //F are escaped so MSYS does not path-convert.
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if command -v taskkill >/dev/null 2>&1; then
+        MSYS2_ARG_CONV_EXCL='*' taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
+        return 0
+      fi
+      ;;
+  esac
 
   if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r child; do
