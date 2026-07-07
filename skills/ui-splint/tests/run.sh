@@ -129,16 +129,29 @@ for fixture in expected:
     for must in fixture.get("mustHit", []):
         rule = must["rule"]
         needle = must.get("matches")
+        want_sev = must.get("severity")
+        want_conf = must.get("confidence")
         matched = False
+        sev_mismatch = None
         for finding in findings:
             if finding.get("rule") != rule:
                 continue
             blob = json.dumps(finding, ensure_ascii=False)
-            if not needle or needle in blob:
-                matched = True
-                break
+            if needle and needle not in blob:
+                continue
+            # Rule + text match; now pin severity/confidence when the contract asks.
+            if want_sev and finding.get("severity") != want_sev:
+                sev_mismatch = f"severity {finding.get('severity')!r} != {want_sev!r}"
+                continue
+            if want_conf and finding.get("confidence") != want_conf:
+                sev_mismatch = f"confidence {finding.get('confidence')!r} != {want_conf!r}"
+                continue
+            matched = True
+            break
         if not matched:
             detail = f" matching {needle!r}" if needle else ""
+            if sev_mismatch:
+                detail += f" [{sev_mismatch}]"
             rules = ", ".join(sorted({f.get("rule", "?") for f in findings}))
             errors.append(f"{file_name}: missing {rule}{detail}; saw [{rules}]")
 
@@ -152,6 +165,41 @@ set -e
 assert_exit "fixture contract matches expected.json" 0
 if [ "$EC" -ne 0 ]; then
   fail "fixture contract details" "$(cat "$WORK/contract.err" 2>/dev/null | tr '\n' '|' | head -c 800)"
+fi
+
+# ---------------------------------------------------------------------------
+# whitelist: a selector matching several elements suppresses ALL of them (and
+# their subtree), not just the first — the fixed semantics.
+# ---------------------------------------------------------------------------
+cat >"$WORK/wl.json" <<'EOF'
+{
+  "routes": ["/whitelist.html"],
+  "viewports": [{ "name": "desktop", "width": 1280, "height": 900, "isMobile": false, "dpr": 1 }],
+  "themes": ["light"],
+  "states": ["default"],
+  "scrollPositions": ["top"],
+  "auditConfig": { "whitelist": [".wl"] }
+}
+EOF
+set +e
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/wl.json" --out-dir "$WORK/wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+set -e
+if python3 - "$WORK/wl/findings.json" <<'PY'
+import json, sys
+findings = json.load(open(sys.argv[1], encoding="utf-8"))
+contrast = [f for f in findings if f["rule"] == "effectiveContrast"]
+# every remaining contrast finding must be on the un-whitelisted .other control
+assert contrast, "expected the un-whitelisted control to still be flagged"
+assert all(".wl" not in f["selector"] for f in contrast), \
+    f"whitelist leaked: {[f['selector'] for f in contrast]}"
+assert any("other" in f["selector"] for f in contrast), \
+    f"expected .other to survive, got {[f['selector'] for f in contrast]}"
+PY
+then
+  pass "whitelist suppresses all matching elements + subtree"
+else
+  fail "whitelist suppresses all matching elements + subtree" \
+    "$(cat "$WORK/wl/findings.json" 2>/dev/null | tr '\n' '|' | head -c 400)"
 fi
 
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"

@@ -24,6 +24,7 @@ import sys
 import os
 import json
 import argparse
+import datetime as _dt
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -55,6 +56,15 @@ def main():
     ap.add_argument("--probes", action="store_true", help="Enable MUTATING probes (double-submit). Mock/stub envs ONLY.")
     args = ap.parse_args()
 
+    # Error messages can carry page-derived text (selectors, aria-labels) that is
+    # non-ASCII; the Windows console defaults to cp949 and would raise
+    # UnicodeEncodeError mid-report. Force UTF-8 with replacement where supported.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -72,7 +82,18 @@ def main():
         sys.exit(2)
 
     cfg = load_config(args.config)
-    routes = (args.routes.split(",") if args.routes else cfg.get("routes", ["/"]))
+    raw_routes = (args.routes.split(",") if args.routes else cfg.get("routes", ["/"]))
+    # Trim whitespace and ensure a leading slash so `--routes "/ , login"` still
+    # composes into valid URLs.
+    routes = []
+    for r in raw_routes:
+        r = str(r).strip()
+        if not r:
+            continue
+        routes.append(r if r.startswith("/") else "/" + r)
+    if not routes:
+        routes = ["/"]
+    api_mock_pattern = cfg.get("apiMockPattern", "**/api/**")
     viewports = cfg.get("viewports", [
         {"name": "mobile", "width": 390, "height": 844, "isMobile": True, "dpr": 3},
         {"name": "desktop", "width": 1280, "height": 900, "isMobile": False, "dpr": 1},
@@ -117,7 +138,7 @@ def main():
                     for state in states:
                         cell = {"route": route, "viewport": vp["name"], "theme": theme, "state": state}
                         try:
-                            apply_state_route(page, state)  # mock network for empty/error/loading
+                            apply_state_route(page, state, api_mock_pattern)  # mock network for empty/error/loading
                             response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
                             if response and response.status >= 400:
                                 raise RuntimeError(f"HTTP {response.status} loading {url}")
@@ -129,7 +150,7 @@ def main():
                             except Exception:
                                 pass
                             if args.probes and state == "default":
-                                run_probes(page)
+                                run_probes(page, api_mock_pattern)
 
                             cell_findings = []
                             for sp in scroll_positions:
@@ -164,7 +185,9 @@ def main():
     findings = dedupe_global(all_findings)
     (out_dir / "findings.json").write_text(json.dumps(findings, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "coverage.json").write_text(json.dumps({
-        "base_url": args.base_url, "matrix": coverage_cells,
+        "base_url": args.base_url,
+        "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "matrix": coverage_cells,
         "totals": count_sev(findings),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -182,23 +205,30 @@ def main():
 
 
 # ----- state + interaction helpers -----
-def apply_state_route(page, state):
-    """Route mocks for data states. Customize the URL pattern per project in config."""
+def apply_state_route(page, state, api_pattern="**/api/**"):
+    """Route mocks for data states. Override the URL glob with `apiMockPattern` in config."""
     try:
-        page.unroute("**/api/**")
+        page.unroute(api_pattern)
     except Exception:
         pass
     if state == "empty":
-        page.route("**/api/**", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route(api_pattern, lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
     elif state == "error":
-        page.route("**/api/**", lambda r: r.fulfill(status=503, content_type="application/json",
+        page.route(api_pattern, lambda r: r.fulfill(status=503, content_type="application/json",
                                                      body='{"error":"Service Unavailable"}'))
     elif state == "loading":
-        page.route("**/api/**", lambda r: None)  # never fulfilled -> stuck loading
+        page.route(api_pattern, lambda r: None)  # never fulfilled -> stuck loading
 
 
-def run_probes(page):
-    """MUTATING probes — only call against mocked/stubbed environments."""
+def run_probes(page, api_pattern="**/api/**"):
+    """MUTATING probes — double-submit against a HELD (pending) API mock so the
+    second click lands while the first request is in flight, exercising the
+    in-flight guard. Installs the mock itself so it never fires against a real
+    backend, resolving the "mock envs only" caveat for the default state."""
+    try:
+        page.route(api_pattern, lambda r: None)  # hold every matching request pending
+    except Exception:
+        pass
     try:
         page.evaluate("""() => {
           const btn = document.querySelector('button[type=submit],[type=submit],form button');

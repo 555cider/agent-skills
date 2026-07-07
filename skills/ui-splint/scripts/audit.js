@@ -122,7 +122,7 @@
 
     // suppress whitelist + baseline
     var clean = findings.filter(function (f) {
-      if (cfg.whitelist.some(function (s) { return safeMatch(f.selector, s); })) return false;
+      if (cfg.whitelist.some(function (s) { return whitelisted(f, s); })) return false;
       if (cfg.baseline.some(function (b) { return b.rule === f.rule && b.selector === f.selector; })) return false;
       return true;
     });
@@ -146,7 +146,7 @@
         state: (userConfig && userConfig.state) || 'default',
         isMobile: isMobile,
         scrollY: root.scrollY,
-        ts: null // caller stamps; Date is intentionally not read here
+        ts: null // per-report; Date is not read in-page. Runner stamps coverage.generated_at.
       },
       coverage: {
         rulesRun: rulesRun,
@@ -938,7 +938,18 @@
     return parts.join(' > ');
   }
   function cssEscape(s) { return String(s).replace(/([^a-zA-Z0-9_-])/g, '\\$1'); }
-  function safeMatch(selector, test) { try { return document.querySelector(selector) && document.querySelector(test) === document.querySelector(selector); } catch (e) { return false; } }
+  // A finding is whitelisted when its own element matches, or sits inside, a
+  // whitelist selector's subtree. We resolve the finding's specific cssPath (not
+  // the generic whitelist selector) and walk up via closest(), so a whitelist of
+  // `.btn` suppresses findings on every `.btn` and their contents — not just the
+  // first `.btn` on the page (the old identity check). Page-level findings whose
+  // selector is 'html' are only suppressed by a selector that matches <html>.
+  function whitelisted(finding, sel) {
+    try {
+      var el = document.querySelector(finding.selector);
+      return !!(el && el.closest(sel));
+    } catch (e) { return false; }
+  }
   function mk(rule, severity, confidence, selector, message, measured, threshold, rect, suggestedFix) {
     return { rule: rule, severity: severity, confidence: confidence, selector: selector, message: message,
       measured: measured || {}, threshold: threshold || {}, rect: rect || null, suggestedFix: suggestedFix || null };

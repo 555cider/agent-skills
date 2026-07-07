@@ -20,7 +20,7 @@ findings) and `coverage.json` (the matrix that was actually exercised).
   "collapsePx": 3,
   "mediaAspectTolerance": 0.05,
   "authedNavWords": ["my", "account", "마이", "..."],
-  "whitelist": ["#known-ok"],            // CSS selectors to drop entirely
+  "whitelist": ["#known-ok", ".third-party-widget"], // suppress findings on elements matching these OR inside their subtree
   "baseline": [{ "rule": "effectiveContrast", "selector": "..." }], // approved findings to suppress
   "maxFindingsPerRule": 60,
   "maxPolish": 15
@@ -35,7 +35,8 @@ findings) and `coverage.json` (the matrix that was actually exercised).
     "url": "http://localhost:3000/login",
     "route": "/login", "theme": "dark", "state": "default",
     "viewport": { "w": 390, "h": 844, "dpr": 3 },
-    "isMobile": true, "scrollY": 0, "ts": null   // caller stamps ts (Date is not read in-page)
+    "isMobile": true, "scrollY": 0, "ts": null   // per-report meta; Date is not read in-page.
+    // The aggregate timestamp is stamped once by the runner as coverage.generated_at.
   },
   "coverage": {
     "rulesRun": ["effectiveContrast", "..."],
@@ -79,6 +80,7 @@ findings) and `coverage.json` (the matrix that was actually exercised).
 ```jsonc
 {
   "base_url": "http://localhost:3000",
+  "generated_at": "2026-07-07T03:00:00.000Z",   // runner stamps run time (UTC ISO-8601)
   "matrix": [
     { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default",
       "status": "checked", "counts": { "Fail": 1, "Risk": 0, "Polish": 0 } },
@@ -88,6 +90,14 @@ findings) and `coverage.json` (the matrix that was actually exercised).
   "totals": { "Fail": 1, "Risk": 0, "Polish": 0 }
 }
 ```
+
+### the synthetic `coverage` rule
+
+When a single rule produces more than `maxFindingsPerRule` findings, the extras are dropped
+and one bookkeeping finding is emitted with `rule: "coverage"`, `severity: "Polish"`, noting how
+many were capped. It is not a UI defect — it flags a repeated defect worth fixing at the
+shared-component level. Consumers filtering by the detector rules in `audit-rules.md` should
+expect this extra rule name.
 
 A matrix cell with `status` other than `checked`, or any rule in `rulesSkipped`, must be
 reported as **Not verified** — it is not coverage.

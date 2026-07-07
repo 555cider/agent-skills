@@ -63,8 +63,10 @@ function findChrome() {
   }
   const abs = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    'C:/Program Files/Google/Chrome/Application/chrome.exe'];
-  for (const a of abs) if (existsSync(a)) return a;
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    (process.env.LOCALAPPDATA || '') + '/Google/Chrome/Application/chrome.exe'];
+  for (const a of abs) if (a && existsSync(a)) return a;
   return 'google-chrome';
 }
 
@@ -116,11 +118,11 @@ class CDP {
       this.ws.send(JSON.stringify(payload));
     });
   }
-  once(method, sessionId, timeout = 20000) {
+  once(method, sessionId, timeout = 20000, predicate = null) {
     return new Promise((resolve, reject) => {
       const to = setTimeout(() => { reject(new Error('event timeout: ' + method)); cleanup(); }, timeout);
       const w = msg => {
-        if (msg.method === method && (!sessionId || msg.sessionId === sessionId)) {
+        if (msg.method === method && (!sessionId || msg.sessionId === sessionId) && (!predicate || predicate(msg.params))) {
           clearTimeout(to); resolve(msg.params); return true;
         }
         return false;
@@ -163,7 +165,10 @@ try {
               { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
             await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INIT }, sessionId);
             const loaded = cdp.once('Page.loadEventFired', sessionId, 20000).catch(() => null);
-            const mainResponse = cdp.once('Network.responseReceived', sessionId, 20000).catch(() => null);
+            // Match the MAIN DOCUMENT response, not merely the first network response
+            // to arrive (a redirect, prefetch, or fast subresource can precede it).
+            const mainResponse = cdp.once('Network.responseReceived', sessionId, 20000,
+              p => p && p.type === 'Document').catch(() => null);
             const nav = await cdp.send('Page.navigate', { url }, sessionId);
             if (nav.errorText) throw new Error(`navigation failed for ${url}: ${nav.errorText}`);
             await loaded;
@@ -211,7 +216,12 @@ try {
   }
 } finally {
   try { cdp.ws.close(); } catch {}
-  try { proc.kill(); } catch {}
+  // On Windows a bare kill can orphan the --headless child processes; kill the
+  // whole tree by PID.
+  try {
+    if (process.platform === 'win32' && proc.pid) spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
+    else proc.kill();
+  } catch {}
 }
 
 // global dedupe with instance counts
@@ -222,7 +232,7 @@ for (const f of allFindings) {
 }
 const findings = [...by.values()];
 writeFileSync(join(outDir, 'findings.json'), JSON.stringify(findings, null, 2));
-writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({ base_url: baseUrl, matrix, totals: countSev(findings) }, null, 2));
+writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({ base_url: baseUrl, generated_at: new Date().toISOString(), matrix, totals: countSev(findings) }, null, 2));
 
 const totals = countSev(findings);
 console.log(`\nUI Splint: ${JSON.stringify(totals)} across ${matrix.length} cells -> ${outDir}/findings.json`);
