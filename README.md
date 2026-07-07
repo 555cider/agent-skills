@@ -17,24 +17,28 @@ for the wiring model — `install.sh` symlinks this directory into
 
 ## Used by
 
-Each harness's skill dir links to this directory (POSIX symlink on
-macOS/Linux, NTFS directory junction on Windows — see the root README for
-the mechanism) so the canonical implementation stays in one place. Edit
-the canonical files and both harnesses pick up the change immediately.
+Each harness's skill dir is a single **whole-directory** link to
+`~/.agents/skills/peer-review/` (POSIX symlink on macOS/Linux, NTFS
+directory junction on Windows — see the root README for the mechanism), so
+the canonical implementation stays in one place. `install.sh` creates that
+one link per harness; it does not link individual files. Edit the canonical
+files and both harnesses pick up the change immediately.
 
-- **Claude Code:** `~/.claude/skills/peer-review/{SKILL.md,scripts}` →
-  links here. Slash command: `/peer-review`. Defaults `--reviewer=codex`.
-- **Codex CLI:** `~/.codex/skills/peer-review/{SKILL.md,scripts}` → links
-  here. Wire up via `~/.codex/AGENTS.md` or codex's skill/plugin mechanism.
-  The SKILL.md instructs codex to exclude itself from the reviewer list
-  (codex reviewing codex defeats the purpose).
+- **Claude Code:** `~/.claude/skills/peer-review/` → links to
+  `~/.agents/skills/peer-review/`. Slash command: `/peer-review`. Defaults `--reviewer=codex`.
+- **Codex CLI:** `~/.codex/skills/peer-review/` → links to
+  `~/.agents/skills/peer-review/`. Wire up via `~/.codex/AGENTS.md` or codex's
+  skill/plugin mechanism. The SKILL.md instructs codex to exclude itself from
+  the reviewer list (codex reviewing codex defeats the purpose).
 
 ## Porting to a new harness
 
-1. Create the harness skill dir (e.g. `~/.cursor/skills/peer-review/`).
-2. Link `SKILL.md` → `~/.agents/skills/peer-review/SKILL.md`.
-3. Link `scripts` → `~/.agents/skills/peer-review/scripts`.
-4. If the harness has its own behavioral policy (e.g. allows proactive
+1. Ensure the skill is installed at `~/.agents/skills/peer-review/` (run
+   `install.sh peer-review`).
+2. Create a single whole-directory link `~/.<harness>/skills/peer-review/` →
+   `~/.agents/skills/peer-review/` (symlink, or `mklink /J` junction on
+   Windows). `install.sh` does this automatically for detected harnesses.
+3. If the harness has its own behavioral policy (e.g. allows proactive
    self-invocation), add a paragraph for it under "When to self-invoke" in
    the canonical SKILL.md — the model picks the branch matching its harness.
 
