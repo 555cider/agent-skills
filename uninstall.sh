@@ -8,12 +8,17 @@
 #   ./uninstall.sh -h | --help           # this help
 #
 # Removes, for each <name>:
-#   ~/.claude/skills/<name>        (harness link or directory)
-#   ~/.codex/skills/<name>         (harness link or directory)
+#   ~/.claude/skills/<name>        (harness link/junction only)
+#   ~/.codex/skills/<name>         (harness link/junction only)
 #   ~/.agents/skills/<name>/       (the installed skill directory)
 #
-# Safety: refuses to delete a ~/.agents/skills/<name>/ git clone that has
-# uncommitted changes or unpushed commits. Plain synced directories are removed.
+# Safety:
+#  - Harness paths are removed only when they are a symlink or a junction that
+#    resolves into ~/.agents/skills — i.e. a link install.sh created. A real
+#    directory there (a third-party skill sharing the name, or an old copy) is
+#    skipped with a warning; remove it manually.
+#  - Refuses to delete a ~/.agents/skills/<name>/ git clone that has uncommitted
+#    changes or unpushed commits. Plain synced directories are removed.
 # Commit/push or `rm -rf` manually to override a protected clone.
 #
 # `--list` and `--all` enumerate this monorepo's skills/<name>/SKILL.md entries,
@@ -22,13 +27,38 @@
 # remove them with their own tooling, or pass an explicit <name>.
 #
 # Idempotent: targets that are already absent are reported and skipped.
-# Works on POSIX symlinks, NTFS junctions, and plain directories.
+# Works on POSIX symlinks and NTFS junctions; real harness directories are
+# left untouched (see Safety above).
 # --- END USAGE ---
 set -euo pipefail
 
-ROOTS=("$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.agents/skills")
+AGENTS_ROOT="$HOME/.agents/skills"
+HARNESS_ROOTS=("$HOME/.claude/skills" "$HOME/.codex/skills")
+ROOTS=("${HARNESS_ROOTS[@]}" "$AGENTS_ROOT")
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_SRC="$REPO_ROOT/skills"
+
+# resolve_phys <path>: print the physical (symlink/junction-followed) absolute
+# path in POSIX form, or nothing if the path can't be entered. Mirrors
+# install.sh so junction detection stays consistent across the two scripts.
+resolve_phys() {
+  ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null
+}
+
+# points_into_agents <path>: true when <path> is a symlink/junction that
+# resolves under ~/.agents/skills — i.e. a link install.sh created, not a real
+# third-party directory that merely shares a skill name.
+points_into_agents() {
+  local phys agents_phys
+  agents_phys="$(resolve_phys "$AGENTS_ROOT")"
+  [ -n "$agents_phys" ] || return 1
+  phys="$(resolve_phys "$1")"
+  [ -n "$phys" ] || return 1
+  case "$phys" in
+    "$agents_phys"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 usage() {
   # Extract from first comment after shebang up to the END USAGE sentinel.
@@ -110,6 +140,24 @@ remove_path() {
     printf '  -        %s (not present)\n' "$path"
     return 0
   fi
+
+  # Harness roots hold only links/junctions that install.sh created. A real
+  # directory here belongs to something else (a third-party skill, or an old
+  # privilege-less `ln -s` copy) — refuse to delete it, symmetric with
+  # install.sh's refuse-to-overwrite. A symlink or agents-pointing junction is
+  # ours and is safe to unlink.
+  case "$path" in
+    "$AGENTS_ROOT"/*) : ;;  # the real skill directory — handled below
+    *)
+      if [ ! -L "$path" ] && ! points_into_agents "$path"; then
+        printf '  SKIP %s (refusing — real directory, not a link this tool created; rm -rf manually)\n' "$path" >&2
+        return 1
+      fi
+      rm -rf -- "$path"
+      printf '  removed  %s\n' "$path"
+      return 0
+      ;;
+  esac
 
   # Protect against silent loss of user work in the per-skill clone.
   # Harness links (~/.claude/skills, ~/.codex/skills) hold no state of

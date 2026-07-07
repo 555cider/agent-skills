@@ -39,8 +39,12 @@ jobs:
 
       - name: Split each skill into split/<name>
         run: |
-          set -euo pipefail
+          # NB: no `set -e` — one skill's split/push failure must NOT abort the
+          # rest of the matrix. Failures are collected and reported at the end so
+          # the remaining skills still get republished on this run.
+          set -uo pipefail
           shopt -s nullglob
+          failed=()
           for dir in skills/*/; do
             name="$(basename "$dir")"
             branch="split/$name"
@@ -48,8 +52,17 @@ jobs:
             # subtree split rebuilds history of skills/<name>/ as if that
             # dir had always been the repo root. -b creates/updates a local
             # branch ref at the synthesized tip.
-            git subtree split --prefix="skills/$name" -b "$branch"
-            git push --force origin "$branch"
-            git branch -D "$branch"
+            if git subtree split --prefix="skills/$name" -b "$branch" \
+               && git push --force origin "$branch"; then
+              git branch -D "$branch" 2>/dev/null || true
+            else
+              echo "::error::failed to split/push $branch"
+              failed+=("$name")
+              git branch -D "$branch" 2>/dev/null || true
+            fi
             echo "::endgroup::"
           done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::split failed for: ${failed[*]}"
+            exit 1
+          fi

@@ -94,6 +94,15 @@ done
 # silently installing nothing.
 if [ ${#SELECTED[@]} -gt 0 ]; then
   for name in "${SELECTED[@]}"; do
+    # Reject empty / path-traversal / nested names up front: `[ -d "$SKILLS_SRC/../x" ]`
+    # can be true yet the install loop only matches basenames of skills/*/, so such
+    # a name would pass validation and then silently install nothing.
+    case "$name" in
+      ""|*/*|.|..)
+        echo "error: invalid skill name: '$name'" >&2
+        exit 2
+        ;;
+    esac
     if [ ! -d "$SKILLS_SRC/$name" ]; then
       echo "error: skill not found: $name" >&2
       echo "       available:" >&2
@@ -191,6 +200,12 @@ clone_skill() {
     printf '  note %s is not published; syncing local %s instead\n' "$branch" "$SKILLS_SRC/$name"
     sync_local_skill "$name"
     return $?
+  elif [ "$branch_status" != "0" ]; then
+    # git ls-remote: 0 = ref found, 2 = ref absent (unpublished). Anything else
+    # (e.g. 128) is a network/auth failure — do NOT misdiagnose it as unpublished.
+    printf '  WARN could not reach %s to check for %s (git ls-remote exit %s).\n' "$REMOTE_URL" "$branch" "$branch_status" >&2
+    printf '       Check your network/credentials, or run `./install.sh --local %s` to install from this checkout.\n' "$name" >&2
+    return 1
   fi
 
   # `--single-branch -b split/<name>` fetches only that branch's history,
@@ -207,8 +222,10 @@ clone_skill() {
 }
 
 # sync_local_skill <name>: copy the current checkout's skills/<name>/ into
-# ~/.agents/skills/<name>/. Existing .git metadata is preserved so maintainers
-# can use this against an installed split clone while testing local edits.
+# ~/.agents/skills/<name>/. Only .git metadata is preserved; every other file in
+# the destination working tree is removed and replaced from the checkout, so any
+# UNCOMMITTED edits made directly in an installed split clone are destroyed. Edit
+# in the monorepo checkout, not the installed clone.
 sync_local_skill() {
   local name="$1"
   local src="$SKILLS_SRC/$name"
@@ -223,6 +240,15 @@ sync_local_skill() {
   if [ -e "$dest" ] && [ ! -d "$dest" ]; then
     printf '  WARN %s exists and is not a directory — skipping\n' "$dest" >&2
     return 1
+  fi
+
+  # If the destination is a clone with uncommitted work, warn before we wipe it.
+  if [ -d "$dest/.git" ] || [ -f "$dest/.git" ]; then
+    if ! git -C "$dest" diff --quiet 2>/dev/null \
+       || ! git -C "$dest" diff --cached --quiet 2>/dev/null \
+       || [ -n "$(git -C "$dest" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+      printf '  WARN %s has uncommitted changes; local sync will overwrite its working tree\n' "$dest" >&2
+    fi
   fi
 
   mkdir -p "$dest"

@@ -94,6 +94,8 @@ def main() -> int:
         require(eval_dir.is_dir(), f"{skill}/evals is missing")
         validate_trigger_evals(skill, eval_dir / "trigger-evals.json")
         validate_behavior_evals(skill, eval_dir / "behavior-evals.json")
+        # Every skill must ship an executable regression suite.
+        require((skill_dir / "tests" / "run.sh").is_file(), f"{skill}/tests/run.sh is missing")
 
     print(f"OK skill evals ({len(skill_dirs)} skills)")
     return 0

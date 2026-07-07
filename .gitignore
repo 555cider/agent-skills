@@ -8,9 +8,14 @@ tests/*
 !tests/validate-skill-evals.py
 # but DO track lightweight repo-level install tests and skill test suites.
 !skills/**/tests/
+!skills/**/tests/run.sh
 !skills/**/tests/README.md
 !skills/**/tests/expected.json
 !skills/**/tests/fixtures/
 !skills/**/tests/fixtures/**
+
+# local state dirs written by the skills when run from a clone
 .ui-splint/
 .playwright-mcp/
+.peer-review/
+.remember/
