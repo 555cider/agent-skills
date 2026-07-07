@@ -663,6 +663,14 @@ def default_root(graph: Path) -> Path:
 
 def main(argv: list[str]) -> int:
     CHANGES.clear()  # reset the module-level accumulator so repeated in-process calls don't report stale changes
+    # The tree/roadmap output uses box-drawing and arrow glyphs; the Windows
+    # console defaults to cp949 and would crash with UnicodeEncodeError mid-print.
+    # Force UTF-8 with replacement where the runtime supports reconfigure().
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(description="Check or fix a plan graph.")
     parser.add_argument("graph", type=Path)
     parser.add_argument("--fix", action="store_true", help="repair missing-file graph drift")
