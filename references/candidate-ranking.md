@@ -6,8 +6,10 @@ code. Score 0..1; keep the reasoning so it can be surfaced in `candidateFiles[].
 ## Signals
 
 **High value** (a match here is usually decisive)
-- Exact selected visible text match.
-- `aria-label`, `data-testid`, `id`, `name` attribute value match.
+- Exact selected visible text match (against `element.text`, which is truncated to 300 chars — for
+  longer content, fall back to a substring/prefix match).
+- `aria-label`, `data-testid`, `id`, `name` attribute value match — exposed on the payload as
+  `element.ariaLabel`, `element.selector` (for `data-testid`), `element.id`, and `element.name`.
 - Unique `className` or a distinctive Tailwind class sequence match.
 - Nearby heading or button label match (from `nearbyText`).
 - Route segment match (URL path → page/route file).

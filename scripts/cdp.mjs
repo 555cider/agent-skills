@@ -17,7 +17,14 @@ const MATCH = opt("match", "");
 const src = () => readFileSync(ASSET, "utf8");
 
 async function pageTarget() {
-  const list = await (await fetch(BASE + "/json")).json();
+  let list;
+  try {
+    list = await (await fetch(BASE + "/json")).json();
+  } catch {
+    // Chrome not listening on the debug port (not launched, wrong port, or a
+    // non-debug Chrome). Caller turns null into the friendly NO_TARGET path.
+    return null;
+  }
   const pages = list.filter((t) => t.type === "page" && t.webSocketDebuggerUrl);
   return (MATCH ? pages.find((p) => (p.url || "").includes(MATCH)) : null) || pages[0];
 }
@@ -30,7 +37,8 @@ function connect(ws) {
     if (m.id && pending.has(m.id)) { const { res, rej } = pending.get(m.id); pending.delete(m.id); m.error ? rej(new Error(JSON.stringify(m.error))) : res(m.result); }
   });
   const send = (method, params = {}) => new Promise((res, rej) => { const mid = ++id; pending.set(mid, { res, rej }); sock.send(JSON.stringify({ id: mid, method, params })); });
-  return { ready, send };
+  const close = () => { try { sock.close(); } catch { } };
+  return { ready, send, close };
 }
 const evalJs = (c, expression, rbv = true) => c.send("Runtime.evaluate", { expression, returnByValue: rbv, awaitPromise: true });
 async function attach() {
@@ -43,7 +51,11 @@ async function attach() {
 function chromeBin() {
   if (process.env.CHROME && existsSync(process.env.CHROME)) return process.env.CHROME;
   const cands = process.platform === "win32"
-    ? ["C:/Program Files/Google/Chrome/Application/chrome.exe", "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"]
+    ? [
+        "C:/Program Files/Google/Chrome/Application/chrome.exe",
+        "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+        (process.env.LOCALAPPDATA || "") + "/Google/Chrome/Application/chrome.exe",
+      ]
     : process.platform === "darwin"
       ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"]
       : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
@@ -82,13 +94,26 @@ switch (cmd) {
           if (flag("arm")) await evalJs(c, "window.__s2p&&window.__s2p.enable&&window.__s2p.enable()");
           console.log("[keep] re-injected after reload");
         }
-      } catch { try { c = await attach(); await c.send("Page.addScriptToEvaluateOnNewDocument", { source: src() }); } catch { } }
+      } catch {
+        // Execution context / socket lost (typically a navigation). Close the
+        // dead socket before re-attaching so reloads don't leak connections or
+        // duplicate the on-new-document registration.
+        c.close();
+        try {
+          c = await attach();
+          await c.send("Page.addScriptToEvaluateOnNewDocument", { source: src() });
+          console.log("[keep] reconnected after navigation");
+        } catch { /* target gone; next tick retries */ }
+      }
     }, 1000);
     break;
   }
   case "wait": {
     // Block until the user submits a fix request in the picker; print it and exit
     // (exiting is what re-invokes a host that launched this as a background task).
+    // --timeout=<sec> bounds the wait (exit 3) so a host task can't hang forever
+    // when the picker never re-appears (e.g. `keep` isn't also running).
+    const timeoutSec = Number(opt("timeout", "0"));
     const c = await attach();
     const read = async () => {
       const r = await evalJs(c, "JSON.stringify((window.__s2p&&window.__s2p.request)||null)");
@@ -96,10 +121,18 @@ switch (cmd) {
     };
     let baseline = null;
     try { const cur = await read(); baseline = cur ? cur.seq : null; } catch { }
-    console.log("[wait] waiting for a submitted fix request…");
+    const started = Date.now();
+    console.log("[wait] waiting for a submitted fix request…" + (timeoutSec > 0 ? " (timeout " + timeoutSec + "s)" : ""));
     const iv = setInterval(async () => {
+      if (timeoutSec > 0 && (Date.now() - started) > timeoutSec * 1000) {
+        clearInterval(iv);
+        console.log("TIMEOUT (no fix submitted within " + timeoutSec + "s)");
+        process.exit(3);
+      }
       try {
         const req = await read();
+        // _seq survives reloads via sessionStorage, so a post-reload submit is
+        // strictly greater than the baseline captured here.
         if (req && req.seq !== baseline) {
           clearInterval(iv);
           const full = await evalJs(c, "JSON.stringify(window.__s2p.picks||[])");
@@ -131,6 +164,6 @@ switch (cmd) {
     process.exit(0);
   }
   default:
-    console.log("usage: node cdp.mjs <launch [url] | keep [--arm] | wait | read | pick <sel> | inject [--arm] | clear> [--port=9222] [--match=<url-substr>]");
+    console.log("usage: node cdp.mjs <launch [url] | keep [--arm] | wait [--timeout=<sec>] | read | pick <sel> | inject [--arm] | clear> [--port=9222] [--match=<url-substr>]");
     process.exit(cmd ? 2 : 0);
 }
