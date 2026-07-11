@@ -54,6 +54,7 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
   unique class sequences, route), reads the best, and emits a **unified diff** —
   validated with an apply-check and never auto-applied at low confidence. Browser
   control via Playwright/CDP/MCP; self-contained, no dependency on other skills.
+  See the [DOM Picker demo](skills/dom-picker/README.md).
 
 ## Install
 

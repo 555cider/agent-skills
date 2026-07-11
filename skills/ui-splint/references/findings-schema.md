@@ -63,10 +63,18 @@ aggregates per-cell reports into `findings.json` (a flat array of findings) and
   "rect": { "x": 16, "y": 320, "w": 358, "h": 56 },  // viewport coords for an evidence crop; may be null
   "suggestedFix": "Kakao spec: #191919 text on #FEE500.",
   "scroll": "bottom",      // added by the runner: which scroll position surfaced it
-  "cell": { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default" },  // runner adds
-  "instances": 1           // runner adds: how many cells/scrolls produced the same rule+selector
+  "cell": { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default" },  // runner adds; points to the highest-severity evidence
+  "cells": [               // runner adds: distinct matrix cells that surfaced this aggregate
+    { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default" }
+  ],
+  "instances": 1           // runner adds: how many cell/scroll findings were aggregated
 }
 ```
+
+Batch runners aggregate matching `rule+selector` findings only within the same route.
+When several cells on that route produce the same aggregate, the representative finding
+and backward-compatible `cell` field come from the worst severity (`Fail` > `Risk` >
+`Polish`), while `cells` retains every affected matrix cell.
 
 ### `confidence` — how to treat each tier
 
@@ -103,8 +111,9 @@ shared-component level. Consumers filtering by the detector rules in `audit-rule
 expect this extra rule name.
 
 Cell `status` values: `checked` (audit ran on the intended state), `not-forced` (the CDP
-runner rendered the default page because it cannot mock this data state — honest, but **not
-verified**), `error` (navigation/HTTP failure, or an audit rule threw and was recorded in
-`rulesSkipped`). A cell that is anything other than `checked`, or any rule in `rulesSkipped`,
-must be reported as **Not verified** and blocks the runner's completion gate. Re-run
-`not-forced` cells with the Playwright runner or MCP route mocks to actually exercise them.
+runner cannot mock this data state, or the Playwright runner installed a mock but no request
+matched `apiMockPattern` — honest, but **not verified**), `error` (navigation/HTTP failure,
+or an audit rule threw and was recorded in `rulesSkipped`). A cell that is anything other
+than `checked`, or any rule in `rulesSkipped`, must be reported as **Not verified** and
+blocks the runner's completion gate. Re-run `not-forced` cells with a matching Playwright
+route mock or MCP route mocks to actually exercise them.

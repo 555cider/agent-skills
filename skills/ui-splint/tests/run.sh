@@ -293,5 +293,51 @@ else
   fail "CDP response filter matches navigated main frame" "Network.responseReceived must be filtered by Page.navigate frameId"
 fi
 
+# ---- Python helpers: aggregation parity + state interception proof ----
+if python3 - "$HERE/../scripts/run-ui-splint.py" <<'PY'
+import importlib.util, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("ui_splint_runner", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+def finding(route, viewport, severity):
+    return {
+        "rule": "tapTarget", "selector": "button.target", "severity": severity,
+        "message": severity, "cell": {"route": route, "viewport": viewport, "theme": "light", "state": "default"},
+    }
+
+aggregated = mod.dedupe_global([
+    finding("/one", "risk", "Risk"),
+    finding("/one", "fail", "Fail"),
+    finding("/two", "risk", "Risk"),
+])
+assert len(aggregated) == 2, aggregated
+one = next(f for f in aggregated if f["cell"]["route"] == "/one")
+assert one["severity"] == "Fail" and one["cell"]["viewport"] == "fail", one
+assert {c["viewport"] for c in one["cells"]} == {"risk", "fail"}, one
+
+class FakePage:
+    def __init__(self): self.handler = None
+    def unroute(self, pattern): self.handler = None
+    def route(self, pattern, handler): self.handler = handler
+
+class FakeRoute:
+    def fulfill(self, **kwargs): self.fulfilled = kwargs
+
+page = FakePage()
+tracker = mod.apply_state_route(page, "empty", "**/api/**")
+assert mod.state_coverage("empty", tracker, "**/api/**")[0] == "not-forced"
+route = FakeRoute()
+page.handler(route)
+assert tracker["interceptions"] == 1 and route.fulfilled["body"] == "[]"
+assert mod.state_coverage("empty", tracker, "**/api/**") == ("checked", None)
+PY
+then
+  pass "Python aggregation and state interception helpers"
+else
+  fail "Python aggregation and state interception helpers" "helper contract failed"
+fi
+
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

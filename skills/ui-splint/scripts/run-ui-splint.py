@@ -25,6 +25,7 @@ import os
 import json
 import argparse
 import datetime as _dt
+import copy
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -143,7 +144,9 @@ def main():
                     for state in states:
                         cell = {"route": route, "viewport": vp["name"], "theme": theme, "state": state}
                         try:
-                            apply_state_route(page, state, api_mock_pattern)  # mock network for empty/error/loading
+                            state_route = apply_state_route(
+                                page, state, api_mock_pattern
+                            )  # mock network for empty/error/loading
                             response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
                             if response and response.status >= 400:
                                 raise RuntimeError(f"HTTP {response.status} loading {url}")
@@ -185,7 +188,10 @@ def main():
                                 cell["status"] = "error"
                                 cell["error"] = "audit rule(s) skipped: " + "; ".join(cell_rules_skipped)
                             else:
-                                cell["status"] = "checked"
+                                status, reason = state_coverage(state, state_route, api_mock_pattern)
+                                cell["status"] = status
+                                if reason:
+                                    cell["reason"] = reason
                         except Exception as e:
                             cell["status"] = "error"
                             cell["error"] = str(e)
@@ -220,18 +226,56 @@ def main():
 
 # ----- state + interaction helpers -----
 def apply_state_route(page, state, api_pattern="**/api/**"):
-    """Route mocks for data states. Override the URL glob with `apiMockPattern` in config."""
+    """Install a state mock and return proof of whether it intercepted a request.
+
+    Merely registering a Playwright route does not prove that the rendered page
+    requested the mocked resource. Callers must only mark a non-default matrix
+    cell checked after ``interceptions`` becomes non-zero.
+    """
     try:
         page.unroute(api_pattern)
     except Exception:
         pass
+    tracker = {
+        "state": state,
+        "pattern": api_pattern,
+        "configured": state in ("empty", "error", "loading"),
+        "interceptions": 0,
+    }
+
+    def empty_handler(route):
+        tracker["interceptions"] += 1
+        route.fulfill(status=200, content_type="application/json", body="[]")
+
+    def error_handler(route):
+        tracker["interceptions"] += 1
+        route.fulfill(status=503, content_type="application/json",
+                      body='{"error":"Service Unavailable"}')
+
+    def loading_handler(route):
+        tracker["interceptions"] += 1
+        # Intentionally leave the request pending so the UI remains loading.
+        return None
+
     if state == "empty":
-        page.route(api_pattern, lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route(api_pattern, empty_handler)
     elif state == "error":
-        page.route(api_pattern, lambda r: r.fulfill(status=503, content_type="application/json",
-                                                     body='{"error":"Service Unavailable"}'))
+        page.route(api_pattern, error_handler)
     elif state == "loading":
-        page.route(api_pattern, lambda r: None)  # never fulfilled -> stuck loading
+        page.route(api_pattern, loading_handler)
+    return tracker
+
+
+def state_coverage(state, tracker, api_pattern):
+    """Return coverage status/reason from the state mock's interception proof."""
+    if state == "default" or tracker["interceptions"] > 0:
+        return "checked", None
+    if tracker["configured"]:
+        return (
+            "not-forced",
+            f"data state not forced: no request matched apiMockPattern {api_pattern!r}",
+        )
+    return "not-forced", f"data state not forced: no mock is configured for state {state!r}"
 
 
 def run_probes(page, api_pattern="**/api/**"):
@@ -274,16 +318,42 @@ def dedupe(findings):
 
 
 def dedupe_global(findings):
-    """Collapse the same rule+selector seen across scroll/cells into one with instance count."""
+    """Aggregate a rule+selector within a route, preserving its worst evidence.
+
+    Route is part of the identity because the same selector on two screens need
+    not share a root cause. Within one route, the representative is the highest
+    severity finding and ``cell`` remains its evidence pointer. ``cells`` records
+    every distinct matrix cell that surfaced the aggregate.
+    """
+    severity_rank = {"Polish": 1, "Risk": 2, "Fail": 3}
     by = {}
     for f in findings:
-        k = (f.get("rule"), f.get("selector"))
-        if k in by:
-            by[k]["instances"] = by[k].get("instances", 1) + 1
-        else:
-            f["instances"] = 1
-            by[k] = f
+        cell = copy.deepcopy(f.get("cell")) if isinstance(f.get("cell"), dict) else None
+        route = cell.get("route") if cell else None
+        k = (route, f.get("rule"), f.get("selector"))
+        if k not in by:
+            item = copy.deepcopy(f)
+            item["instances"] = 1
+            item["cells"] = [cell] if cell else []
+            by[k] = item
+            continue
+
+        current = by[k]
+        current["instances"] = current.get("instances", 1) + 1
+        if cell and not any(same_cell(cell, seen) for seen in current["cells"]):
+            current["cells"].append(cell)
+        if severity_rank.get(f.get("severity"), 0) > severity_rank.get(current.get("severity"), 0):
+            replacement = copy.deepcopy(f)
+            replacement["instances"] = current["instances"]
+            replacement["cells"] = current["cells"]
+            by[k] = replacement
     return list(by.values())
+
+
+def same_cell(left, right):
+    """Compare matrix-cell identity without depending on counts/status metadata."""
+    fields = ("route", "viewport", "theme", "state")
+    return all(left.get(field) == right.get(field) for field in fields)
 
 
 def count_sev(findings):

@@ -59,7 +59,9 @@ Use the user's language in reports. Group findings by failure mode, not discover
    - **Batch, Playwright (if already set up):** `python3 scripts/run-ui-splint.py <url> --config audit-config.json`
      — same `findings.json`/`coverage.json` shape, and additionally **forces data states**
      (mocks `**/api/**` for empty/error/loading), waits on `waitForSelector`/`document.fonts.ready`,
-     and supports `--probes`. This is the runner to use when the matrix has non-`default` states.
+     and supports `--probes`. A non-default cell is `checked` only when a request actually
+     matches `apiMockPattern`; otherwise it is `not-forced` and blocks completion. This is
+     the runner to use when the matrix has non-`default` states.
      Needs `pip install playwright && playwright install chromium`.
 3. **Resolve.** Any finding with `confidence: needs-visual` (text over a gradient/image,
    unmeasured CLS) must be confirmed by pixel-sampling a screenshot crop or installing

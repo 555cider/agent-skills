@@ -45,6 +45,28 @@ class MemoryStoreError(Exception):
     pass
 
 
+def non_negative_int(value: str) -> int:
+    """Parse an integer CLI value that must not be negative."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a non-negative integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
+
+
+def calendar_date(value: str) -> str:
+    """Parse a real calendar date in the exact YYYY-MM-DD wire format."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise argparse.ArgumentTypeError("must be a real date in YYYY-MM-DD format")
+    try:
+        dt.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a real date in YYYY-MM-DD format") from exc
+    return value
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1640,12 +1662,12 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("--query", action="append", help="Keyword to search for")
     find.add_argument("--include-auto", action="store_true", help="Include auto inbox notes even without keyword matches")
     find.add_argument("--include-topics", action="store_true", help="Include all topic files even without keyword matches")
-    find.add_argument("--budget-lines", type=int, default=40)
+    find.add_argument("--budget-lines", type=non_negative_int, default=40)
     find.add_argument("--scope", choices=sorted(SCOPES), default=None, help="Filter by scope")
     find.add_argument("--type", default=None, help="Filter by memory note type or OKF topic type")
     find.add_argument("--priority", choices=sorted(PRIORITIES), default=None, help="Filter by priority")
     find.add_argument("--source", choices=sorted(SOURCES), default=None, help="Filter by source")
-    find.add_argument("--since", help="Filter records on or after YYYY-MM-DD")
+    find.add_argument("--since", type=calendar_date, help="Filter records on or after YYYY-MM-DD")
     find.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
     find.set_defaults(func=command_find)
 
@@ -1661,7 +1683,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify", help="Update last_verified on a canonical memory entry")
     verify.add_argument("--cwd", help="Project directory")
     verify.add_argument("--id", required=True, help="Canonical memory id to verify")
-    verify.add_argument("--date", help="Verification date in YYYY-MM-DD format; defaults to today")
+    verify.add_argument("--date", type=calendar_date, help="Verification date in YYYY-MM-DD format; defaults to today")
     verify.set_defaults(func=command_verify)
 
     list_cmd = sub.add_parser("list", help="List memory notes")
@@ -1680,7 +1702,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = sub.add_parser("review", help="Review memory health and maintenance candidates without mutating")
     review.add_argument("--cwd", help="Project directory")
-    review.add_argument("--stale-days", type=int, default=90, help="Report canonical entries older than N days")
+    review.add_argument("--stale-days", type=non_negative_int, default=90, help="Report canonical entries older than N days")
     review.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
     review.set_defaults(func=command_review)
 
@@ -1723,14 +1745,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     cleanup = sub.add_parser("cleanup", help="Remove old inbox notes")
     cleanup.add_argument("--cwd", help="Project directory")
-    cleanup.add_argument("--older-than-days", type=int, default=90, help="Remove notes older than N days")
+    cleanup.add_argument("--older-than-days", type=non_negative_int, default=90, help="Remove notes older than N days")
     cleanup.add_argument("--dry-run", action="store_true", help="Show what would be removed without deleting")
     cleanup.add_argument("--all-projects", action="store_true", help="Prune across every project (default: current repo + global only)")
     cleanup.set_defaults(func=command_cleanup)
 
     check = sub.add_parser("check", help="Validate memory store")
     check.add_argument("--cwd", help="Project directory")
-    check.add_argument("--stale-lock-seconds", type=int, default=600)
+    check.add_argument("--stale-lock-seconds", type=non_negative_int, default=600)
     check.set_defaults(func=command_check)
 
     return parser

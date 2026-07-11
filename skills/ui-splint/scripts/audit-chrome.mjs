@@ -158,6 +158,30 @@ class CDP {
 // ---------- aggregation ----------
 function countSev(fs) { const c = { Fail: 0, Risk: 0, Polish: 0 }; for (const f of fs) if (c[f.severity] != null) c[f.severity]++; return c; }
 function slug(r) { return r.replace(/^\//, '').replace(/\//g, '_') || 'root'; }
+const severityRank = { Polish: 1, Risk: 2, Fail: 3 };
+function sameCell(a, b) {
+  return ['route', 'viewport', 'theme', 'state'].every(field => a && b && a[field] === b[field]);
+}
+function aggregateFindings(source) {
+  const by = new Map();
+  for (const finding of source) {
+    const cell = finding.cell ? structuredClone(finding.cell) : null;
+    // Route is part of the aggregate identity: an identical component selector
+    // on two screens is not necessarily the same root cause.
+    const key = JSON.stringify([cell && cell.route, finding.rule, finding.selector]);
+    if (!by.has(key)) {
+      by.set(key, { ...structuredClone(finding), instances: 1, cells: cell ? [cell] : [] });
+      continue;
+    }
+    const current = by.get(key);
+    current.instances++;
+    if (cell && !current.cells.some(seen => sameCell(cell, seen))) current.cells.push(cell);
+    if ((severityRank[finding.severity] || 0) > (severityRank[current.severity] || 0)) {
+      by.set(key, { ...structuredClone(finding), instances: current.instances, cells: current.cells });
+    }
+  }
+  return [...by.values()];
+}
 async function waitFor(fn, timeout = 20000, interval = 50) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -279,13 +303,8 @@ try {
   } catch {}
 }
 
-// global dedupe with instance counts
-const by = new Map();
-for (const f of allFindings) {
-  const k = f.rule + '|' + f.selector;
-  if (by.has(k)) by.get(k).instances++; else { f.instances = 1; by.set(k, f); }
-}
-const findings = [...by.values()];
+// Aggregate across cells while preserving routes and the worst severity evidence.
+const findings = aggregateFindings(allFindings);
 writeFileSync(join(outDir, 'findings.json'), JSON.stringify(findings, null, 2));
 writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({ base_url: baseUrl, generated_at: new Date().toISOString(), matrix, totals: countSev(findings) }, null, 2));
 

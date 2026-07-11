@@ -17,12 +17,13 @@ const PORT = process.env.CDP_PORT || opt("port", "9222");
 const BASE = "http://localhost:" + PORT;
 const MATCH = opt("match", "");
 const src = () => readFileSync(ASSET, "utf8");
-// Atomically read + clear the in-page request queue and return it as JSON (or null when
-// empty). The page is single-threaded, so slice()+reset inside one evaluate can't race a
-// concurrent Send. Draining the WHOLE queue in one shot is what makes batching lossless.
+// Prefer the picker's public atomic drain so its queue UI is rerendered too. Keep the
+// direct queue reset as a compatibility fallback for already-injected older picker builds.
 const DRAIN =
-  "(function(){var s=window.__s2p;if(!s||!s.queue||!s.queue.length)return null;" +
-  "var o=s.queue.slice();s.queue=[];s.request=null;return JSON.stringify(o);})()";
+  "(function(){var s=window.__s2p;if(!s)return null;var o;" +
+  "if(typeof s.drainQueue==='function'){o=s.drainQueue();}" +
+  "else{if(!s.queue||!s.queue.length)return null;o=s.queue.slice();s.queue=[];s.request=null;}" +
+  "return o&&o.length?JSON.stringify(o):null;})()";
 
 async function pageTarget() {
   let list;

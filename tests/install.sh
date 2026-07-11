@@ -114,6 +114,30 @@ SKILL
     fail "expected warning for mismatched plain directory"
 }
 
+test_default_install_does_not_accept_an_unrelated_git_repo() {
+  local home="$WORK/unrelated-git-home"
+  local dest="$home/.agents/skills/agent-memory"
+
+  mkdir -p "$dest" "$home/.codex"
+  git init -q "$dest"
+  git -C "$dest" config user.email "test@example.com"
+  git -C "$dest" config user.name "Test"
+  printf 'unrelated\n' >"$dest/keep.txt"
+  git -C "$dest" add keep.txt
+  git -C "$dest" commit -qm init
+
+  HOME="$home" "$INSTALL" agent-memory >"$WORK/unrelated-git.out" 2>"$WORK/unrelated-git.err"
+  grep -Fx "unrelated" "$dest/keep.txt" >/dev/null || fail "expected unrelated git repo to be preserved"
+  [ ! -e "$home/.codex/skills/agent-memory" ] || fail "expected no harness link to an unrelated git repo"
+  grep -F "not this skill's managed split/agent-memory clone" "$WORK/unrelated-git.err" >/dev/null ||
+    fail "expected install to reject an unrelated git repo"
+
+  HOME="$home" "$INSTALL" --local agent-memory >"$WORK/unrelated-local.out" 2>"$WORK/unrelated-local.err"
+  grep -Fx "unrelated" "$dest/keep.txt" >/dev/null || fail "expected local install to preserve unrelated git repo"
+  grep -F "refusing to overwrite it" "$WORK/unrelated-local.err" >/dev/null ||
+    fail "expected local install to reject an unrelated git repo"
+}
+
 test_uninstall_removes_local_fallback_install() {
   local home="$WORK/uninstall-home"
   local out="$WORK/uninstall.out"
@@ -158,11 +182,36 @@ test_uninstall_all_removes_agent_memory_local_fallback_install() {
     fail "expected uninstall --all output to include agent-memory"
 }
 
+test_uninstall_preserves_clone_without_upstream() {
+  local home="$WORK/no-upstream-home"
+  local clone="$home/.agents/skills/test-skill"
+  local link="$home/.codex/skills/test-skill"
+
+  mkdir -p "$clone" "$(dirname "$link")"
+  git init -q "$clone"
+  git -C "$clone" config user.email "test@example.com"
+  git -C "$clone" config user.name "Test"
+  printf 'tracked\n' >"$clone/tracked.txt"
+  git -C "$clone" add tracked.txt
+  git -C "$clone" commit -qm init
+  ln -s "$clone" "$link"
+
+  if HOME="$home" "$UNINSTALL" test-skill >"$WORK/no-upstream.out" 2>"$WORK/no-upstream.err"; then
+    fail "expected uninstall to refuse a clone without an upstream"
+  fi
+  [ -d "$clone/.git" ] || fail "expected uninstall to preserve a clone without an upstream"
+  [ -L "$link" ] || fail "expected protected clone to keep its harness link"
+  grep -F "clone has no upstream" "$WORK/no-upstream.err" >/dev/null ||
+    fail "expected uninstall refusal to explain the missing upstream"
+}
+
 test_list_includes_agent_memory
 test_uninstall_list_includes_agent_memory
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
 test_default_fallback_does_not_overwrite_mismatched_plain_directory
+test_default_install_does_not_accept_an_unrelated_git_repo
 test_uninstall_removes_local_fallback_install
 test_uninstall_all_removes_agent_memory_local_fallback_install
+test_uninstall_preserves_clone_without_upstream
 
 echo "install tests passed"

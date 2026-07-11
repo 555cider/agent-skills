@@ -163,9 +163,19 @@ clone_skill() {
   local dest="$AGENTS_DIR/$name"
   local branch="split/$name"
   local branch_status
+  local existing_branch existing_upstream existing_origin
 
   if [ -e "$dest" ]; then
     if [ -d "$dest/.git" ] || [ -f "$dest/.git" ]; then
+      existing_branch="$(git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+      existing_upstream="$(git -C "$dest" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+      existing_origin="$(git -C "$dest" remote get-url origin 2>/dev/null || true)"
+      if [ "$existing_branch" != "$branch" ] \
+         || [ "$existing_upstream" != "origin/$branch" ] \
+         || [ "$existing_origin" != "$REMOTE_URL" ]; then
+        printf '  WARN %s is a git repository, but not this skill\047s managed %s clone — skipping\n' "$dest" "$branch" >&2
+        return 1
+      fi
       printf '  ok   %s (already cloned — `cd %s && git pull` to update)\n' "$dest" "$dest"
       return 0
     fi
@@ -223,9 +233,9 @@ clone_skill() {
 
 # sync_local_skill <name>: copy the current checkout's skills/<name>/ into
 # ~/.agents/skills/<name>/. Only .git metadata is preserved; every other file in
-# the destination working tree is removed and replaced from the checkout, so any
-# UNCOMMITTED edits made directly in an installed split clone are destroyed. Edit
-# in the monorepo checkout, not the installed clone.
+# the matching destination working tree is replaced from the checkout. An
+# unrelated directory or a git clone with local changes is refused; edit in the
+# monorepo checkout, not the installed clone.
 sync_local_skill() {
   local name="$1"
   local src="$SKILLS_SRC/$name"
@@ -242,12 +252,19 @@ sync_local_skill() {
     return 1
   fi
 
-  # If the destination is a clone with uncommitted work, warn before we wipe it.
+  if [ -d "$dest" ] && ! local_skill_dir_matches "$dest" "$name"; then
+    printf '  WARN %s is not a recognized local %s skill — refusing to overwrite it\n' "$dest" "$name" >&2
+    return 1
+  fi
+
+  # A local refresh replaces the working tree. Refuse when a clone has local
+  # work instead of merely warning and destroying it.
   if [ -d "$dest/.git" ] || [ -f "$dest/.git" ]; then
     if ! git -C "$dest" diff --quiet 2>/dev/null \
        || ! git -C "$dest" diff --cached --quiet 2>/dev/null \
        || [ -n "$(git -C "$dest" ls-files --others --exclude-standard 2>/dev/null)" ]; then
-      printf '  WARN %s has uncommitted changes; local sync will overwrite its working tree\n' "$dest" >&2
+      printf '  WARN %s has local changes — refusing to overwrite them\n' "$dest" >&2
+      return 1
     fi
   fi
 

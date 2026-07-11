@@ -836,6 +836,36 @@ assert_exit "find --include-topics succeeds" 0
 assert_contains "find --include-topics surfaces topics" "$WORK/out" "Verification Policy"
 
 # ---------------------------------------------------------------------------
+# CLI validation: destructive commands reject invalid values before layout or
+# lock creation, and read-only commands follow the same positive/date contract.
+# ---------------------------------------------------------------------------
+INVALID_HOME="$WORK/invalid-memory-home"
+
+assert_invalid_without_mutation() {
+  local label="$1"
+  shift
+  rm -rf "$INVALID_HOME"
+  AGENT_MEMORY_HOME="$INVALID_HOME" AGENT_MEMORY_AGENT_ID="test-agent" \
+    python3 "$MEM" "$@" >"$WORK/out" 2>"$WORK/err"
+  EC=$?
+  assert_exit "$label" 2
+  if [ ! -e "$INVALID_HOME" ]; then
+    pass "$label leaves the memory store untouched"
+  else
+    fail "$label leaves the memory store untouched" "unexpected path created: $INVALID_HOME"
+  fi
+}
+
+assert_invalid_without_mutation "find rejects negative budget" \
+  find --cwd "$PROJ" --budget-lines -1
+assert_invalid_without_mutation "cleanup rejects negative age" \
+  cleanup --cwd "$PROJ" --older-than-days -1
+assert_invalid_without_mutation "verify rejects impossible calendar date" \
+  verify --cwd "$PROJ" --id "$CANON_ID" --date 2026-02-30
+assert_invalid_without_mutation "find rejects malformed since date" \
+  find --cwd "$PROJ" --since yesterday
+
+# ---------------------------------------------------------------------------
 # --memory-home flag overrides the env var.
 # ---------------------------------------------------------------------------
 ALT_HOME="$WORK/alt-memory"

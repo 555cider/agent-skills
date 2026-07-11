@@ -18,7 +18,8 @@
 #    directory there (a third-party skill sharing the name, or an old copy) is
 #    skipped with a warning; remove it manually.
 #  - Refuses to delete a ~/.agents/skills/<name>/ git clone that has uncommitted
-#    changes or unpushed commits. Plain synced directories are removed.
+#    changes, unpushed commits, or no configured upstream. Plain synced
+#    directories are removed.
 # Commit/push or `rm -rf` manually to override a protected clone.
 #
 # `--list` and `--all` enumerate this monorepo's skills/<name>/SKILL.md entries,
@@ -58,6 +59,31 @@ points_into_agents() {
     "$agents_phys"/*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Check the stateful clone before removing any harness links, so a protected
+# clone leaves the whole installation usable instead of producing a partial
+# uninstall.
+clone_removal_safe() {
+  local path="$1" upstream
+  if [ ! -d "$path/.git" ] && [ ! -f "$path/.git" ]; then
+    return 0
+  fi
+  if ! git -C "$path" diff --quiet 2>/dev/null \
+     || ! git -C "$path" diff --cached --quiet 2>/dev/null \
+     || [ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+    printf '  SKIP %s (refusing — clone has local changes; commit/discard or rm -rf manually)\n' "$path" >&2
+    return 1
+  fi
+  upstream="$(git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  if [ -z "$upstream" ]; then
+    printf '  SKIP %s (refusing — clone has no upstream; configure one or rm -rf manually)\n' "$path" >&2
+    return 1
+  fi
+  if [ -n "$(git -C "$path" log "$upstream..HEAD" --oneline 2>/dev/null)" ]; then
+    printf '  SKIP %s (refusing — clone has unpushed commits ahead of %s; push or rm -rf manually)\n' "$path" "$upstream" >&2
+    return 1
+  fi
 }
 
 usage() {
@@ -159,30 +185,6 @@ remove_path() {
       ;;
   esac
 
-  # Protect against silent loss of user work in the per-skill clone.
-  # Harness links (~/.claude/skills, ~/.codex/skills) hold no state of
-  # their own, so we only check the clone path.
-  case "$path" in
-    "$HOME/.agents/skills/"*)
-      if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
-        if ! git -C "$path" diff --quiet 2>/dev/null \
-           || ! git -C "$path" diff --cached --quiet 2>/dev/null \
-           || [ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null)" ]; then
-          printf '  SKIP %s (refusing — clone has local changes; commit/discard or rm -rf manually)\n' "$path" >&2
-          return 1
-        fi
-        # Unpushed commits on the tracked branch (split/<name>).
-        local upstream
-        upstream="$(git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-        if [ -n "$upstream" ] \
-           && [ -n "$(git -C "$path" log "$upstream..HEAD" --oneline 2>/dev/null)" ]; then
-          printf '  SKIP %s (refusing — clone has unpushed commits ahead of %s; push or rm -rf manually)\n' "$path" "$upstream" >&2
-          return 1
-        fi
-      fi
-      ;;
-  esac
-
   rm -rf -- "$path"
   printf '  removed  %s\n' "$path"
 }
@@ -200,6 +202,10 @@ for name in "${SELECTED[@]}"; do
   esac
 
   printf '\nskill: %s\n' "$name"
+  if ! clone_removal_safe "$AGENTS_ROOT/$name"; then
+    errors=$((errors + 1))
+    continue
+  fi
   for root in "${ROOTS[@]}"; do
     remove_path "$root/$name" || errors=$((errors + 1))
   done
