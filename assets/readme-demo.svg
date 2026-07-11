@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-labelledby="title desc">
+  <title id="title">DOM Picker flow</title>
+  <desc id="desc">A three step diagram showing a selected element in a browser, captured DOM signals, and a validated unified diff.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f7fafc"/>
+      <stop offset="1" stop-color="#edf4f8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#1f2937" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .label { font: 700 18px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #102033; }
+      .small { font: 500 13px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526173; }
+      .tiny { font: 600 11px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6b7788; }
+      .mono { font: 600 13px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #27364a; }
+      .mono-small { font: 600 11px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #475569; }
+      .panel { fill: #ffffff; stroke: #d6e0ea; stroke-width: 1.2; filter: url(#shadow); }
+      .soft { fill: #f7fafc; stroke: #dce6ef; stroke-width: 1; }
+      .line { stroke: #c8d5e1; stroke-width: 2; fill: none; }
+      .arrow { stroke: #2f7b85; stroke-width: 2.8; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f7b85"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="600" rx="0" fill="url(#bg)"/>
+
+  <text x="60" y="62" class="label" font-size="28">DOM Picker: from selected UI element to validated patch</text>
+  <text x="60" y="90" class="small">Transient browser picker captures the element, ranks likely source files, then emits a checked unified diff.</text>
+
+  <rect x="54" y="125" width="408" height="462" rx="14" class="panel"/>
+  <rect x="76" y="154" width="364" height="272" rx="10" fill="#f8fbfd" stroke="#d5e1ec"/>
+  <rect x="76" y="154" width="364" height="30" rx="10" fill="#e8eef5"/>
+  <circle cx="96" cy="169" r="5" fill="#ef6461"/>
+  <circle cx="113" cy="169" r="5" fill="#f0c24b"/>
+  <circle cx="130" cy="169" r="5" fill="#43b581"/>
+  <rect x="155" y="161" width="214" height="16" rx="8" fill="#ffffff" stroke="#d5e1ec"/>
+  <text x="166" y="173" class="tiny">localhost:3000/settings</text>
+
+  <rect x="104" y="212" width="130" height="18" rx="4" fill="#dfe7ef"/>
+  <rect x="104" y="245" width="292" height="12" rx="3" fill="#edf2f7"/>
+  <rect x="104" y="269" width="247" height="12" rx="3" fill="#edf2f7"/>
+  <rect x="104" y="312" width="118" height="40" rx="8" fill="#2f7b85"/>
+  <text x="128" y="337" font-family="Inter, ui-sans-serif, system-ui" font-size="14" font-weight="700" fill="#ffffff">Save</text>
+  <rect x="100" y="308" width="126" height="48" rx="10" fill="none" stroke="#ffb020" stroke-width="4"/>
+  <rect x="236" y="314" width="124" height="36" rx="8" fill="#ffffff" stroke="#d5e1ec"/>
+  <text x="264" y="337" font-family="Inter, ui-sans-serif, system-ui" font-size="14" font-weight="700" fill="#526173">Cancel</text>
+
+  <rect x="147" y="370" width="244" height="98" rx="12" fill="#102033" stroke="#0f172a"/>
+  <text x="166" y="395" font-family="Inter, ui-sans-serif, system-ui" font-size="13" font-weight="800" fill="#eaf7f7">DOM Picker</text>
+  <text x="166" y="418" font-family="Inter, ui-sans-serif, system-ui" font-size="12" font-weight="600" fill="#b8c4d2">Selected: button.primary</text>
+  <rect x="166" y="431" width="188" height="22" rx="5" fill="#1d2d42" stroke="#334155"/>
+  <text x="176" y="447" font-family="Inter, ui-sans-serif, system-ui" font-size="11" font-weight="600" fill="#dbe7f0">Make this button taller</text>
+  <rect x="359" y="431" width="20" height="22" rx="5" fill="#2f7b85"/>
+  <text x="365" y="447" font-family="Inter, ui-sans-serif, system-ui" font-size="11" font-weight="800" fill="#ffffff">+</text>
+
+  <text x="80" y="520" class="label">1. Pick the visible element</text>
+  <text x="80" y="546" class="small">The user clicks the exact rendered target and sends</text>
+  <text x="80" y="566" class="small">the fix request from the in-page panel.</text>
+
+  <path class="arrow" d="M 474 355 C 510 355, 512 355, 548 355"/>
+
+  <rect x="560" y="125" width="265" height="462" rx="14" class="panel"/>
+  <text x="590" y="174" class="label">2. Capture signals</text>
+  <text x="590" y="200" class="small">Stable DOM clues for lookup.</text>
+
+  <rect x="590" y="235" width="205" height="44" rx="9" class="soft"/>
+  <text x="608" y="254" class="tiny">selector</text>
+  <text x="608" y="272" class="mono-small">button.primary[type=submit]</text>
+
+  <rect x="590" y="296" width="205" height="44" rx="9" class="soft"/>
+  <text x="608" y="315" class="tiny">visible text</text>
+  <text x="608" y="333" class="mono-small">Save</text>
+
+  <rect x="590" y="357" width="205" height="44" rx="9" class="soft"/>
+  <text x="608" y="376" class="tiny">computed style</text>
+  <text x="608" y="394" class="mono-small">height: 40px; radius: 8px</text>
+
+  <rect x="590" y="418" width="205" height="44" rx="9" class="soft"/>
+  <text x="608" y="437" class="tiny">route + screenshot</text>
+  <text x="608" y="455" class="mono-small">/settings + viewport crop</text>
+
+  <rect x="590" y="499" width="205" height="36" rx="18" fill="#e7f3f4" stroke="#c3dee2"/>
+  <text x="621" y="522" font-family="Inter, ui-sans-serif, system-ui" font-size="13" font-weight="800" fill="#2f7b85">rank candidate files</text>
+
+  <path class="arrow" d="M 838 355 C 874 355, 876 355, 912 355"/>
+
+  <rect x="924" y="125" width="222" height="462" rx="14" class="panel"/>
+  <text x="954" y="174" class="label">3. Validate diff</text>
+  <text x="954" y="200" class="small">Validated before apply.</text>
+
+  <rect x="954" y="236" width="162" height="242" rx="10" fill="#0f172a" stroke="#1e293b"/>
+  <rect x="954" y="236" width="162" height="28" rx="10" fill="#162238"/>
+  <text x="970" y="254" font-family="Inter, ui-sans-serif, system-ui" font-size="11" font-weight="800" fill="#dbe7f0">SettingsForm.tsx</text>
+  <text x="970" y="291" class="mono-small" fill="#cbd5e1">button className=</text>
+  <rect x="970" y="306" width="128" height="22" rx="4" fill="#3a1f26"/>
+  <text x="978" y="322" font-family="SFMono-Regular, Consolas, monospace" font-size="11" font-weight="700" fill="#fecaca">- "h-10 px-4"</text>
+  <rect x="970" y="336" width="132" height="22" rx="4" fill="#183228"/>
+  <text x="978" y="352" font-family="SFMono-Regular, Consolas, monospace" font-size="11" font-weight="700" fill="#bbf7d0">+ "h-12 px-4"</text>
+  <line x1="970" y1="382" x2="1100" y2="382" stroke="#263348"/>
+  <text x="970" y="410" font-family="Inter, ui-sans-serif, system-ui" font-size="12" font-weight="800" fill="#94f2d4">git apply --check</text>
+  <text x="970" y="434" font-family="Inter, ui-sans-serif, system-ui" font-size="12" font-weight="800" fill="#94f2d4">high confidence</text>
+  <text x="970" y="458" font-family="Inter, ui-sans-serif, system-ui" font-size="12" font-weight="800" fill="#94f2d4">safe path gate</text>
+
+  <rect x="954" y="504" width="162" height="36" rx="18" fill="#effaf6" stroke="#b9e4d4"/>
+  <text x="986" y="527" font-family="Inter, ui-sans-serif, system-ui" font-size="13" font-weight="800" fill="#1f7a55">apply or return</text>
+
+</svg>

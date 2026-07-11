@@ -40,7 +40,10 @@
       needPick: "⚠ 먼저 요소를 선택하세요", needText: "⚠ 수정 내용을 입력하세요",
       sent: function (n) { return "✓ 대기열에 추가됨 (" + n + ") — 에이전트가 곧 가져갑니다"; },
       hintMulti: "요소를 클릭해 계속 담기 · Esc로 끝내기",
-      hintSingle: "요소 위에 올려 클릭 · Esc로 취소"
+      hintSingle: "요소 위에 올려 클릭 · Esc로 취소",
+      shortcuts: "⌨ 단축키: Alt+Shift+S(선택) · Esc(취소) · Ctrl+Enter(전송)",
+      queueTitle: function (n) { return "대기열 " + n + "개"; },
+      removeQueueAria: function (i) { return i + "번 대기열 삭제"; }
     },
     en: {
       armAria: "Selecting element", armLabel: "Selecting… Esc to cancel",
@@ -55,7 +58,10 @@
       needPick: "⚠ Select an element first", needText: "⚠ Enter what to fix",
       sent: function (n) { return "✓ Queued (" + n + ") — the agent will pick it up"; },
       hintMulti: "Click elements to keep adding · Esc to finish",
-      hintSingle: "Hover and click an element · Esc to cancel"
+      hintSingle: "Hover and click an element · Esc to cancel",
+      shortcuts: "⌨ Shortcuts: Alt+Shift+S(Pick) · Esc(Cancel) · Ctrl+Enter(Send)",
+      queueTitle: function (n) { return "Queue (" + n + ")"; },
+      removeQueueAria: function (i) { return "Remove queue item " + i; }
     }
   };
   var T = ((navigator.language || "en").toLowerCase().indexOf("ko") === 0) ? I18N.ko : I18N.en;
@@ -212,7 +218,7 @@
     for (var i = 0; i < selBoxes.length; i++) {
       if (selBoxes[i].__el === marked) { api.lastPick = api.picks[i] || p; return api.picks[i] || null; }
     }
-    api.picks.push(p); api.lastPick = p;
+    api.picks.push(p); api.lastPick = p; api._sentMsg = "";
     addBox(marked); renderAll();
     saveState();
     return p;
@@ -278,7 +284,7 @@
   var btn = mk("button", "");
   btn.type = "button";
   function renderLauncher() {
-    var n = api.picks.length, base = "position:fixed;right:16px;bottom:16px;z-index:" + (Z + 2) + ";display:inline-flex;align-items:center;gap:7px;font:600 12px/1 " + SANS + ";color:" + C.text + ";background:" + C.ink + ";border:1px solid " + C.line + ";padding:9px 13px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.35);cursor:pointer;";
+    var n = api.picks.length, base = "position:fixed;right:max(8px,env(safe-area-inset-right));bottom:max(8px,env(safe-area-inset-bottom));z-index:" + (Z + 2) + ";display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;min-height:44px;max-width:calc(100vw - 16px);font:600 12px/1 " + SANS + ";color:" + C.text + ";background:" + C.ink + ";border:1px solid " + C.line + ";padding:9px 13px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.35);cursor:pointer;";
     btn.replaceChildren();
     if (api.active) { btn.setAttribute("aria-label", T.armAria); btn.append(dot(C.pick, true), txt(T.armLabel)); btn.style.cssText = base + "border-color:" + C.pick + ";box-shadow:0 0 0 3px " + C.pickSoft + ",0 6px 20px rgba(0,0,0,.35);"; }
     else if (n) { btn.setAttribute("aria-label", T.pickedAria(n)); btn.append(dot(C.sel), txt(T.pickedLabel(n)), countChip(String(n))); btn.style.cssText = base; }
@@ -299,58 +305,98 @@
 
   // ---------- selection panel (list of picks) ----------
   function renderPanel() {
-    if (!panel) panel = mk("div", "position:fixed;left:50%;bottom:64px;transform:translateX(-50%);z-index:" + (Z + 2) + ";width:min(400px,92vw);font:" + SANS + ";color:" + C.text + ";background:" + C.surface + ";border:1px solid " + C.line + ";border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;");
-    if (!api.picks.length) { panel.style.display = "none"; return; }
+    if (!panel) panel = mk("div", "position:fixed;left:50%;bottom:64px;transform:translateX(-50%);z-index:" + (Z + 2) + ";box-sizing:border-box;width:min(400px,calc(100vw - 16px));max-height:calc(100vh - 80px);font:" + SANS + ";color:" + C.text + ";background:" + C.surface + ";border:1px solid " + C.line + ";border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:auto;overscroll-behavior:contain;");
+    if (!api.picks.length && !api.queue.length) {
+      panel.innerHTML = ""; panel.style.display = "none"; hideTip(); return;
+    }
     panel.style.display = "block"; panel.innerHTML = ""; hideTip();
 
-    var head = mk("div", "display:flex;align-items:center;gap:8px;min-height:46px;padding:0 13px;border-bottom:1px solid " + C.line + ";", panel);
-    head.appendChild(dot(C.sel));
-    var htitle = mk("div", "font:600 12px/1.3 " + SANS + ";color:" + C.text + ";", head);
-    htitle.textContent = T.panelTitle(api.picks.length);
+    if (api.picks.length > 0) {
+      var head = mk("div", "display:flex;align-items:center;gap:8px;min-height:46px;padding:0 13px;border-bottom:1px solid " + C.line + ";", panel);
+      head.appendChild(dot(C.sel));
+      var htitle = mk("div", "font:600 12px/1.3 " + SANS + ";color:" + C.text + ";", head);
+      htitle.textContent = T.panelTitle(api.picks.length);
 
-    var list = mk("div", "max-height:190px;overflow:auto;", panel);
-    api.picks.forEach(function (p, i) {
-      var row = mk("div", "display:flex;align-items:flex-start;gap:9px;padding:8px 13px;" + (i ? "border-top:1px solid rgba(148,163,184,.14);" : ""), list);
-      var num = mk("div", "flex:none;width:18px;height:18px;margin-top:1px;text-align:center;font:700 10px/18px " + SANS + ";color:#04231a;background:" + C.sel + ";border-radius:6px;", row);
-      num.textContent = String(i + 1);
-      var body = mk("div", "min-width:0;flex:1;", row);
-      var kind = mk("div", "font:600 12.5px/1.35 " + SANS + ";color:" + C.text + ";", body);
-      kind.textContent = p.label;
-      var sel = mk("div", "margin-top:1px;font:11px/1.4 " + MONO + ";color:" + C.dim + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help;", body);
-      sel.textContent = p.selector || "";
-      bindTip(sel, p.selector || "");
-      if (p.resolvedFromLeaf) {
-        var note = mk("div", "margin-top:1px;font:10.5px/1.3 " + SANS + ";color:" + C.dim + ";", body);
-        note.textContent = T.resolvedNote(p.resolvedFromLeaf, p.kind);
+      var list = mk("div", "max-height:150px;overflow:auto;", panel);
+      api.picks.forEach(function (p, i) {
+        var row = mk("div", "display:flex;align-items:flex-start;gap:9px;padding:8px 13px;" + (i ? "border-top:1px solid rgba(148,163,184,.14);" : ""), list);
+        var num = mk("div", "flex:none;width:18px;height:18px;margin-top:1px;text-align:center;font:700 10px/18px " + SANS + ";color:#04231a;background:" + C.sel + ";border-radius:6px;", row);
+        num.textContent = String(i + 1);
+        var body = mk("div", "min-width:0;flex:1;", row);
+        var kind = mk("div", "font:600 12.5px/1.35 " + SANS + ";color:" + C.text + ";", body);
+        kind.textContent = p.label;
+        var sel = mk("div", "margin-top:1px;font:11px/1.4 " + MONO + ";color:" + C.dim + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help;", body);
+        sel.textContent = p.selector || "";
+        bindTip(sel, p.selector || "");
+        if (p.resolvedFromLeaf) {
+          var note = mk("div", "margin-top:1px;font:10.5px/1.3 " + SANS + ";color:" + C.dim + ";", body);
+          note.textContent = T.resolvedNote(p.resolvedFromLeaf, p.kind);
+        }
+        var x = mk("button", "flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;font:600 11px/1 " + SANS + ";color:" + C.dim + ";background:transparent;border:0;padding:0;border-radius:6px;cursor:pointer;", row);
+        x.type = "button"; x.textContent = "✕"; x.setAttribute("aria-label", T.removeAria(i + 1));
+        x.addEventListener("mouseenter", function () { x.style.color = C.danger; });
+        x.addEventListener("mouseleave", function () { x.style.color = C.dim; });
+        x.addEventListener("click", function (e) { e.stopPropagation(); removeAt(i); });
+      });
+
+      var form = mk("div", "padding:9px 13px;border-top:1px solid " + C.line + ";", panel);
+      if (api._sentMsg) {
+        var msg = mk("div", "margin-bottom:6px;font:600 11px/1.4 " + SANS + ";color:" + (api._sentMsg.charAt(0) === "✓" ? C.sel : C.danger) + ";", form);
+        msg.textContent = api._sentMsg;
       }
-      var x = mk("button", "flex:none;font:600 11px/1 " + SANS + ";color:" + C.dim + ";background:transparent;border:0;padding:3px 5px;border-radius:6px;cursor:pointer;", row);
-      x.type = "button"; x.textContent = "✕"; x.setAttribute("aria-label", T.removeAria(i + 1));
-      x.addEventListener("mouseenter", function () { x.style.color = C.danger; });
-      x.addEventListener("mouseleave", function () { x.style.color = C.dim; });
-      x.addEventListener("click", function (e) { e.stopPropagation(); removeAt(i); });
-    });
+      var ta = mk("textarea", "width:100%;box-sizing:border-box;resize:none;height:46px;font:12px/1.4 " + SANS + ";color:" + C.text + ";background:" + C.ink + ";border:1px solid " + C.line + ";border-radius:8px;padding:7px 9px;outline:none;", form);
+      ta.placeholder = T.placeholder;
+      ta.value = api._draft || "";
+      ta.addEventListener("input", function () { api._draft = ta.value; api._sentMsg = ""; saveState(); });
+      ta.addEventListener("keydown", function (e) { e.stopPropagation(); if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submitRequest(); });
+      var sendWrap = mk("div", "margin-top:7px;", form);
+      sendWrap.appendChild(primaryBtn(T.send, submitRequest));
 
-    var form = mk("div", "padding:9px 13px;border-top:1px solid " + C.line + ";", panel);
-    if (api._sentMsg) {
-      var msg = mk("div", "margin-bottom:6px;font:600 11px/1.4 " + SANS + ";color:" + (api._sentMsg.charAt(0) === "✓" ? C.sel : C.danger) + ";", form);
-      msg.textContent = api._sentMsg;
+      var foot = mk("div", "display:flex;gap:8px;padding:9px 13px 12px;border-bottom:1px solid " + C.line + ";", panel);
+      foot.appendChild(action(T.addMore, C.pick, function () { api.enable(); }));
+      foot.appendChild(action(T.clearAll, C.danger, function () { api.clear(); }));
+    } else {
+      var noPick = mk("div", "padding:16px 13px;text-align:center;font:600 11.5px/1.4 " + SANS + ";color:" + (api._sentMsg ? C.sel : C.dim) + ";border-bottom:1px solid " + C.line + ";", panel);
+      noPick.textContent = api._sentMsg || T.needPick;
+      var pickBtn = mk("div", "padding:9px 13px;border-bottom:1px solid " + C.line + ";", panel);
+      pickBtn.appendChild(primaryBtn(T.addMore, function () { api.enable(); }));
     }
-    var ta = mk("textarea", "width:100%;box-sizing:border-box;resize:none;height:46px;font:12px/1.4 " + SANS + ";color:" + C.text + ";background:" + C.ink + ";border:1px solid " + C.line + ";border-radius:8px;padding:7px 9px;outline:none;", form);
-    ta.placeholder = T.placeholder;
-    ta.value = api._draft || "";
-    ta.addEventListener("input", function () { api._draft = ta.value; api._sentMsg = ""; saveState(); });
-    ta.addEventListener("keydown", function (e) { e.stopPropagation(); if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submitRequest(); });
-    var sendWrap = mk("div", "margin-top:7px;", form);
-    sendWrap.appendChild(primaryBtn(T.send, submitRequest));
+    if (api.queue.length > 0) {
+      var qhead = mk("div", "display:flex;align-items:center;justify-content:space-between;min-height:36px;padding:0 13px;background:rgba(255,255,255,.02);border-bottom:1px solid " + C.line + ";", panel);
+      var qtitle = mk("div", "font:600 11.5px/1.3 " + SANS + ";color:" + C.text + ";", qhead);
+      qtitle.textContent = T.queueTitle(api.queue.length);
 
-    var foot = mk("div", "display:flex;gap:8px;padding:9px 13px 12px;", panel);
-    foot.appendChild(action(T.addMore, C.pick, function () { api.enable(); }));
-    foot.appendChild(action(T.clearAll, C.danger, function () { api.clear(); }));
+      var qlist = mk("div", "max-height:120px;overflow:auto;", panel);
+      api.queue.forEach(function (q, idx) {
+        var qrow = mk("div", "display:flex;align-items:flex-start;gap:9px;padding:7px 13px;" + (idx ? "border-top:1px solid rgba(148,163,184,.1);" : ""), qlist);
+
+        var qnum = mk("div", "flex:none;width:16px;height:16px;margin-top:1.5px;text-align:center;font:700 9px/16px " + SANS + ";color:" + C.dim + ";background:rgba(148,163,184,.14);border-radius:4px;", qrow);
+        qnum.textContent = String(idx + 1);
+
+        var qbody = mk("div", "min-width:0;flex:1;", qrow);
+        var qtext = mk("div", "font:600 12px/1.35 " + SANS + ";color:" + C.text + ";word-break:break-all;", qbody);
+        qtext.textContent = q.text;
+
+        var qinfo = mk("div", "margin-top:1px;font:10px/1.3 " + SANS + ";color:" + C.dim + ";overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", qbody);
+        var labels = q.picks.map(function (p) { return p.label; }).join(", ");
+        qinfo.textContent = labels;
+        bindTip(qinfo, labels);
+
+        var qx = mk("button", "flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;font:600 11px/1 " + SANS + ";color:" + C.dim + ";background:transparent;border:0;padding:0;border-radius:4px;cursor:pointer;", qrow);
+        qx.type = "button"; qx.textContent = "✕"; qx.setAttribute("aria-label", T.removeQueueAria(idx + 1));
+        qx.addEventListener("mouseenter", function () { qx.style.color = C.danger; });
+        qx.addEventListener("mouseleave", function () { qx.style.color = C.dim; });
+        qx.addEventListener("click", function (e) { e.stopPropagation(); removeQueueAt(idx); });
+      });
+    }
+
+    var kbInfo = mk("div", "padding:6px 13px 8px;text-align:center;font:10px/1.3 " + SANS + ";color:" + C.dim + ";background:rgba(0,0,0,.15);border-top:1px solid " + C.line + ";", panel);
+    kbInfo.textContent = T.shortcuts;
   }
   function action(labelText, color, fn) {
     var b = document.createElement("button");
     b.type = "button"; b.textContent = labelText;
-    b.style.cssText = "flex:1;font:600 12px/1 " + SANS + ";color:" + C.text + ";background:transparent;border:1px solid " + color + ";border-radius:8px;padding:8px;cursor:pointer;transition:background .1s;";
+    b.style.cssText = "flex:1;min-width:0;min-height:44px;font:600 12px/1 " + SANS + ";color:" + C.text + ";background:transparent;border:1px solid " + color + ";border-radius:8px;padding:8px;cursor:pointer;transition:background .1s;";
     b.addEventListener("mouseenter", function () { b.style.background = "rgba(255,255,255,.06)"; });
     b.addEventListener("mouseleave", function () { b.style.background = "transparent"; });
     b.addEventListener("click", function (e) { e.stopPropagation(); fn(); });
@@ -359,9 +405,26 @@
   function primaryBtn(labelText, fn) {
     var b = document.createElement("button");
     b.type = "button"; b.textContent = labelText;
-    b.style.cssText = "width:100%;box-sizing:border-box;font:700 12px/1 " + SANS + ";color:#fff;background:" + C.pick + ";border:0;border-radius:8px;padding:9px;cursor:pointer;";
+    b.style.cssText = "width:100%;min-height:44px;box-sizing:border-box;font:700 12px/1 " + SANS + ";color:#fff;background:" + C.pick + ";border:0;border-radius:8px;padding:9px;cursor:pointer;";
     b.addEventListener("click", function (e) { e.stopPropagation(); fn(); });
     return b;
+  }
+  function removeQueueAt(i) {
+    if (!api.queue[i]) return;
+    api.queue.splice(i, 1);
+    api.request = api.queue[api.queue.length - 1] || null;
+    renderAll();
+  }
+  // Atomically return a FIFO snapshot and reset every queue-facing UI alias.
+  // Hosts should prefer this over mutating `queue` directly so stale queue rows
+  // and success messages cannot survive a drain.
+  function drainQueue() {
+    var drained = api.queue.slice();
+    api.queue = [];
+    api.request = null;
+    api._sentMsg = "";
+    renderAll();
+    return drained;
   }
   // The one bridge browser → agent: enqueue the fix request; a CDP watcher drains it.
   // A durable queue (not a single slot) so rapid submissions and ones sent while the
@@ -376,7 +439,16 @@
     };
     api.queue.push(req);
     api.request = req; // back-compat: latest enqueued request
-    api._draft = ""; api._sentMsg = T.sent(api.queue.length); renderPanel();
+
+    // Clear selection after successfully queueing
+    api.lastPick = null;
+    api.picks = [];
+    for (var i = 0; i < selBoxes.length; i++) selBoxes[i].remove();
+    selBoxes = [];
+
+    api._draft = "";
+    api._sentMsg = T.sent(api.queue.length);
+    renderAll();
     saveState(); // persist the bumped _seq so a reload cannot rewind the bridge counter
   }
 
@@ -424,13 +496,14 @@
     __installed: true, active: false, multi: false, lastPick: null, picks: [],
     _seq: 0, _draft: "", _sentMsg: "", request: null, queue: [],
     snapshot: snapshot,
+    drainQueue: drainQueue,
     enable: function (opts) {
-      api.multi = !!(opts && opts.multi); api.active = true;
+      api.multi = !!(opts && opts.multi); api.active = true; api._sentMsg = "";
       document.addEventListener("mousemove", onMove, true);
       document.addEventListener("click", onClick, true);
       window.addEventListener("scroll", reposition, true);
       window.addEventListener("resize", reposition, true);
-      showHint(true); renderLauncher();
+      showHint(true); renderPanel(); renderLauncher();
     },
     disable: function () {
       api.active = false; hover(null); showHint(false);
@@ -452,12 +525,15 @@
     destroy: function () {
       api.disable();
       document.removeEventListener("keydown", onKeydown);
+      document.removeEventListener("DOMContentLoaded", mount);
+      document.removeEventListener("DOMContentLoaded", restoreState);
       window.removeEventListener("scroll", reposition, true);
       window.removeEventListener("resize", reposition, true);
       var nodes = document.querySelectorAll("[data-s2p]");
       for (var i = 0; i < nodes.length; i++) nodes[i].remove();
       selBoxes = []; hoverBox = hoverChip = panel = hint = tip = null;
       api.active = false; api.picks = []; api.lastPick = null; api.request = null; api.queue = [];
+      try { window.sessionStorage.removeItem(STATE_KEY); } catch (e) { /* storage unavailable */ }
       try { delete window.__s2p; } catch (e) { window.__s2p = undefined; }
     }
   };

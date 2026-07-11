@@ -43,10 +43,6 @@
         "text": { "type": "string" },
         "outerHTML": { "type": "string" },
         "parentHTML": { "type": ["string", "null"] },
-        "kind": { "type": "string" },
-        "detail": { "type": "string" },
-        "label": { "type": "string" },
-        "resolvedFromLeaf": { "type": ["string", "null"] },
         "rect": {
           "type": "object",
           "properties": {

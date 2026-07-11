@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-contained, dependency-free checks for the dom-picker skill.
 #
-# These are STATIC checks (syntax, usage, schema validity, eval shape, and
+# These are static checks (syntax, usage, schema validity, eval shape, and
 # regression guards for reload safety, durable queue draining, and apply policy).
 # The picker's runtime behavior is verified in a real browser during development.
 #
@@ -62,11 +62,14 @@ assert_contains "picker exposes ariaLabel in payload" "ariaLabel:" "$PICKER"
 assert_contains "picker has durable request queue" "queue: []" "$PICKER"
 assert_contains "picker enqueues requests" "api.queue.push" "$PICKER"
 assert_contains "picker keeps latest request alias" "back-compat: latest enqueued request" "$PICKER"
+assert_contains "picker exposes atomic public queue drain" "drainQueue: drainQueue" "$PICKER"
+assert_contains "picker teardown clears persisted state" "sessionStorage.removeItem(STATE_KEY)" "$PICKER"
 assert_contains "picker documents Alt+Shift+S hotkey" "Alt+Shift+S" "$PICKER"
 assert_contains "cdp connect exposes close() for socket lifecycle" "const close = ()" "$CDP"
 assert_contains "cdp has serve command" 'case "serve":' "$CDP"
 assert_contains "cdp prints request batches" "REQUEST " "$CDP"
 assert_contains "cdp emits requests field" "requests:" "$CDP"
+assert_contains "cdp prefers the picker public drain API" "typeof s.drainQueue==='function'" "$CDP"
 if grep -Fq "window.__s2p.queue=[]" "$CDP" || grep -Fq "s.queue=[]" "$CDP"; then
   pass "cdp atomically clears the in-page queue"
 else
@@ -78,6 +81,25 @@ for schema in input output; do
   python3 -c "import json,sys; json.load(open('$SKILL/references/$schema.schema.json',encoding='utf-8'))" 2>"$HERE/.err"
   assert_ok "$schema.schema.json is valid JSON" "$(cat "$HERE/.err")"
 done
+
+python3 - "$SKILL/references/input.schema.json" "$SKILL/references/output.schema.json" <<'PY' 2>"$HERE/.err"
+import json
+import sys
+
+def reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as handle:
+        json.load(handle, object_pairs_hook=reject_duplicates)
+PY
+assert_ok "schemas contain no duplicate JSON keys" "$(cat "$HERE/.err")"
+rm -f "$HERE/.err"
 
 python3 - "$SKILL" <<'PY' 2>"$HERE/.err"
 import json
@@ -106,6 +128,7 @@ rm -f "$HERE/.err"
 
 # --- docs/policy guards ---------------------------------------------------
 assert_contains "SKILL documents serve" "serve" "$SKILL/SKILL.md"
+assert_contains "SKILL documents drainQueue browser API" "window.__s2p.drainQueue()" "$SKILL/SKILL.md"
 assert_contains "SKILL documents Alt+Shift+S" "Alt+Shift+S" "$SKILL/SKILL.md"
 if grep -Eiq "re-?arm|re-?launch .*serve" "$SKILL/SKILL.md"; then
   pass "SKILL documents re-arming serve after a batch"

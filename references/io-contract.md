@@ -32,9 +32,9 @@ workflow. The schema defines the shape that reasoning and output must be consist
 
 The browser→host bridge is a **durable queue**, not a single slot: every Send in the picker pushes a
 `{ text, picks, seq }` onto `window.__s2p.queue` (`request` aliases the latest for back-compat). The
-host **drains the whole queue atomically** — `cdp.mjs serve` for the user's own browser, or a
-`browser_evaluate` drain on the Playwright path — so rapid submissions and ones sent while the agent
-is busy are never lost. A drain returns `{ requests: [ … ] }`; the agent processes each request
+host **drains the whole queue atomically** with `window.__s2p.drainQueue()` — `cdp.mjs serve` for
+the user's own browser, or `browser_evaluate` on the Playwright path — so rapid submissions and ones
+sent while the agent is busy are never lost. A drain returns `{ requests: [ … ] }`; the agent processes each request
 through the normal find-source → diff pipeline, reusing page context and any selector→file mapping
 resolved earlier in the session. The **output for a batch is a JSON array** — one object matching
 `output.schema.json` per request (see its `definitions.batch`). A single request stays a single
