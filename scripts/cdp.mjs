@@ -14,8 +14,15 @@ const opt = (name, def) => {
   return a ? a.slice(name.length + 3) : def;
 };
 const PORT = process.env.CDP_PORT || opt("port", "9222");
+const portNumber = Number(PORT);
+if (cmd && (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535)) {
+  console.error("invalid --port: expected an integer from 1 to 65535");
+  process.exit(2);
+}
 const BASE = "http://localhost:" + PORT;
 const MATCH = opt("match", "");
+const COMMAND_TIMEOUT_MS = 10000;
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const src = () => readFileSync(ASSET, "utf8");
 // Prefer the picker's public atomic drain so its queue UI is rerendered too. Keep the
 // direct queue reset as a compatibility fallback for already-injected older picker builds.
@@ -40,13 +47,42 @@ async function pageTarget() {
 function connect(ws) {
   const sock = new WebSocket(ws);
   let id = 0; const pending = new Map();
-  const ready = new Promise((res, rej) => { sock.addEventListener("open", () => res()); sock.addEventListener("error", rej); });
+  let opened = false;
+  let settleReady;
+  const ready = new Promise((res, rej) => {
+    settleReady = { res, rej };
+    sock.addEventListener("open", () => { opened = true; res(); }, { once: true });
+  });
+  const rejectPending = (error) => {
+    for (const { rej, timer } of pending.values()) { clearTimeout(timer); rej(error); }
+    pending.clear();
+  };
+  const disconnected = (kind) => {
+    const error = new Error("CDP WebSocket " + kind);
+    if (!opened) settleReady.rej(error);
+    rejectPending(error);
+  };
+  sock.addEventListener("error", () => disconnected("error"));
+  sock.addEventListener("close", () => disconnected("closed"));
   sock.addEventListener("message", (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.id && pending.has(m.id)) { const { res, rej } = pending.get(m.id); pending.delete(m.id); m.error ? rej(new Error(JSON.stringify(m.error))) : res(m.result); }
+    if (m.id && pending.has(m.id)) {
+      const { res, rej, timer } = pending.get(m.id); pending.delete(m.id); clearTimeout(timer);
+      m.error ? rej(new Error(JSON.stringify(m.error))) : res(m.result);
+    }
   });
-  const send = (method, params = {}) => new Promise((res, rej) => { const mid = ++id; pending.set(mid, { res, rej }); sock.send(JSON.stringify({ id: mid, method, params })); });
-  const close = () => { try { sock.close(); } catch { } };
+  const send = (method, params = {}) => new Promise((res, rej) => {
+    if (sock.readyState !== WebSocket.OPEN) { rej(new Error("CDP WebSocket is not open")); return; }
+    const mid = ++id;
+    const timer = setTimeout(() => {
+      pending.delete(mid);
+      rej(new Error("CDP command timed out: " + method));
+    }, COMMAND_TIMEOUT_MS);
+    pending.set(mid, { res, rej, timer });
+    try { sock.send(JSON.stringify({ id: mid, method, params })); }
+    catch (error) { clearTimeout(timer); pending.delete(mid); rej(error); }
+  });
+  const close = () => { rejectPending(new Error("CDP WebSocket closed by client")); try { sock.close(); } catch { } };
   return { ready, send, close };
 }
 const evalJs = (c, expression, rbv = true) => c.send("Runtime.evaluate", { expression, returnByValue: rbv, awaitPromise: true });
@@ -105,7 +141,8 @@ switch (cmd) {
     let c = await attach();
     await c.send("Page.addScriptToEvaluateOnNewDocument", { source: src() });
     console.log("[keep] watching :" + PORT + (flag("arm") ? " (auto-arm)" : ""));
-    setInterval(async () => {
+    while (true) {
+      await delay(1000);
       try {
         const r = await evalJs(c, "!!(window.__s2p&&window.__s2p.__installed)");
         if (r.result.value === false) {
@@ -124,8 +161,7 @@ switch (cmd) {
           console.log("[keep] reconnected after navigation");
         } catch { /* target gone; next tick retries */ }
       }
-    }, 1000);
-    break;
+    }
   }
   case "serve": {
     // Preferred interactive listener: keep the picker alive across reloads (like `keep`)
@@ -137,18 +173,18 @@ switch (cmd) {
     let c = await attach();
     await c.send("Page.addScriptToEvaluateOnNewDocument", { source: src() });
     console.log("[serve] watching :" + PORT + (flag("arm") ? " (auto-arm)" : ""));
-    const iv = setInterval(async () => {
+    while (true) {
+      await delay(800);
       try {
         const inst = await evalJs(c, "!!(window.__s2p&&window.__s2p.__installed)");
         if (inst.result.value === false) {
           await evalJs(c, src(), false);
           if (flag("arm")) await evalJs(c, "window.__s2p&&window.__s2p.enable&&window.__s2p.enable()");
           console.log("[serve] re-injected after reload");
-          return;
+          continue;
         }
         const drained = await evalJs(c, DRAIN);
         if (drained.result.value) {
-          clearInterval(iv);
           console.log("REQUEST " + JSON.stringify({ requests: JSON.parse(drained.result.value) }));
           process.exit(0);
         }
@@ -156,8 +192,7 @@ switch (cmd) {
         c.close();
         try { c = await attach(); await c.send("Page.addScriptToEvaluateOnNewDocument", { source: src() }); } catch { }
       }
-    }, 800);
-    break;
+    }
   }
   case "wait": {
     // One-shot drainer (no keep-alive). Blocks until the queue has >=1 request, drains the
@@ -165,25 +200,27 @@ switch (cmd) {
     // `wait` remains for hosts that keep the picker alive separately. --timeout=<sec> bounds
     // the wait (exit 3) so a host task can't hang forever if no request is submitted.
     const timeoutSec = Number(opt("timeout", "0"));
+    if (!Number.isFinite(timeoutSec) || timeoutSec < 0) {
+      console.error("invalid --timeout: expected a non-negative number of seconds");
+      process.exit(2);
+    }
     const c = await attach();
     const started = Date.now();
     console.log("[wait] waiting for a submitted fix request…" + (timeoutSec > 0 ? " (timeout " + timeoutSec + "s)" : ""));
-    const iv = setInterval(async () => {
+    while (true) {
+      await delay(800);
       if (timeoutSec > 0 && (Date.now() - started) > timeoutSec * 1000) {
-        clearInterval(iv);
         console.log("TIMEOUT (no fix submitted within " + timeoutSec + "s)");
         process.exit(3);
       }
       try {
         const drained = await evalJs(c, DRAIN);
         if (drained.result.value) {
-          clearInterval(iv);
           console.log("REQUEST " + JSON.stringify({ requests: JSON.parse(drained.result.value) }));
           process.exit(0);
         }
       } catch { }
-    }, 800);
-    break;
+    }
   }
   case "read": {
     const c = await attach();
