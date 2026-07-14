@@ -1,6 +1,8 @@
 ---
 name: peer-review
 description: Use when the user explicitly asks for a peer review, second opinion, reviewer list/help, or choice recommendation for a plan, spec, design choice, or option set, including /peer-review in Claude Code or natural-language requests in Codex. Do not use for ordinary host-agent code review unless the user asks for an external/peer reviewer.
+license: MIT
+compatibility: Requires Bash 4 or newer, git, Python 3 for profile config, and at least one supported reviewer CLI.
 ---
 
 # Peer Review
@@ -230,25 +232,18 @@ The script's exit codes drive how step 4 reports failure to the user.
   single-reviewer mode it may be the reviewer CLI's own status; disambiguate
   via stderr text (references/exit-codes.md).
 
-## When to self-invoke
+## Invocation policy
 
-Operator-invoked only by default. Claude Code via `/peer-review` is strictly
-operator-invoked — never self-trigger on your own plans.
-
-Codex CLI authorizes narrow proactive self-invocation:
-- ✅ After writing a new spec or multi-step plan, before handing off for approval.
-- ✅ When the user says "this is a big change, double-check it" or similar.
-- ❌ Bug fixes, 1-2 file refactors, doc edits, simple parameter tweaks.
-- ❌ When the user already gave a clear plan (review what they wrote only if asked).
-- ❌ If the user said "skip review" or similar.
+Operator-invoked only. Use this skill when the user explicitly asks for a peer review, second
+opinion, reviewer help/list, or a recommendation between choices. Never self-trigger merely because
+you wrote a spec or multi-step plan.
 
 ## Boundaries
 
-- Do not auto-trigger on plans you propose (see "When to self-invoke").
+- Do not auto-trigger on plans you propose.
 - Do not review git diffs (use `codex review` or equivalent directly).
-- Do not grant the reviewer CLI write access. `codex`, `opencode`, and `agy` are
-  launched sandbox/read-only; the `claude` adapter runs `claude -p` and relies on
-  Claude's own permission system rather than a hard sandbox flag, so its
-  read-only guarantee is weaker — avoid `claude` as a reviewer where a strict
-  no-write guarantee is required.
+- Do not grant the reviewer CLI write access. The wrapper requires each adapter's current
+  read-only/plan/isolation flags and fails closed when an installed CLI is too old to provide them.
+- Reviewer providers receive the plan and may read relevant repository files. An explicit review
+  request authorizes that limited disclosure, not unrelated files, external actions, or writes.
 - Do not stream reviewer output; report from the saved review file.

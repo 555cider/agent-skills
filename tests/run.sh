@@ -43,6 +43,14 @@ make_stub_cli() {
   local path="$1"
   cat >"$path" <<'EOF'
 #!/usr/bin/env bash
+if printf '%s\n' "$@" | grep -qx -- '--help'; then
+  case "$(basename "$0")" in
+    codex) printf '%s\n' '--sandbox --ephemeral --ignore-user-config --ignore-rules' ;;
+    agy) printf '%s\n' '--sandbox --mode' ;;
+    claude) printf '%s\n' '--permission-mode --tools --strict-mcp-config --mcp-config --no-session-persistence --effort' ;;
+  esac
+  exit 0
+fi
 printf '%s\n' "$@" > "$PEER_REVIEW_STUB_ARGS"
 printf 'stub review ok\n'
 EOF
@@ -53,6 +61,10 @@ make_opencode_stub_cli() {
   local path="$1"
   cat >"$path" <<'EOF'
 #!/usr/bin/env bash
+if printf '%s\n' "$@" | grep -qx -- '--help'; then
+  printf '%s\n' '--pure --agent --variant'
+  exit 0
+fi
 printf '%s\n' "$@" > "$PEER_REVIEW_STUB_ARGS"
 agent=""
 prev=""
@@ -98,6 +110,8 @@ set -e
 assert_exit "effort-only profile run" 0
 assert_file_contains "effort forwarded to codex config" "$D/args.txt" "model_reasoning_effort=high"
 assert_file_not_contains "effort not misread as model flag" "$D/args.txt" "--model"
+assert_file_contains "codex uses an ephemeral session" "$D/args.txt" "--ephemeral"
+assert_file_contains "codex ignores ambient user config" "$D/args.txt" "--ignore-user-config"
 
 set +e
 (
@@ -144,6 +158,7 @@ assert_file_contains "opencode receives mapped model flag" "$D2/args_opencode.tx
 assert_file_contains "opencode receives mapped model value" "$D2/args_opencode.txt" "opencode/gpt-5"
 assert_file_contains "opencode receives read-only agent flag" "$D2/args_opencode.txt" "--agent"
 assert_file_contains "opencode receives read-only agent name" "$D2/args_opencode.txt" "peer-review-readonly-"
+assert_file_contains "opencode disables ambient plugins and config" "$D2/args_opencode.txt" "--pure"
 assert_file_not_contains "opencode does not bypass permissions" "$D2/args_opencode.txt" "--dangerously-skip-permissions"
 assert_file_contains "opencode agent denies edits" "$D2/opencode_agent.md" "edit: deny"
 assert_file_contains "opencode agent denies shell" "$D2/opencode_agent.md" "bash: deny"
@@ -165,12 +180,17 @@ assert_exit "agy-test run" 0
 assert_file_contains "agy receives model flag" "$D2/args_agy.txt" "--model"
 assert_file_contains "agy receives model value" "$D2/args_agy.txt" "gemini-3.5-flash"
 assert_file_contains "agy receives sandbox flag" "$D2/args_agy.txt" "--sandbox"
+assert_file_contains "agy receives plan mode" "$D2/args_agy.txt" "plan"
 assert_file_not_contains "agy does not bypass permissions" "$D2/args_agy.txt" "--dangerously-skip-permissions"
 
 make_failing_stub_cli() {
   local path="$1"
   cat >"$path" <<'EOF'
 #!/usr/bin/env bash
+if printf '%s\n' "$@" | grep -qx -- '--help'; then
+  printf '%s\n' '--permission-mode --tools --strict-mcp-config --mcp-config --no-session-persistence --effort'
+  exit 0
+fi
 echo "stub boom" >&2
 exit 1
 EOF
@@ -181,6 +201,10 @@ make_slow_stub_cli() {
   local path="$1"
   cat >"$path" <<'EOF'
 #!/usr/bin/env bash
+if printf '%s\n' "$@" | grep -qx -- '--help'; then
+  printf '%s\n' '--sandbox --ephemeral --ignore-user-config --ignore-rules'
+  exit 0
+fi
 sleep 1
 printf 'stub review ok\n'
 EOF
