@@ -3,10 +3,13 @@
 #
 # Run: bash skills/ui-splint/tests/run.sh
 set -u
+export UI_SPLINT_SETTLE_MS=350
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$HERE/../scripts/audit-chrome.mjs"
+PY_RUNNER="$HERE/../scripts/run-ui-splint.py"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ui-splint-tests.XXXXXX")"
+PROFILES_BEFORE="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"
 SERVER_PID=""
 trap '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
 
@@ -81,6 +84,43 @@ then
 else
   fail "coverage records HTTP 404 as unverified" "$(cat "$WORK/audit/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 300)"
 fi
+
+if grep -q "args = \[.*--no-sandbox" "$RUNNER"; then
+  fail "Chrome sandbox is enabled by default" "runner hard-codes --no-sandbox"
+else
+  pass "Chrome sandbox is enabled by default"
+fi
+grep -qF -- "--allow-no-sandbox" "$RUNNER" && pass "unsafe sandbox override is explicit" || fail "unsafe sandbox override is explicit" "missing flag"
+grep -qF "CDP command timeout" "$RUNNER" && pass "CDP requests have a deadline" || fail "CDP requests have a deadline" "missing timeout"
+
+set +e
+python3 "$PY_RUNNER" http://example.invalid --probes >"$WORK/probes.out" 2>"$WORK/probes.err"
+EC=$?
+set -e
+assert_exit "removed mutating --probes flag is rejected" 2
+
+cat >"$WORK/theme-valid.json" <<'EOF'
+{"routes":["/clean.html"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"themes":["app-dark"],"states":["default"],"scrollPositions":["top"],"themeInitScripts":{"app-dark":"document.documentElement.dataset.theme='dark'"}}
+EOF
+set +e
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/theme-valid.json" --out-dir "$WORK/theme-valid" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+set -e
+if python3 - "$WORK/theme-valid/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+assert cell["themeDriver"] == "init-script" and cell["status"] == "checked", cell
+PY
+then pass "theme init script records verified driver"; else fail "theme init script records verified driver" "invalid coverage"; fi
+
+cat >"$WORK/theme-error.json" <<'EOF'
+{"routes":["/clean.html"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"themes":["broken"],"states":["default"],"scrollPositions":["top"],"themeInitScripts":{"broken":"throw new Error('theme boom')"}}
+EOF
+set +e
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/theme-error.json" --out-dir "$WORK/theme-error" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+assert_exit "theme init failure blocks coverage" 1
+if grep -qF "theme init failed: theme boom" "$WORK/theme-error/coverage.json"; then pass "theme init error is preserved"; else fail "theme init error is preserved" "missing error"; fi
 
 set +e
 python3 - "$HERE" "$RUNNER" "$PORT" "$WORK" >"$WORK/contract.out" 2>"$WORK/contract.err" <<'PY'
@@ -295,7 +335,7 @@ fi
 
 # ---- Python helpers: aggregation parity + state interception proof ----
 if python3 - "$HERE/../scripts/run-ui-splint.py" <<'PY'
-import importlib.util, pathlib, sys
+import importlib.util, json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("ui_splint_runner", path)
 mod = importlib.util.module_from_spec(spec)
@@ -332,11 +372,27 @@ route = FakeRoute()
 page.handler(route)
 assert tracker["interceptions"] == 1 and route.fulfilled["body"] == "[]"
 assert mod.state_coverage("empty", tracker, "**/api/**") == ("checked", None)
+
+page = FakePage()
+tracker = mod.apply_state_route(page, "stale", "**/api/**", {
+    "stale": [{"pattern": "**/items", "status": 200, "contentType": "application/json", "body": {"stale": True}}]
+})
+route = FakeRoute()
+page.handler(route)
+assert tracker["driver"] == "configured-mock" and tracker["interceptions"] == 1
+assert json.loads(route.fulfilled["body"])["stale"] is True
 PY
 then
   pass "Python aggregation and state interception helpers"
 else
   fail "Python aggregation and state interception helpers" "helper contract failed"
+fi
+
+PROFILES_AFTER="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"
+if [ "$PROFILES_AFTER" = "$PROFILES_BEFORE" ]; then
+  pass "Chrome temporary profiles are removed"
+else
+  fail "Chrome temporary profiles are removed" "before=$PROFILES_BEFORE after=$PROFILES_AFTER"
 fi
 
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"

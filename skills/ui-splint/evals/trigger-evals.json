@@ -23,6 +23,10 @@
     "query": "Check whether the empty, loading, and error states are visually coherent.",
     "should_trigger": true
   },
+  { "query": "Audit the entire dashboard across supported themes and viewports before shipping it.", "should_trigger": true },
+  { "query": "이 프론트 화면 완성됐는지 실제 렌더링으로 대비와 잘림을 검사해줘.", "should_trigger": true },
+  { "query": "Finish this component, fix any measured overflow or tap-target defects, and verify the rendered result.", "should_trigger": true },
+  { "query": "The page feels visually inconsistent; inspect all cards rather than one selected DOM node.", "should_trigger": true },
   {
     "query": "Fix the API pagination bug in the backend service.",
     "should_trigger": false
@@ -46,5 +50,9 @@
   {
     "query": "Create a CLI helper that prints JSON.",
     "should_trigger": false
-  }
+  },
+  { "query": "I selected this one button in Chrome; change only its padding and return a minimal source diff.", "should_trigger": false },
+  { "query": "Use the DOM picker to map this highlighted badge to its component.", "should_trigger": false },
+  { "query": "Add a Playwright interaction test for the checkout submit flow; visual layout is out of scope.", "should_trigger": false },
+  { "query": "Review the CSS file statically without running or rendering the app.", "should_trigger": false }
 ]

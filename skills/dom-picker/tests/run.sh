@@ -33,6 +33,17 @@ node --check "$PICKER" 2>"$HERE/.err"; assert_ok "element-picker.js parses" "$(c
 node --check "$CDP" 2>"$HERE/.err"; assert_ok "cdp.mjs parses" "$(cat "$HERE/.err")"
 rm -f "$HERE/.err"
 
+node "$HERE/e2e.mjs" >"$HERE/.out" 2>"$HERE/.err"
+E2E_EC=$?
+if [ "$E2E_EC" -eq 0 ]; then
+  pass "real-browser picker lifecycle e2e"
+elif [ "$E2E_EC" -eq 77 ]; then
+  pass "real-browser picker lifecycle e2e (skipped: Chrome unavailable)"
+else
+  fail "real-browser picker lifecycle e2e" "$(cat "$HERE/.out" "$HERE/.err" | head -c 500)"
+fi
+rm -f "$HERE/.out" "$HERE/.err"
+
 # --- cdp usage ------------------------------------------------------------
 USAGE="$(node "$CDP" 2>&1)"
 case "$USAGE" in
@@ -52,10 +63,25 @@ case "$USAGE" in
   *) fail "cdp.mjs usage documents inject" "missing inject in: $USAGE" ;;
 esac
 
+node "$CDP" read --port=0 >"$HERE/.out" 2>"$HERE/.err"
+if [ "$?" -eq 2 ] && grep -qF "invalid --port" "$HERE/.err"; then
+  pass "cdp rejects an out-of-range port before connecting"
+else
+  fail "cdp rejects an out-of-range port before connecting" "$(cat "$HERE/.out" "$HERE/.err")"
+fi
+node "$CDP" wait --timeout=-1 >"$HERE/.out" 2>"$HERE/.err"
+if [ "$?" -eq 2 ] && grep -qF "invalid --timeout" "$HERE/.err"; then
+  pass "cdp rejects a negative timeout before connecting"
+else
+  fail "cdp rejects a negative timeout before connecting" "$(cat "$HERE/.out" "$HERE/.err")"
+fi
+rm -f "$HERE/.out" "$HERE/.err"
+
 # --- picker/driver regression guards --------------------------------------
 assert_contains "picker persists state under a namespaced sessionStorage key" "__s2p_state_v1" "$PICKER"
 assert_contains "picker defines saveState/loadState" "function saveState" "$PICKER"
 assert_contains "picker restores state on install" "function restoreState" "$PICKER"
+assert_contains "picker restores only uniquely matched selectors" "matches.length === 1" "$PICKER"
 assert_contains "picker escapes data-testid attribute values" "attrEscape" "$PICKER"
 assert_contains "picker verifies selector uniqueness" "function isUnique" "$PICKER"
 assert_contains "picker exposes ariaLabel in payload" "ariaLabel:" "$PICKER"
@@ -66,6 +92,13 @@ assert_contains "picker exposes atomic public queue drain" "drainQueue: drainQue
 assert_contains "picker teardown clears persisted state" "sessionStorage.removeItem(STATE_KEY)" "$PICKER"
 assert_contains "picker documents Alt+Shift+S hotkey" "Alt+Shift+S" "$PICKER"
 assert_contains "cdp connect exposes close() for socket lifecycle" "const close = ()" "$CDP"
+assert_contains "cdp rejects pending requests on disconnect" "rejectPending(error)" "$CDP"
+assert_contains "cdp bounds command waits" "CDP command timed out" "$CDP"
+if grep -Fq "setInterval(" "$CDP"; then
+  fail "cdp polling is serialized" "setInterval can overlap async CDP operations"
+else
+  pass "cdp polling is serialized"
+fi
 assert_contains "cdp has serve command" 'case "serve":' "$CDP"
 assert_contains "cdp prints request batches" "REQUEST " "$CDP"
 assert_contains "cdp emits requests field" "requests:" "$CDP"

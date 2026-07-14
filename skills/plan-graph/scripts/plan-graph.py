@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -15,6 +17,7 @@ from pathlib import Path
 
 
 CHANGES: list[dict] = []
+LOCK_TOKENS: dict[Path, str] = {}
 
 
 def record_change(verb: str, node_id: int, path: str | None = None, extra: str | None = None, silent: bool = False):
@@ -40,7 +43,7 @@ def acquire_lock(lock_path: Path) -> bool:
     --fix runs can never both believe they hold it (the old exists()->write
     sequence had a TOCTOU race). Returns True only if we created it.
 
-    A lock older than 10s is treated as stale: removed and re-claimed once.
+    A lock older than 10s is stale only when its owner is no longer alive.
     A genuine I/O error (e.g. a read-only plan dir) raises OSError so the
     caller can distinguish it from live contention rather than silently
     reporting 'locked by another process'."""
@@ -48,12 +51,31 @@ def acquire_lock(lock_path: Path) -> bool:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         try:
-            mtime = lock_path.stat().st_mtime
+            stat = lock_path.stat()
+            raw = lock_path.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
             # Lock vanished between the failed create and the stat — retry once.
             return acquire_lock(lock_path)
-        if time.time() - mtime < 10:
-            return False  # a live lock holds it
+        pid = None
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                pid = int(data.get("pid"))
+            elif isinstance(data, int):
+                pid = data
+        except (ValueError, TypeError, json.JSONDecodeError):
+            with contextlib.suppress(ValueError):
+                pid = int(raw)
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+                return False
+            except PermissionError:
+                return False
+            except ProcessLookupError:
+                pass
+        if time.time() - stat.st_mtime < 10:
+            return False
         # Stale: drop it and re-claim atomically.
         try:
             lock_path.unlink()
@@ -63,10 +85,12 @@ def acquire_lock(lock_path: Path) -> bool:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
             return False  # someone else won the re-claim race
+    token = secrets.token_hex(16)
     try:
-        os.write(fd, str(os.getpid()).encode("utf-8"))
+        os.write(fd, json.dumps({"pid": os.getpid(), "token": token}).encode("utf-8"))
     finally:
         os.close(fd)
+    LOCK_TOKENS[lock_path] = token
     return True
 
 
@@ -74,10 +98,17 @@ def release_lock(lock_path: Path):
     try:
         # Only remove the lock if it is still ours — never delete another
         # process's lock (e.g. if ours was overtaken as stale mid-run).
-        if lock_path.exists() and lock_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        if (
+            lock_path.exists()
+            and data.get("pid") == os.getpid()
+            and data.get("token") == LOCK_TOKENS.get(lock_path)
+        ):
             lock_path.unlink()
     except Exception:
         pass
+    finally:
+        LOCK_TOKENS.pop(lock_path, None)
 
 
 
@@ -121,6 +152,30 @@ def is_safe_path(path_str: str) -> bool:
         return False
     parts = Path(path_str)
     return not parts.is_absolute() and ".." not in parts.parts
+
+
+def resolved_plan_path(root: Path, path_str: str) -> Path | None:
+    """Resolve a graph node without allowing a symlinked file or parent to
+    escape the canonical repository root."""
+    if not is_safe_path(path_str):
+        return None
+    canonical_root = root.resolve()
+    candidate = (canonical_root / path_str).resolve(strict=False)
+    try:
+        candidate.relative_to(canonical_root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            tmp.unlink()
 
 
 def parse_graph(path: Path):
@@ -183,7 +238,9 @@ def parse_graph(path: Path):
 
 
 def write_graph(path: Path, next_id: int, nodes: dict[int, Node], deps: dict[int, list[int]]):
-    target = path.resolve() if path.is_symlink() else path
+    if path.is_symlink():
+        raise OSError("graph file must not be a symlink")
+    target = path
     deps = {node_id: values for node_id, values in deps.items() if values}
     lines = [f"next: {next_id}", "", "nodes:"]
     for node_id in sorted(nodes):
@@ -196,17 +253,7 @@ def write_graph(path: Path, next_id: int, nodes: dict[int, Node], deps: dict[int
     for node_id in sorted(deps):
         values = ", ".join(str(value) for value in deps[node_id])
         lines.append(f"  {node_id}: [{values}]")
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    try:
-        os.replace(tmp, target)
-    except Exception:
-        # Don't leave a half-written .tmp behind if the swap fails.
-        try:
-            tmp.unlink()
-        except Exception:
-            pass
-        raise
+    atomic_write_text(target, "\n".join(lines) + "\n")
 
 
 def fix_missing_files(root: Path, nodes: dict[int, Node], deps: dict[int, list[int]], silent: bool = False):
@@ -215,7 +262,8 @@ def fix_missing_files(root: Path, nodes: dict[int, Node], deps: dict[int, list[i
         node = nodes[node_id]
         if not is_safe_path(node.path):
             continue  # unsafe path: leave it for validate() to reject, don't touch disk
-        exists = (root / node.path).exists()
+        resolved = resolved_plan_path(root, node.path)
+        exists = bool(resolved and resolved.exists())
         if node.x == "missing" and exists:
             node.x = None
             record_change("clear", node_id, extra="missing", silent=silent)
@@ -336,9 +384,9 @@ def sync_markdown_frontmatter(
     fix: bool,
     silent: bool = False,
 ) -> str | None:
-    if not is_safe_path(node.path):
+    path = resolved_plan_path(root, node.path)
+    if path is None:
         return None  # never read/write a file outside root; validate() reports the path error
-    path = root / node.path
     if not path.exists() or path.is_dir():
         return None
     try:
@@ -355,7 +403,7 @@ def sync_markdown_frontmatter(
     if not match:
         if fix:
             try:
-                path.write_text(expected_fm + content, encoding="utf-8")
+                atomic_write_text(path, expected_fm + content)
                 record_change("add-frontmatter", node_id, path=node.path, silent=silent)
                 return None
             except Exception as e:
@@ -390,7 +438,7 @@ def sync_markdown_frontmatter(
     if mismatch:
         if fix:
             try:
-                path.write_text(expected_fm + body, encoding="utf-8")
+                atomic_write_text(path, expected_fm + body)
                 details = ",".join(field for field, _ in mismatch)
                 record_change("sync-frontmatter", node_id, path=node.path, extra=details, silent=silent)
                 return None
@@ -493,17 +541,8 @@ def validate(root: Path, next_id: int, nodes: dict[int, Node], deps: dict[int, l
     errors: list[str] = []
     warning_messages: list[str] = []
 
-    for node_id, node in sorted(nodes.items()):
-        if node.x != "missing":
-            bases = deps.get(node_id, [])
-            err = sync_markdown_frontmatter(root, node_id, node, bases, fix=False, silent=silent)
-            if err:
-                if err.startswith("missing frontmatter in "):
-                    warning_messages.append(err)
-                else:
-                    errors.append(err)
-
-    seen_paths: dict[str, int] = {}
+    seen_paths: dict[Path, int] = {}
+    valid_paths: set[int] = set()
     max_id = max(nodes.keys(), default=0)
     if next_id <= max_id:
         errors.append(f"next must be greater than max node id: next={next_id} max={max_id}")
@@ -522,14 +561,29 @@ def validate(root: Path, next_id: int, nodes: dict[int, Node], deps: dict[int, l
             errors.append(f"{node_id} path escapes root: {node.path}")
             invalid_path = True
         if not invalid_path:
-            if node.path in seen_paths:
+            resolved = resolved_plan_path(root, node.path)
+            if resolved is None:
+                errors.append(f"{node_id} path resolves outside root: {node.path}")
+                invalid_path = True
+            elif resolved in seen_paths:
                 # Keep the first id as the cited original so a 3rd duplicate
                 # still names the earliest offender, not the previous one.
-                errors.append(f"duplicate node path: {seen_paths[node.path]} and {node_id} use {node.path}")
+                errors.append(f"duplicate resolved node path: {seen_paths[resolved]} and {node_id} use {node.path}")
             else:
-                seen_paths[node.path] = node_id
-        if not invalid_path and not node.x and not (root / node.path).exists():
+                seen_paths[resolved] = node_id
+                valid_paths.add(node_id)
+        if not invalid_path and not node.x and not resolved_plan_path(root, node.path).exists():
             errors.append(f"{node_id} missing file: {node.path}")
+
+    for node_id, node in sorted(nodes.items()):
+        if node_id in valid_paths and node.x != "missing":
+            bases = deps.get(node_id, [])
+            err = sync_markdown_frontmatter(root, node_id, node, bases, fix=False, silent=silent)
+            if err:
+                if err.startswith("missing frontmatter in "):
+                    warning_messages.append(err)
+                else:
+                    errors.append(err)
     for dependent, bases in sorted(deps.items()):
         if dependent not in nodes:
             errors.append(f"deps key missing from nodes: {dependent}")
@@ -587,9 +641,11 @@ def suggest_deps(
     existing = {(dependent, base) for dependent, bases in deps.items() for base in bases}
 
     for dependent_id, dependent in sorted(nodes.items()):
-        if dependent.x is not None or not is_safe_path(dependent.path):
+        if dependent.x is not None:
             continue
-        dependent_path = root / dependent.path
+        dependent_path = resolved_plan_path(root, dependent.path)
+        if dependent_path is None:
+            continue
         if not dependent_path.exists() or dependent_path.is_dir():
             continue
         try:
@@ -754,14 +810,22 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--root", type=Path, default=None, help="repo root for plan paths")
     parser.add_argument("--json", action="store_true", help="output result in JSON format")
     args = parser.parse_args(argv)
-    graph = args.graph
+    graph = args.graph.expanduser().absolute()
     root = (args.root.resolve() if args.root else default_root(graph.resolve()).resolve())
 
+    if graph.is_symlink():
+        print("ERROR=graph file must not be a symlink", file=sys.stderr)
+        print("FAIL plan graph", file=sys.stderr)
+        return 1
+    try:
+        graph.parent.resolve().relative_to(root)
+    except ValueError:
+        print(f"ERROR=graph path resolves outside root: {graph}", file=sys.stderr)
+        print("FAIL plan graph", file=sys.stderr)
+        return 1
+
     if not graph.exists():
-        if args.fix and not args.suggest_deps and not args.show:
-            graph.parent.mkdir(parents=True, exist_ok=True)
-            write_graph(graph, 1, {}, {})
-        else:
+        if not (args.fix and not args.suggest_deps and not args.show):
             err_msg = f"graph file does not exist: {graph}. Run with --fix to initialize."
             if args.json:
                 print(json.dumps({"status": "ERROR", "errors": [err_msg], "warnings": [], "changes": []}, ensure_ascii=False, indent=2))
@@ -774,6 +838,7 @@ def main(argv: list[str]) -> int:
     lock_acquired = False
     if args.fix and not args.show and not args.suggest_deps:
         # Only write-capable fix mode locks; read-only modes take precedence.
+        graph.parent.mkdir(parents=True, exist_ok=True)
         lock_error: str | None = None
         for _ in range(3):
             try:
@@ -792,6 +857,17 @@ def main(argv: list[str]) -> int:
                 print(f"ERROR={err_msg}", file=sys.stderr)
                 print("FAIL plan graph", file=sys.stderr)
             return 1
+
+        # Recheck and initialize while holding the same lock used for every
+        # other graph write, so concurrent first runs cannot race.
+        if not graph.exists():
+            try:
+                write_graph(graph, 1, {}, {})
+            except Exception as exc:
+                release_lock(lock_path)
+                print(f"ERROR=failed to initialize graph: {exc}", file=sys.stderr)
+                print("FAIL plan graph", file=sys.stderr)
+                return 1
 
     try:
         next_id, nodes, deps = parse_graph(graph)
@@ -861,17 +937,23 @@ def main(argv: list[str]) -> int:
     if args.fix:
         try:
             changed = fix_missing_files(root, nodes, deps, silent=args.json)
-            for node_id, node in sorted(nodes.items()):
-                if node.x != "missing":
-                    bases = deps.get(node_id, [])
-                    err = sync_markdown_frontmatter(root, node_id, node, bases, fix=True, silent=args.json)
-                    if err:
-                        fix_errors.append(err)
-            if changed:
+            pre_errors, _ = validate(root, next_id, nodes, deps, silent=True)
+            blocking = [error for error in pre_errors if not error.startswith("frontmatter mismatch in ")]
+            if blocking:
+                CHANGES.clear()
+                fix_errors.extend(blocking)
+            elif changed:
                 try:
                     write_graph(graph, next_id, nodes, deps)
                 except Exception as exc:
                     fix_errors.append(f"failed to write graph: {exc}")
+            if not fix_errors:
+                for node_id, node in sorted(nodes.items()):
+                    if node.x != "missing":
+                        bases = deps.get(node_id, [])
+                        err = sync_markdown_frontmatter(root, node_id, node, bases, fix=True, silent=args.json)
+                        if err:
+                            fix_errors.append(err)
         finally:
             if lock_acquired:
                 release_lock(lock_path)

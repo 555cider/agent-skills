@@ -35,7 +35,7 @@ def validate_trigger_evals(skill: str, path: Path) -> None:
     data = load_json(path)
     rel = path.relative_to(ROOT)
     require(isinstance(data, list), f"{rel} must be a JSON array")
-    require(len(data) >= 8, f"{rel} must contain at least 8 cases")
+    require(len(data) >= 20, f"{rel} must contain at least 20 cases")
 
     positives = 0
     negatives = 0
@@ -51,8 +51,8 @@ def validate_trigger_evals(skill: str, path: Path) -> None:
         positives += int(should_trigger)
         negatives += int(not should_trigger)
 
-    require(positives >= 4, f"{rel} must include at least 4 positive trigger cases")
-    require(negatives >= 4, f"{rel} must include at least 4 negative trigger cases")
+    require(positives >= 10, f"{rel} must include at least 10 positive trigger cases")
+    require(negatives >= 10, f"{rel} must include at least 10 negative trigger cases")
 
 
 def validate_behavior_evals(skill: str, path: Path) -> None:

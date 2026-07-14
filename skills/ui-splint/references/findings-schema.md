@@ -92,6 +92,7 @@ and backward-compatible `cell` field come from the worst severity (`Fail` > `Ris
   "generated_at": "2026-07-07T03:00:00.000Z",   // runner stamps run time (UTC ISO-8601)
   "matrix": [
     { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default",
+      "themeDriver": "media", "stateDriver": "page-default", "interceptions": 0,
       "status": "checked", "counts": { "Fail": 1, "Risk": 0, "Polish": 0 } },
     { "route": "/", "viewport": "desktop", "theme": "light", "state": "error",
       "status": "error", "error": "TimeoutError: ..." },  // surfaces as "Not verified"
@@ -112,8 +113,17 @@ expect this extra rule name.
 
 Cell `status` values: `checked` (audit ran on the intended state), `not-forced` (the CDP
 runner cannot mock this data state, or the Playwright runner installed a mock but no request
-matched `apiMockPattern` — honest, but **not verified**), `error` (navigation/HTTP failure,
+matched its configured `stateMocks` patterns — honest, but **not verified**), `error` (navigation/HTTP failure,
 or an audit rule threw and was recorded in `rulesSkipped`). A cell that is anything other
 than `checked`, or any rule in `rulesSkipped`, must be reported as **Not verified** and
 blocks the runner's completion gate. Re-run `not-forced` cells with a matching Playwright
 route mock or MCP route mocks to actually exercise them.
+
+`themeDriver` is `media` or `init-script`; `stateDriver` is `page-default`,
+`configured-mock`, `fallback-mock`, or `none`. `interceptions` is the number of requests
+actually handled for the cell, and is the proof required for non-default state coverage.
+
+`stateMocks.<state>` is an array of route rules. Each rule requires `pattern` and exactly
+one of `body` or `hold: true`; `status` defaults to 200 and `contentType` to
+`application/json`. Non-string bodies are JSON-serialized. `themeInitScripts.<theme>` is a
+trusted project script installed before page code; use it to set class/data-attribute themes.

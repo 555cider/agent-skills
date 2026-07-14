@@ -1,6 +1,8 @@
 ---
 name: plan-graph
 description: Use when adding, revising, completing, dropping, or removing a persistent plan file in a repo that maintains (or should maintain) a `.agents/plan` dependency-graph index, or when a new plan may depend on, supersede, or relate to existing plan files. Not for drafting a single standalone plan with no cross-plan lineage — use a plain plan-writing skill for that.
+license: MIT
+compatibility: Requires Python 3.10 or newer, git for repository-root discovery, and local filesystem access.
 ---
 
 # Plan Graph
@@ -92,8 +94,8 @@ auto-discover existing markdown. To adopt a repo that already has plan files:
    path + one-line summary), and set `next` past the highest ID.
 3. Read each file to infer real `deps` edges — do not leave `deps` empty just
    because the script accepts it.
-4. Run the check command (see `## Command`) to generate frontmatter and catch
-   missing-file or path errors.
+4. Run plain check to catch missing-file or path errors, then run `--fix` to
+   generate/synchronize frontmatter.
 5. Report via `## Report Contract`.
 
 ## Workflow
@@ -220,17 +222,19 @@ python3 <skill-dir>/scripts/plan-graph.py .agents/plan/graph.yaml --fix
 `--fix` marks missing active plan files `x: missing` (and clears it if the file
 returns), deduplicates dep lists, creates an empty graph if none exists, and
 prepends/syncs plan-file frontmatter from the graph. Run it once on an existing
-graph to generate frontmatter. **Hazard:** drift repairs are persisted *before*
-validation, so a `--fix` that exits `1` may already have mutated files — commit
-or stash a clean tree first, and use plain check when you only want to look.
+graph to generate frontmatter. Structural validation finishes before writes;
+the graph source of truth is atomically saved before derived plan frontmatter.
+If a later plan-file write fails, fix the filesystem error and rerun `--fix` to
+recover from the graph.
 After removing a completed tree, run check again.
 
 `--root <dir>` overrides the repo root used to resolve plan paths (default: the
 git toplevel of the graph's directory, else a `.agents/plan` heuristic, else the
 cwd). `--fix` takes an exclusive `<graph>.lock` for the duration of the write;
 if you see `ERROR=graph locked by another process`, another `--fix` is running —
-wait and retry. A leftover `.lock` after a crash is stale (locks older than 10s
-are ignored automatically) and safe to delete. Check and `--show` take no lock.
+wait and retry. A lock is reclaimed only when it is old and its owning PID is no
+longer alive; never delete a live owner's lock based on age alone. Check and
+`--show` take no lock.
 
 To view the current plans as a tree, add `--show`:
 

@@ -710,6 +710,7 @@ OPENCODE_AGENT_FILE=""
 OPENCODE_AGENT_NAME=""
 OPENCODE_AGENT_DIR_CREATED=0
 OPENCODE_CONFIG_DIR_CREATED=0
+CLAUDE_MCP_CONFIG=""
 
 # --- cleanup on any exit ---
 declare -A FINALIZED=()
@@ -765,6 +766,7 @@ cleanup() {
       rmdir "$(dirname "$(dirname "$OPENCODE_AGENT_FILE")")" 2>/dev/null || true
     fi
   fi
+  [ -z "$CLAUDE_MCP_CONFIG" ] || rm -f "$CLAUDE_MCP_CONFIG" 2>/dev/null || true
   # NB: only this run's own temp files are removed. A shared glob over
   # $OUT_DIR/.peer-review-{timeout,prompt}-* would delete a concurrent run's
   # in-flight prompt/marker files; PROMPT_FILE is removed above and timeout
@@ -955,7 +957,15 @@ build_cmd() {
   CMD=()
   case "$cli" in
     codex)
-      CMD=(codex exec --sandbox read-only)
+      local codex_help
+      codex_help="$(codex exec --help 2>&1 || true)"
+      for required in --sandbox --ephemeral --ignore-user-config --ignore-rules; do
+        grep -qF -- "$required" <<<"$codex_help" || {
+          echo "codex CLI lacks required read-only reviewer flag: $required" >&2
+          return 3
+        }
+      done
+      CMD=(codex exec --sandbox read-only --ephemeral --ignore-user-config --ignore-rules)
       if [ -z "$REPO_ROOT" ]; then
         CMD+=(--skip-git-repo-check)
       fi
@@ -963,12 +973,33 @@ build_cmd() {
       [ -n "$effort" ] && CMD+=(-c "model_reasoning_effort=$effort")
       ;;
     claude)
-      CMD=(claude -p)
+      local claude_help
+      claude_help="$(claude --help 2>&1 || true)"
+      for required in --permission-mode --tools --strict-mcp-config --mcp-config; do
+        grep -qF -- "$required" <<<"$claude_help" || {
+          echo "claude CLI lacks required read-only reviewer flag: $required" >&2
+          return 3
+        }
+      done
+      if [ -z "$CLAUDE_MCP_CONFIG" ]; then
+        CLAUDE_MCP_CONFIG="$(mktemp "$OUT_DIR/.peer-review-empty-mcp-XXXXXX.json")"
+        printf '{"mcpServers":{}}\n' >"$CLAUDE_MCP_CONFIG"
+      fi
+      CMD=(claude -p --permission-mode plan --tools Read,Glob,Grep \
+        --mcp-config "$CLAUDE_MCP_CONFIG" --strict-mcp-config)
+      grep -qF -- "--no-session-persistence" <<<"$claude_help" && CMD+=(--no-session-persistence)
       [ -n "$model" ] && CMD+=(--model "$model")
+      [ -n "$effort" ] && grep -qF -- "--effort" <<<"$claude_help" && CMD+=(--effort "$effort")
       ;;
     opencode)
+      local opencode_help
+      opencode_help="$(opencode --help 2>&1 || true)"
+      grep -qF -- "--pure" <<<"$opencode_help" || {
+        echo "opencode CLI lacks required isolated reviewer flag: --pure" >&2
+        return 3
+      }
       ensure_opencode_readonly_agent
-      CMD=(opencode run --agent "$OPENCODE_AGENT_NAME")
+      CMD=(opencode --pure run --agent "$OPENCODE_AGENT_NAME")
       if [ -n "$model" ]; then
         if [[ "$model" != */* ]]; then
           model="opencode/$model"
@@ -978,7 +1009,15 @@ build_cmd() {
       [ -n "$effort" ] && CMD+=(--variant "$effort")
       ;;
     agy)
-      CMD=(agy -p "$(cat "$PROMPT_FILE")" --sandbox)
+      local agy_help
+      agy_help="$(agy --help 2>&1 || true)"
+      for required in --sandbox --mode; do
+        grep -qF -- "$required" <<<"$agy_help" || {
+          echo "agy CLI lacks required read-only reviewer flag: $required" >&2
+          return 3
+        }
+      done
+      CMD=(agy -p "$(cat "$PROMPT_FILE")" --sandbox --mode plan)
       [ -n "$model" ] && CMD+=(--model "$model")
       ;;
   esac

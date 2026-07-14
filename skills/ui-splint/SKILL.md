@@ -1,6 +1,8 @@
 ---
 name: ui-splint
 description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots — to catch rendered visual defects (contrast, layout, overlap, overflow, collapsed/clipped regions, state, data feedback, responsive, affordance, navigation mode) before claiming frontend work complete. Triggers on visual QA, "looks off/weird", alignment/spacing/contrast concerns, and any "is this screen done" check.
+license: MIT
+compatibility: Requires rendered DOM access; use Node 22 or newer plus Chrome/Chromium, or Python 3 with Playwright.
 ---
 
 # UI Splint
@@ -26,14 +28,16 @@ Use the user's language in reports. Group findings by failure mode, not discover
 - **Severity is measured, not felt.** Take each finding's computed `severity`. Do not
   downgrade a measured `Fail` to taste. Auto-measured findings may be `Fail`;
   visual-judgment findings are capped at `Risk` until confirmed.
-- **Report before fixing.** List findings with evidence and wait for approval, unless
-  the user gave you a known list to fix.
+- **Respect the request's authority.** A build/edit/finish request authorizes safe fixes to
+  in-scope defects found by the audit. A review/audit-only request authorizes reporting only;
+  list findings with evidence and wait before changing source.
 
 ## Detect-first-then-judge Workflow
 
 1. **Render** the real UI (running app route, Storybook story, or preview). If none
    exists, create the narrowest way to render the screen. Cover the matrix: ≥1 mobile +
-   1 desktop viewport, light **and** dark themes, and every data state the screen has
+   1 desktop viewport (unless the surface is explicitly fixed-viewport), every supported
+   theme, and every data state the screen has
    (default, empty, error, loading, and stale/partial if remote-backed). Force states
    with mock fixtures when the UI cannot reach them; remove every mock before finishing.
 2. **Detect.** Inject the audit and capture measured findings. `audit.js` is engine-agnostic
@@ -59,8 +63,10 @@ Use the user's language in reports. Group findings by failure mode, not discover
    - **Batch, Playwright (if already set up):** `python3 scripts/run-ui-splint.py <url> --config audit-config.json`
      — same `findings.json`/`coverage.json` shape, and additionally **forces data states**
      (mocks `**/api/**` for empty/error/loading), waits on `waitForSelector`/`document.fonts.ready`,
-     and supports `--probes`. A non-default cell is `checked` only when a request actually
-     matches `apiMockPattern`; otherwise it is `not-forced` and blocks completion. This is
+     using `stateMocks` (with backward-compatible empty/error/loading fallbacks). A non-default
+     cell is `checked` only when a configured route actually intercepts a request; otherwise it
+     is `not-forced` and blocks completion. Use `themeInitScripts` for apps driven by a class or
+     data attribute instead of `prefers-color-scheme`. This is
      the runner to use when the matrix has non-`default` states.
      Needs `pip install playwright && playwright install chromium`.
 3. **Resolve.** Any finding with `confidence: needs-visual` (text over a gradient/image,
@@ -110,7 +116,7 @@ across the recorded matrix, and the subjective residue was judged.
 
 - `scripts/audit.js` — the deterministic detector (source of truth). Pure DOM/CSSOM/geometry; engine-agnostic.
 - `scripts/audit-chrome.mjs` — zero-dependency batch runner (drives installed Chrome via CDP / Node WebSocket, **Node ≥ 22**). No network mocking: non-`default` states are recorded `not-forced`.
-- `scripts/run-ui-splint.py` — Playwright batch runner (same JSON shape, **plus** state mocking, font/selector waits, `--probes`; for envs that already use Playwright).
+- `scripts/run-ui-splint.py` — Playwright batch runner (same JSON shape, **plus** explicit state mocking and theme init scripts; for envs that already use Playwright).
 - `scripts/audit-config.default.json` — thresholds, matrix, whitelist/baseline.
 - `references/audit-rules.md` — every audit rule: signal, method, threshold→severity, FP guards.
 - `references/findings-schema.md` — the findings/coverage JSON contract.

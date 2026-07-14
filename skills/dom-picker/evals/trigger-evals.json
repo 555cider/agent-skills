@@ -23,6 +23,10 @@
     "query": "Let me click the broken element in my own Chrome and type the fix there, then patch the source.",
     "should_trigger": true
   },
+  { "query": "I picked the Save button in the running settings page; make only that button wider and verify the diff.", "should_trigger": true },
+  { "query": "이 화면에서 방금 찍은 카드 하나의 padding만 소스에서 고쳐줘.", "should_trigger": true },
+  { "query": "Use the DOM picker on this highlighted nav item and map it back to the React component.", "should_trigger": true },
+  { "query": "The selected input label is misaligned; fix that exact element without redesigning the page.", "should_trigger": true },
   {
     "query": "Refactor this backend service to use async database calls.",
     "should_trigger": false
@@ -46,5 +50,9 @@
   {
     "query": "Explain how flexbox gap works.",
     "should_trigger": false
-  }
+  },
+  { "query": "Audit the entire dashboard across light and dark themes and tell me every visual issue.", "should_trigger": false },
+  { "query": "The whole checkout screen looks unfinished; run a responsive visual readiness check.", "should_trigger": false },
+  { "query": "Fix the validation logic behind this form field; its appearance is fine.", "should_trigger": false },
+  { "query": "Generate a screenshot diff for all routes without selecting a particular element.", "should_trigger": false }
 ]

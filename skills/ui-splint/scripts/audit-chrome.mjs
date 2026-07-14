@@ -15,7 +15,7 @@
  * Exit code: non-zero if any un-baselined Fail is found (so it can gate completion).
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -33,7 +33,7 @@ const INIT = AUDIT_JS + '\n;try{window.__uiSplintInstallCLS&&window.__uiSplintIn
 // ---------- args ----------
 const argv = process.argv.slice(2);
 if (!argv[0] || argv[0].startsWith('-')) {
-  console.error('usage: node audit-chrome.mjs <base_url> [--config f] [--out-dir d] [--routes /,/a] [--no-screenshots]');
+  console.error('usage: node audit-chrome.mjs <base_url> [--config f] [--out-dir d] [--routes /,/a] [--no-screenshots] [--allow-no-sandbox]');
   process.exit(2);
 }
 const baseUrl = argv[0].replace(/\/$/, '');
@@ -43,6 +43,12 @@ const configPath = opt('--config', DEFAULT_CONFIG);
 const outDir = opt('--out-dir', '.ui-splint');
 const noShots = argv.includes('--no-screenshots');
 const routesOverride = opt('--routes', null);
+const allowNoSandbox = argv.includes('--allow-no-sandbox');
+if (typeof process.getuid === 'function' && process.getuid() === 0 && !allowNoSandbox) {
+  console.error('Chrome sandbox cannot run as root. Re-run as an unprivileged user, or explicitly pass --allow-no-sandbox after reviewing the risk.');
+  process.exit(2);
+}
+if (allowNoSandbox) console.error('WARNING: Chrome sandbox disabled by explicit --allow-no-sandbox. Audit only trusted local pages.');
 
 // A user who explicitly passes --config must not silently fall back to defaults on a typo'd path.
 if (argv.includes('--config') && !existsSync(configPath)) {
@@ -62,6 +68,8 @@ const states = cfg.states || ['default'];
 const scrollPositions = cfg.scrollPositions || ['top', 'bottom'];
 const auditCfg = cfg.auditConfig || {};
 const baseline = cfg.baseline || [];
+const themeInitScripts = cfg.themeInitScripts || {};
+const settleMs = Number(process.env.UI_SPLINT_SETTLE_MS || cfg.settleMs || 1200);
 
 mkdirSync(join(outDir, 'screens'), { recursive: true });
 
@@ -88,21 +96,28 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function launchChrome() {
   const bin = findChrome();
-  const profile = join(tmpdir(), 'uisplint-' + process.pid);
-  const args = ['--headless=new', '--disable-gpu', '--no-sandbox', '--no-first-run',
+  const profile = mkdtempSync(join(tmpdir(), 'uisplint-'));
+  const args = ['--headless=new', '--disable-gpu', '--no-first-run',
     '--disable-extensions', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
+  if (allowNoSandbox) args.splice(2, 0, '--no-sandbox');
   const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-  const wsUrl = await new Promise((resolve, reject) => {
+  let wsUrl;
+  try { wsUrl = await new Promise((resolve, reject) => {
     let buf = '';
     const to = setTimeout(() => reject(new Error('timed out waiting for DevTools endpoint; is Chrome installed? set $CHROME')), 15000);
+    proc.on('error', error => { clearTimeout(to); reject(new Error('failed to start Chrome: ' + error.message)); });
     proc.stderr.on('data', d => {
       buf += d.toString();
       const m = buf.match(/ws:\/\/[^\s]+/);
       if (m) { clearTimeout(to); resolve(m[0]); }
     });
     proc.on('exit', c => { clearTimeout(to); reject(new Error('Chrome exited (' + c + ') before listening')); });
-  });
-  return { proc, wsUrl };
+  }); } catch (error) {
+    try { proc.kill(); } catch {}
+    rmSync(profile, { recursive: true, force: true });
+    throw error;
+  }
+  return { proc, wsUrl, profile };
 }
 
 class CDP {
@@ -111,10 +126,19 @@ class CDP {
     const ws = new WebSocket(wsUrl);
     await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws connect failed')); });
     const cdp = new CDP(ws);
+    const disconnect = reason => {
+      const error = new Error('CDP WebSocket ' + reason);
+      for (const pending of cdp.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+      cdp.pending.clear();
+      for (const waiter of cdp.waiters) waiter({ method: '__disconnect__' });
+      cdp.waiters = [];
+    };
+    ws.onerror = () => disconnect('error');
+    ws.onclose = () => disconnect('closed');
     ws.onmessage = ev => {
       const msg = JSON.parse(ev.data);
       if (msg.id && cdp.pending.has(msg.id)) {
-        const { resolve, reject } = cdp.pending.get(msg.id); cdp.pending.delete(msg.id);
+        const { resolve, reject, timer } = cdp.pending.get(msg.id); cdp.pending.delete(msg.id); clearTimeout(timer);
         msg.error ? reject(new Error(msg.method + ': ' + msg.error.message)) : resolve(msg.result);
       } else if (msg.method) {
         cdp.waiters = cdp.waiters.filter(w => !w(msg));
@@ -127,8 +151,10 @@ class CDP {
     const payload = { id, method, params };
     if (sessionId) payload.sessionId = sessionId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify(payload));
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('CDP command timeout: ' + method)); }, 20000);
+      this.pending.set(id, { resolve, reject, timer });
+      try { this.ws.send(JSON.stringify(payload)); }
+      catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });
   }
   once(method, sessionId, timeout = 20000) { return this.onceFiltered(method, sessionId, null, timeout); }
@@ -195,7 +221,7 @@ async function waitFor(fn, timeout = 20000, interval = 50) {
 const allFindings = [];
 const matrix = [];
 
-const { proc, wsUrl } = await launchChrome();
+const { proc, wsUrl, profile } = await launchChrome();
 const cdp = await CDP.connect(wsUrl);
 try {
   for (const route of routes) {
@@ -205,6 +231,9 @@ try {
       for (const theme of themes) {
         for (const state of states) {
           const cell = { route, viewport: vp.name, theme, state };
+          cell.themeDriver = themeInitScripts[theme] ? 'init-script' : 'media';
+          cell.stateDriver = state === 'default' ? 'page-default' : 'none';
+          cell.interceptions = 0;
           let targetId = null;
           let stopDocumentResponses = null;
           try {
@@ -219,6 +248,10 @@ try {
               { width: vp.width, height: vp.height, deviceScaleFactor: vp.dpr || 1, mobile: false }, sessionId);
             await cdp.send('Emulation.setEmulatedMedia',
               { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
+            if (themeInitScripts[theme]) {
+              const themeSource = `(()=>{const run=()=>{try{${String(themeInitScripts[theme])}\n;window.__uiSplintThemeInit={ok:true};}catch(e){window.__uiSplintThemeInit={ok:false,error:String(e&&e.message||e)};}};if(document.documentElement)run();else{const o=new MutationObserver(()=>{if(document.documentElement){o.disconnect();run();}});o.observe(document,{childList:true});}})();`;
+              await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: themeSource }, sessionId);
+            }
             await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INIT }, sessionId);
             const loaded = cdp.once('Page.loadEventFired', sessionId, 20000).catch(() => null);
             // Match the navigated main document response, not a redirect, prefetch,
@@ -230,13 +263,19 @@ try {
             const nav = await cdp.send('Page.navigate', { url }, sessionId);
             if (nav.errorText) throw new Error(`navigation failed for ${url}: ${nav.errorText}`);
             await loaded;
+            if (themeInitScripts[theme]) {
+              const themeResult = await cdp.send('Runtime.evaluate',
+                { expression: 'JSON.stringify(window.__uiSplintThemeInit||{ok:false,error:"theme init did not run"})', returnByValue: true }, sessionId);
+              const themeProof = JSON.parse(themeResult.result.value);
+              if (!themeProof.ok) throw new Error('theme init failed: ' + themeProof.error);
+            }
             const response = await waitFor(
               () => documentResponses.find(p => p.frameId === nav.frameId),
               20000
             ).catch(() => null);
             const status = response && response.response && response.response.status;
             if (status >= 400) throw new Error(`HTTP ${status} loading ${url}`);
-            await sleep(1200); // settle fonts + load-triggered late content (CLS)
+            await sleep(settleMs); // settle fonts + load-triggered late content (CLS)
 
             const cellFindings = [];
             const cellRulesSkipped = [];
@@ -299,8 +338,17 @@ try {
   // whole tree by PID.
   try {
     if (process.platform === 'win32' && proc.pid) spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
-    else proc.kill();
+    else proc.kill('SIGKILL');
   } catch {}
+  await new Promise(resolve => {
+    if (proc.exitCode !== null) return resolve();
+    const timer = setTimeout(resolve, 1000);
+    proc.once('exit', () => { clearTimeout(timer); resolve(); });
+  });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try { rmSync(profile, { recursive: true, force: true }); break; }
+    catch { await sleep(100 * (attempt + 1)); }
+  }
 }
 
 // Aggregate across cells while preserving routes and the worst severity evidence.

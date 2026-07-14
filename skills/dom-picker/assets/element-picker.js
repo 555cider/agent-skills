@@ -566,7 +566,10 @@
       saved.picks.forEach(function (selstr) {
         // Re-resolve each stored selector; silently drop any that no longer
         // uniquely resolve (the page may have changed).
-        try { if (selstr && document.querySelector(selstr)) snapshot(selstr); } catch (e) { /* drop */ }
+        try {
+          var matches = selstr && document.querySelectorAll(selstr);
+          if (matches && matches.length === 1) snapshot(matches[0]);
+        } catch (e) { /* drop */ }
       });
     }
     renderAll();

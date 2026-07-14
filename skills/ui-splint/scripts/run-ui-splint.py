@@ -14,7 +14,7 @@ This runner measures defects in the live DOM instead of asking a model to eyebal
 Usage:
   python3 run-ui-splint.py http://localhost:3000 \
       [--config audit-config.json] [--out-dir .ui-splint] [--routes /,/login] \
-      [--no-screenshots] [--probes]            # --probes enables MUTATING state probes (mock envs only)
+      [--no-screenshots]
 
 Exit code: non-zero if any un-baselined Fail is found (so it can gate completion).
 Requires: pip install playwright && playwright install chromium
@@ -59,7 +59,6 @@ def main():
     ap.add_argument("--out-dir", default=".ui-splint", help="Output directory for screenshots + JSON")
     ap.add_argument("--routes", default=None, help="Comma-separated routes overriding config (e.g. /,/login)")
     ap.add_argument("--no-screenshots", action="store_true", help="Skip screenshot capture (audit JSON only)")
-    ap.add_argument("--probes", action="store_true", help="Enable MUTATING probes (double-submit). Mock/stub envs ONLY.")
     args = ap.parse_args()
 
     # Error messages can carry page-derived text (selectors, aria-labels) that is
@@ -100,6 +99,8 @@ def main():
     if not routes:
         routes = ["/"]
     api_mock_pattern = cfg.get("apiMockPattern", "**/api/**")
+    state_mocks = cfg.get("stateMocks", {})
+    theme_init_scripts = cfg.get("themeInitScripts", {})
     viewports = cfg.get("viewports", [
         {"name": "mobile", "width": 390, "height": 844, "isMobile": True, "dpr": 3},
         {"name": "desktop", "width": 1280, "height": 900, "isMobile": False, "dpr": 1},
@@ -139,17 +140,32 @@ def main():
                         user_agent=UA_MOBILE if is_mobile else UA_DESKTOP,
                         color_scheme=theme,
                     )
+                    theme_script = theme_init_scripts.get(theme)
+                    if theme_script:
+                        context.add_init_script(
+                            "(()=>{const run=()=>{try{" + str(theme_script) +
+                            "\n;window.__uiSplintThemeInit={ok:true};}catch(e){window.__uiSplintThemeInit={ok:false,error:String(e&&e.message||e)};}};"
+                            "if(document.documentElement)run();else{const o=new MutationObserver(()=>{if(document.documentElement){o.disconnect();run();}});o.observe(document,{childList:true});}})();"
+                        )
                     context.add_init_script(init)
                     page = context.new_page()
                     for state in states:
-                        cell = {"route": route, "viewport": vp["name"], "theme": theme, "state": state}
+                        cell = {
+                            "route": route, "viewport": vp["name"], "theme": theme, "state": state,
+                            "themeDriver": "init-script" if theme_script else "media",
+                        }
                         try:
                             state_route = apply_state_route(
-                                page, state, api_mock_pattern
+                                page, state, api_mock_pattern, state_mocks
                             )  # mock network for empty/error/loading
+                            cell["stateDriver"] = state_route["driver"]
                             response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
                             if response and response.status >= 400:
                                 raise RuntimeError(f"HTTP {response.status} loading {url}")
+                            if theme_script:
+                                theme_proof = page.evaluate("window.__uiSplintThemeInit || {ok:false,error:'theme init did not run'}")
+                                if not theme_proof.get("ok"):
+                                    raise RuntimeError(f"theme init failed: {theme_proof.get('error')}")
                             if wait_selector:
                                 page.wait_for_selector(wait_selector, timeout=15000)
                             page.wait_for_timeout(400)
@@ -157,9 +173,6 @@ def main():
                                 page.evaluate("document.fonts && document.fonts.ready")
                             except Exception:
                                 pass
-                            if args.probes and state == "default":
-                                run_probes(page, api_mock_pattern)
-
                             cell_findings = []
                             cell_rules_skipped = []
                             for sp in scroll_positions:
@@ -188,7 +201,8 @@ def main():
                                 cell["status"] = "error"
                                 cell["error"] = "audit rule(s) skipped: " + "; ".join(cell_rules_skipped)
                             else:
-                                status, reason = state_coverage(state, state_route, api_mock_pattern)
+                                cell["interceptions"] = state_route["interceptions"]
+                                status, reason = state_coverage(state, state_route)
                                 cell["status"] = status
                                 if reason:
                                     cell["reason"] = reason
@@ -225,75 +239,77 @@ def main():
 
 
 # ----- state + interaction helpers -----
-def apply_state_route(page, state, api_pattern="**/api/**"):
+def apply_state_route(page, state, api_pattern="**/api/**", state_mocks=None):
     """Install a state mock and return proof of whether it intercepted a request.
 
     Merely registering a Playwright route does not prove that the rendered page
     requested the mocked resource. Callers must only mark a non-default matrix
     cell checked after ``interceptions`` becomes non-zero.
     """
-    try:
-        page.unroute(api_pattern)
-    except Exception:
-        pass
+    state_mocks = state_mocks or {}
+    owned_patterns = {api_pattern}
+    for configured in state_mocks.values():
+        if isinstance(configured, list):
+            owned_patterns.update(str(rule.get("pattern")) for rule in configured if isinstance(rule, dict) and rule.get("pattern"))
+    for pattern in owned_patterns:
+        try:
+            page.unroute(pattern)
+        except Exception:
+            pass
+
+    rules = state_mocks.get(state)
+    driver = "configured-mock" if rules is not None else "fallback-mock"
+    if rules is None:
+        fallback = {
+            "empty": [{"pattern": api_pattern, "status": 200, "contentType": "application/json", "body": []}],
+            "error": [{"pattern": api_pattern, "status": 503, "contentType": "application/json", "body": {"error": "Service Unavailable"}}],
+            "loading": [{"pattern": api_pattern, "hold": True}],
+        }
+        rules = fallback.get(state, [])
+        if not rules:
+            driver = "page-default" if state == "default" else "none"
+    if not isinstance(rules, list):
+        raise ValueError(f"stateMocks.{state} must be an array")
     tracker = {
         "state": state,
-        "pattern": api_pattern,
-        "configured": state in ("empty", "error", "loading"),
+        "patterns": [str(rule.get("pattern", "")) for rule in rules if isinstance(rule, dict)],
+        "configured": bool(rules),
         "interceptions": 0,
+        "driver": driver,
     }
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict) or not rule.get("pattern"):
+            raise ValueError(f"stateMocks.{state}[{index}] requires pattern")
+        if bool(rule.get("hold")) == ("body" in rule):
+            raise ValueError(f"stateMocks.{state}[{index}] requires exactly one of body or hold:true")
 
-    def empty_handler(route):
-        tracker["interceptions"] += 1
-        route.fulfill(status=200, content_type="application/json", body="[]")
+        def handler(route, spec=rule):
+            tracker["interceptions"] += 1
+            if spec.get("hold"):
+                return None
+            body = spec.get("body")
+            if not isinstance(body, str):
+                body = json.dumps(body, ensure_ascii=False)
+            route.fulfill(
+                status=int(spec.get("status", 200)),
+                content_type=str(spec.get("contentType", "application/json")),
+                body=body,
+            )
 
-    def error_handler(route):
-        tracker["interceptions"] += 1
-        route.fulfill(status=503, content_type="application/json",
-                      body='{"error":"Service Unavailable"}')
-
-    def loading_handler(route):
-        tracker["interceptions"] += 1
-        # Intentionally leave the request pending so the UI remains loading.
-        return None
-
-    if state == "empty":
-        page.route(api_pattern, empty_handler)
-    elif state == "error":
-        page.route(api_pattern, error_handler)
-    elif state == "loading":
-        page.route(api_pattern, loading_handler)
+        page.route(str(rule["pattern"]), handler)
     return tracker
 
 
-def state_coverage(state, tracker, api_pattern):
+def state_coverage(state, tracker, api_pattern=None):
     """Return coverage status/reason from the state mock's interception proof."""
     if state == "default" or tracker["interceptions"] > 0:
         return "checked", None
     if tracker["configured"]:
         return (
             "not-forced",
-            f"data state not forced: no request matched apiMockPattern {api_pattern!r}",
+            f"data state not forced: no request matched configured patterns {tracker['patterns']!r}",
         )
     return "not-forced", f"data state not forced: no mock is configured for state {state!r}"
-
-
-def run_probes(page, api_pattern="**/api/**"):
-    """MUTATING probes — double-submit against a HELD (pending) API mock so the
-    second click lands while the first request is in flight, exercising the
-    in-flight guard. Installs the mock itself so it never fires against a real
-    backend, resolving the "mock envs only" caveat for the default state."""
-    try:
-        page.route(api_pattern, lambda r: None)  # hold every matching request pending
-    except Exception:
-        pass
-    try:
-        page.evaluate("""() => {
-          const btn = document.querySelector('button[type=submit],[type=submit],form button');
-          if (btn) { btn.click(); btn.click(); }  // double-submit: should be guarded while pending
-        }""")
-    except Exception:
-        pass
 
 
 def scroll_to(page, where):

@@ -36,6 +36,12 @@ TOPIC_SUPPORT_FILENAMES = {"index.md", "log.md"}
 SENSITIVE_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bxox(?:a|b|p|r|s)-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\b(password|passwd|api[_-]?key|secret|token)\s*[:=]\s*\S{8,}", re.I),
 ]
@@ -611,7 +617,6 @@ def infer_proposals(text: str, default_tags: list[str]) -> list[dict[str, object
 def command_propose(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
-    ensure_layout(home, compute_repo_key(cwd) if args.scope == "project" else None)
     if args.input:
         text = Path(args.input).expanduser().read_text(encoding="utf-8")
     elif not sys.stdin.isatty():
@@ -702,7 +707,16 @@ def build_memory_update(existing: str, title: str, bullet: str, summary: str, so
 
 def command_promote(args: argparse.Namespace) -> int:
     home = memory_home(args)
-    note = Path(args.note).expanduser().resolve()
+    cwd = cwd_from_args(args)
+    repo_key = compute_repo_key(cwd)
+    lexical_note = Path(args.note).expanduser().absolute()
+    note = lexical_note.resolve()
+    if lexical_note != note:
+        raise MemoryStoreError("note path must not contain symlinks")
+    try:
+        note.relative_to(home)
+    except ValueError as exc:
+        raise MemoryStoreError("note must be inside the memory store") from exc
     meta, evidence, body = parse_note(note)
     errors = validate_note(meta, evidence, body, check_summary_len=True)
     if errors:
@@ -710,9 +724,22 @@ def command_promote(args: argparse.Namespace) -> int:
     if not eligible_for_promotion(meta, evidence):
         raise MemoryStoreError("note is not eligible for promotion")
 
-    repo_key = meta.get("repo_key") or (compute_repo_key(cwd_from_args(args)) if meta.get("scope") == "project" else None)
-    ensure_layout(home, repo_key)
-    dest = memory_path(home, meta["scope"], repo_key)
+    priority = meta.get("priority", "")
+    if meta.get("scope") == "global":
+        expected_parent = home / "global" / "inbox" / priority
+        target_repo_key = None
+        if meta.get("repo_key"):
+            raise MemoryStoreError("global note must not declare repo_key")
+    else:
+        if meta.get("repo_key") != repo_key:
+            raise MemoryStoreError("project note repo_key does not match --cwd")
+        expected_parent = home / "projects" / repo_key / "inbox" / priority
+        target_repo_key = repo_key
+    if note.parent != expected_parent:
+        raise MemoryStoreError("note path does not match its scope and priority metadata")
+
+    ensure_layout(home, target_repo_key)
+    dest = memory_path(home, meta["scope"], target_repo_key)
     title = "Global Memory" if meta["scope"] == "global" else "Project Memory"
     date = meta.get("created_at", utc_now())[:10]
     source_note = note.name
@@ -989,7 +1016,6 @@ def command_find(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
     repo_key = compute_repo_key(cwd)
-    ensure_layout(home, repo_key)
     queries = args.query or []
     bases = [(home / "global", "global"), (home / "projects" / repo_key, "project")]
     fmt = getattr(args, "format", "text")
@@ -1034,7 +1060,6 @@ def command_check(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
     repo_key = compute_repo_key(cwd)
-    ensure_layout(home, repo_key)
     errors: list[str] = []
     lock = home / ".lock"
     if lock.exists():
@@ -1220,7 +1245,6 @@ def command_list(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
     repo_key = compute_repo_key(cwd)
-    ensure_layout(home, repo_key)
 
     bases = [home / "global"]
     if args.scope == "project":
@@ -1262,7 +1286,6 @@ def command_stats(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
     repo_key = compute_repo_key(cwd)
-    ensure_layout(home, repo_key)
 
     stats: dict[str, object] = {
         "global": {"notes": 0, "types": {}, "priorities": {}},
@@ -1319,7 +1342,6 @@ def command_review(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
     repo_key = compute_repo_key(cwd)
-    ensure_layout(home, repo_key)
     findings: list[dict[str, str]] = []
     summaries: dict[str, list[dict[str, object]]] = {}
     cutoff = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=args.stale_days)
@@ -1549,7 +1571,6 @@ def command_session_list(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
     repo_key = compute_repo_key(cwd)
-    ensure_layout(home, repo_key)
     results = []
     for path in iter_note_files(session_dir(home, repo_key)):
         try:
@@ -1572,7 +1593,6 @@ def command_session_resume(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
     repo_key = compute_repo_key(cwd)
-    ensure_layout(home, repo_key)
     path = find_session_file(session_dir(home, repo_key), args.id, args.latest)
     record = session_to_dict(path)
     if args.format == "json":
@@ -1604,18 +1624,15 @@ def command_cleanup(args: argparse.Namespace) -> int:
     home = memory_home(args)
     cwd = cwd_from_args(args)
     repo_key = compute_repo_key(cwd)
-    ensure_layout(home, repo_key)
-
     cutoff = time.time() - (args.older_than_days * 86400)
     removed: list[str] = []
     all_projects = getattr(args, "all_projects", False)
 
-    with Lock(home):
+    def scan() -> None:
         for base in scoped_bases(home, repo_key, all_projects):
             for path in iter_note_files(base / "inbox"):
                 try:
-                    mtime = path.stat().st_mtime
-                    if mtime < cutoff:
+                    if path.stat().st_mtime < cutoff:
                         if args.dry_run:
                             print(f"DRY_RUN={path}")
                         else:
@@ -1623,6 +1640,12 @@ def command_cleanup(args: argparse.Namespace) -> int:
                             removed.append(str(path))
                 except OSError:
                     continue
+
+    if args.dry_run or not home.exists():
+        scan()
+    else:
+        with Lock(home):
+            scan()
 
     if not args.dry_run:
         for r in removed:

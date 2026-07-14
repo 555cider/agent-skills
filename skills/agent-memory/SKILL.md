@@ -1,6 +1,8 @@
 ---
 name: agent-memory
 description: Use when a task may depend on prior user preferences, repo-specific conventions, earlier decisions, recurring command pitfalls, long-running handoff context, or when the user says to remember, forget, update memory (or 기억해줘 / 잊어버려 / 메모리 업데이트), or use memory across Codex, Claude, opencode, or other coding agents. Not for one-off facts derivable from the code or git history, or ephemeral state that will not matter next session — record those nowhere.
+license: MIT
+compatibility: Requires Python 3.10 or newer and local filesystem access.
 ---
 
 # Agent Memory
@@ -141,6 +143,10 @@ conflict with existing canonical memory:
 python3 <skill-dir>/scripts/memory.py promote --cwd "$PWD" --note "<note-path>"
 ```
 
+`promote` accepts only a non-symlink note from the global inbox or the current
+project's inbox. It rejects copied external files, path/frontmatter mismatches,
+and notes belonging to another project.
+
 If it conflicts or is ambiguous, leave it in `inbox/explicit` and surface the
 conflict briefly.
 
@@ -270,7 +276,8 @@ memory look current.
 
 ## Review Mode
 
-Review memory health without mutating anything:
+Review memory health without mutating anything. Read/search/list/stats/check,
+session list/resume, and cleanup dry-run also leave an absent store absent:
 
 ```bash
 python3 <skill-dir>/scripts/memory.py review --cwd "$PWD"

@@ -35,6 +35,7 @@
     "query": "/peer-review 목록 보여줘",
     "should_trigger": true
   },
+  { "query": "Have two external reviewers challenge these rollout options and tell me which one wins.", "should_trigger": true },
   {
     "query": "Summarize the pull request diff and list likely bugs.",
     "should_trigger": false
@@ -66,5 +67,7 @@
   {
     "query": "Format the markdown table below.",
     "should_trigger": false
-  }
+  },
+  { "query": "I wrote a multi-step plan; continue implementing it now without asking anyone else.", "should_trigger": false },
+  { "query": "Double-check your own answer internally, but do not invoke another model or reviewer.", "should_trigger": false }
 ]

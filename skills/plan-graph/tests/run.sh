@@ -366,8 +366,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# readonly — a write failure during --fix surfaces as ERROR + exit 1 (#3).
-# (chmod here, not in a committed fixture: git can't store 0444 portably.)
+# readonly parent — atomic replacement needs a writable parent directory.
 # ---------------------------------------------------------------------------
 if [ "$ROOT_USER" = "1" ]; then
   skip "readonly-fix" "running as root: 0444 is still writable"
@@ -381,7 +380,9 @@ nodes:
 
 deps:
 EOF
-  cat >"$D/auth.md" <<'EOF'
+  mkdir "$D/plans"
+  sed -i 's/p: "auth.md"/p: "plans\/auth.md"/' "$D/.agents/plan/graph.yaml"
+  cat >"$D/plans/auth.md" <<'EOF'
 ---
 id: 1
 summary: "Old"
@@ -389,11 +390,11 @@ summary: "Old"
 
 body
 EOF
-  chmod 0444 "$D/auth.md"
+  chmod 0555 "$D/plans"
   pg "$D" --fix
-  chmod 0644 "$D/auth.md"
+  chmod 0755 "$D/plans"
   assert_exit   "readonly-fix" 1
-  assert_grep   "readonly-fix ERROR"      "$WORK/err" "ERROR=failed to update frontmatter in auth.md"
+  assert_grep   "readonly-fix ERROR"      "$WORK/err" "ERROR=failed to update frontmatter in plans/auth.md"
   assert_grep   "readonly-fix FAIL"       "$WORK/err" "FAIL plan graph"
   assert_nogrep "readonly-fix no traceback" "$WORK/err" "Traceback"
 fi
@@ -544,6 +545,32 @@ assert_exit    "traversal-fix exit1" 1
 assert_fnogrep "traversal-fix left outside file untouched" "$WORK/escape-traversal.md" "^---"
 rm -f "$WORK/escape-traversal.md"
 
+# A lexically safe node path must still be rejected when a symlink resolves
+# outside the repository root.
+D=$(newcase symlinkescape)
+printf '# outside, no frontmatter\n' >"$WORK/outside-plan.md"
+ln -s "$WORK/outside-plan.md" "$D/link.md"
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 2
+
+nodes:
+  1: {p: "link.md", s: "Escaped"}
+
+deps:
+EOF
+pg "$D" --fix
+assert_exit "symlinkescape-fix" 1
+assert_fnogrep "symlinkescape leaves outside target untouched" "$WORK/outside-plan.md" "^---"
+
+# The graph index itself is never followed through a symlink.
+D=$(newcase graphsymlink)
+printf 'next: 1\n\nnodes:\n\ndeps:\n' >"$WORK/external-graph.yaml"
+rm "$D/.agents/plan/graph.yaml" 2>/dev/null || true
+ln -s "$WORK/external-graph.yaml" "$D/.agents/plan/graph.yaml"
+pg "$D" --fix
+assert_exit "graphsymlink-fix" 1
+assert_grep "graphsymlink explains rejection" "$WORK/err" "graph file must not be a symlink"
+
 # Cycle/forest must not print a node twice (spurious standalone ↑ line). [#5]
 D=$(newcase forestrepeat)
 cat >"$D/.agents/plan/graph.yaml" <<'EOF'
@@ -600,6 +627,24 @@ assert_exit "lockstale-fix overtakes" 0
 assert_grep "lockstale-fix OK" "$WORK/out" "OK plan graph"
 if [ -f "$LOCK" ]; then fail "lockstale-fix released our lock" "lockfile remained after a run we owned"; else pass "lockstale-fix released our lock"; fi
 
+D=$(newcase lockliveold)
+cat >"$D/.agents/plan/graph.yaml" <<'EOF'
+next: 1
+
+nodes:
+
+deps:
+EOF
+sleep 30 & LIVE_PID=$!
+LOCK="$D/.agents/plan/graph.yaml.lock"
+printf '%s' "$LIVE_PID" >"$LOCK"
+touch -d '1 hour ago' "$LOCK" 2>/dev/null || touch -t 202001010000 "$LOCK"
+pg "$D" --fix
+kill "$LIVE_PID" 2>/dev/null || true
+wait "$LIVE_PID" 2>/dev/null || true
+assert_exit "lockliveold-fix remains blocked" 1
+if [ -f "$LOCK" ]; then pass "lockliveold preserves a live owner's stale-looking lock"; else fail "lockliveold preserves a live owner's stale-looking lock" "lock removed"; fi
+
 # ---------------------------------------------------------------------------
 # release_lock ownership — must NOT delete a lockfile owned by another pid. [#9]
 # (Drives the function directly; the --fix contention path can't exercise the
@@ -625,8 +670,8 @@ fi
 rm -f "$FLOCK"
 
 # ---------------------------------------------------------------------------
-# write-fail — a graph write failure surfaces ERROR + exit 1, not a traceback.
-# Pre-create graph.yaml.tmp as a DIRECTORY so write_graph's tmp write fails. [#10]
+# Atomic graph writes use unpredictable temp names and ignore a legacy fixed
+# graph.yaml.tmp collision.
 # ---------------------------------------------------------------------------
 D=$(newcase writefail)
 cat >"$D/.agents/plan/graph.yaml" <<'EOF'
@@ -641,8 +686,8 @@ deps:
 EOF
 mkdir "$D/.agents/plan/graph.yaml.tmp"   # occupies the temp path write_graph needs
 pg "$D" --fix
-assert_exit   "writefail-fix" 1
-assert_grep   "writefail-fix ERROR"      "$WORK/err" "ERROR=failed to write graph"
+assert_exit   "writefail-fix" 0
+assert_fgrep  "writefail-fix graph updated atomically" "$D/.agents/plan/graph.yaml" "1: \[2\]"
 assert_nogrep "writefail-fix no traceback" "$WORK/err" "Traceback"
 
 # ---------------------------------------------------------------------------
@@ -799,7 +844,7 @@ pg "$D"
 assert_exit   "valerrors-check" 1
 assert_grep   "valerrors dangling"      "$WORK/err" "ERROR=dangling dep: 4->9"
 assert_grep   "valerrors absolute"      "$WORK/err" "ERROR=3 has absolute path"
-assert_grep   "valerrors duplicate 1st" "$WORK/err" "ERROR=duplicate node path: 1 and 2 use a.md"
+assert_grep   "valerrors duplicate 1st" "$WORK/err" "ERROR=duplicate resolved node path: 1 and 2 use a.md"
 assert_nogrep "valerrors no traceback"  "$WORK/err" "Traceback"
 
 D=$(newcase selfdep)

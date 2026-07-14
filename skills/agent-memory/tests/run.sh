@@ -753,6 +753,24 @@ run_mem note --cwd "$PROJ" --scope project --priority auto --type command \
   --evidence command:"cat key.pem" --body "-----BEGIN RSA PRIVATE KEY-----"
 assert_exit "note rejects private key pattern" 1
 
+for secret_case in \
+  'github_pat_1234567890abcdefghijklmnopqrstuvwxyz' \
+  'ghp_1234567890abcdefghijklmnopqrstuv' \
+  'glpat-1234567890abcdefghijklmnopqrstuv' \
+  'xox''b-1234567890-abcdefghijklmnopqrst' \
+  'AIza1234567890abcdefghijklmnopqrstuvwxyz' \
+  'eyJabcdefghijk.abcdefghijklmnop.abcdefghijklmnop'; do
+  run_mem note --cwd "$PROJ" --scope project --priority auto --type command \
+    --source command --confidence high --summary "Token fixture $secret_case" \
+    --evidence command:"print env" --body "Should be rejected"
+  assert_exit "note rejects token family ${secret_case%%_*}" 1
+done
+
+run_mem note --cwd "$PROJ" --scope project --priority auto --type command \
+  --source command --confidence high --summary "Discuss token rotation without including a credential" \
+  --evidence command:"docs check" --body "Ordinary prose about GitHub and JWT tokens is safe."
+assert_exit "ordinary security prose is not a secret false positive" 0
+
 # ---------------------------------------------------------------------------
 # forget: --note + --summary respects the --canonical gate (regression).
 # ---------------------------------------------------------------------------
@@ -821,6 +839,32 @@ run_mem promote --cwd "$PROJ" --note "$EXPLICIT_NOTE"
 assert_exit "explicit user note is promotable" 0
 assert_contains "explicit note reached canonical" "$PROJECT_MEMORY" "Explicit promotable preference"
 
+# Promotion accepts only notes created in the current scoped inbox. A valid
+# frontmatter file copied elsewhere must not become a write primitive.
+EXTERNAL_NOTE="$WORK/external-valid-note.md"
+cp "$EXPLICIT_NOTE" "$EXTERNAL_NOTE"
+run_mem promote --cwd "$PROJ" --note "$EXTERNAL_NOTE"
+assert_exit "promote rejects a valid note outside the memory store" 1
+assert_contains "outside promote explains confinement" "$WORK/err" "inside the memory store"
+
+SYMLINK_NOTE="$MEMHOME/projects/$(AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" repo-key --cwd "$PROJ")/inbox/explicit/symlink.md"
+ln -s "$EXPLICIT_NOTE" "$SYMLINK_NOTE"
+run_mem promote --cwd "$PROJ" --note "$SYMLINK_NOTE"
+assert_exit "promote rejects a symlinked inbox note" 1
+assert_contains "symlink promote explains rejection" "$WORK/err" "must not contain symlinks"
+rm "$SYMLINK_NOTE"
+
+MISMATCH_DEST="$(dirname "$EXPLICIT_NOTE")/mismatched-note.md"
+run_mem note --cwd "$PROJ" --scope project --priority auto --type command \
+  --source command --confidence high --summary "Path metadata mismatch fixture" \
+  --evidence command:"run mismatch" --body "Eligible, but copied into the wrong priority inbox."
+MISMATCH_SOURCE="$(note_path_from_stdout)"
+cp "$MISMATCH_SOURCE" "$MISMATCH_DEST"
+run_mem promote --cwd "$PROJ" --note "$MISMATCH_DEST"
+assert_exit "promote rejects priority/path metadata mismatch" 1
+assert_contains "metadata mismatch explains rejection" "$WORK/err" "scope and priority metadata"
+rm "$MISMATCH_DEST"
+
 # ---------------------------------------------------------------------------
 # find --since and --include-topics gating (regression).
 # ---------------------------------------------------------------------------
@@ -865,6 +909,32 @@ assert_invalid_without_mutation "verify rejects impossible calendar date" \
 assert_invalid_without_mutation "find rejects malformed since date" \
   find --cwd "$PROJ" --since yesterday
 
+# Valid read-only and preview commands must also leave an absent store absent.
+READONLY_HOME="$WORK/read-only-memory-home"
+assert_readonly_without_mutation() {
+  local label="$1" expected="$2"
+  shift 2
+  rm -rf "$READONLY_HOME"
+  AGENT_MEMORY_HOME="$READONLY_HOME" AGENT_MEMORY_AGENT_ID="test-agent" \
+    python3 "$MEM" "$@" >"$WORK/out" 2>"$WORK/err"
+  EC=$?
+  assert_exit "$label" "$expected"
+  if [ ! -e "$READONLY_HOME" ]; then
+    pass "$label leaves an absent store absent"
+  else
+    fail "$label leaves an absent store absent" "unexpected path created: $READONLY_HOME"
+  fi
+}
+
+assert_readonly_without_mutation "find is filesystem-read-only" 0 find --cwd "$PROJ"
+assert_readonly_without_mutation "check is filesystem-read-only" 0 check --cwd "$PROJ"
+assert_readonly_without_mutation "list is filesystem-read-only" 0 list --cwd "$PROJ"
+assert_readonly_without_mutation "stats is filesystem-read-only" 0 stats --cwd "$PROJ" --format json
+assert_readonly_without_mutation "review is filesystem-read-only" 0 review --cwd "$PROJ" --format json
+assert_readonly_without_mutation "session list is filesystem-read-only" 0 session list --cwd "$PROJ" --format json
+assert_readonly_without_mutation "session resume failure is filesystem-read-only" 1 session resume --cwd "$PROJ" --latest
+assert_readonly_without_mutation "cleanup dry-run is filesystem-read-only" 0 cleanup --cwd "$PROJ" --older-than-days 1 --dry-run
+
 # ---------------------------------------------------------------------------
 # --memory-home flag overrides the env var.
 # ---------------------------------------------------------------------------
@@ -874,10 +944,10 @@ AGENT_MEMORY_HOME="$MEMHOME" AGENT_MEMORY_AGENT_ID="test-agent" \
   >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "stats honors --memory-home override" 0
-if [ -d "$ALT_HOME" ]; then
-  pass "--memory-home creates the overridden store"
+if [ ! -e "$ALT_HOME" ]; then
+  pass "read-only --memory-home leaves the overridden store absent"
 else
-  fail "--memory-home creates the overridden store" "missing $ALT_HOME"
+  fail "read-only --memory-home leaves the overridden store absent" "unexpected $ALT_HOME"
 fi
 
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"

@@ -10,6 +10,7 @@ tests/*
 !skills/**/tests/
 !skills/**/tests/run.sh
 !skills/**/tests/README.md
+!skills/**/tests/*.mjs
 !skills/**/tests/expected.json
 !skills/**/tests/fixtures/
 !skills/**/tests/fixtures/**

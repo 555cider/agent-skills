@@ -20,8 +20,8 @@ settings in one review.
   names (`codex`, `claude`, `opencode`, `agy`).
 - `model` — optional. Forwarded to the CLI's model flag. Omit to let the
   CLI use whatever it defaults to.
-- `effort` — optional. Applied where supported (currently codex and
-  opencode); silently ignored elsewhere.
+- `effort` — optional. Applied where supported (codex, Claude, and opencode);
+  silently ignored elsewhere.
 - An empty profile entry (`"opencode": { "cli": "opencode" }`) is
   equivalent to `--reviewer=opencode` with no config at all.
 

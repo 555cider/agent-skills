@@ -1,4 +1,4 @@
 interface:
   display_name: "UI Splint"
   short_description: "Measure-don't-eyeball visual QA: run the deterministic audit on rendered UI to catch contrast, layout, overlap, state, and responsive defects before completion."
-  default_prompt: "Use $ui-splint before calling frontend work complete: render the UI, inject scripts/audit.js to MEASURE defects (run __uiSplintAudit across viewports/themes/states, at scroll top and bottom), then judge the subjective residue. Report measured findings with severity before fixing."
+  default_prompt: "Use $ui-splint before calling frontend work complete: render the UI, inject scripts/audit.js to measure defects across supported viewports/themes/states, then judge the subjective residue. Build/edit/finish requests authorize in-scope fixes; review-only requests authorize reporting only."
