@@ -27,6 +27,9 @@
     "query": "Scan the current persistent plans for missing dependency edges, but do not edit graph.yaml yet.",
     "should_trigger": true
   },
+  { "query": "Add the caching migration plan as a dependent of plan 4 and keep the persistent index consistent.", "should_trigger": true },
+  { "query": "Show the active .agents/plan roadmap and critical dependency chain.", "should_trigger": true },
+  { "query": "Restore a previously missing tracked plan file and synchronize its graph frontmatter.", "should_trigger": true },
   {
     "query": "Write a quick implementation plan in chat for adding a retry helper.",
     "should_trigger": false
@@ -50,5 +53,9 @@
   {
     "query": "Brainstorm three possible architectures; do not write files yet.",
     "should_trigger": false
-  }
+  },
+  { "query": "Review an implementation plan stored in docs/plan.md; this repository has no plan graph.", "should_trigger": false },
+  { "query": "Draw a dependency diagram for npm packages without creating persistent agent plans.", "should_trigger": false },
+  { "query": "Update a GitHub issue checklist that is unrelated to .agents/plan.", "should_trigger": false },
+  { "query": "Give a peer second opinion on these planning options.", "should_trigger": false }
 ]

@@ -59,13 +59,13 @@ hold the trailing fields).
 `--suggest-deps --json` returns
 `{status, suggestions: [{dependent, base, confidence, reason}], changes: [], errors: [], warnings: []}`.
 
-## Write-ordering hazard (`--fix`)
+## Write ordering (`--fix`)
 
-Drift repairs (`CHANGE=` lines) are persisted **before** validation runs, so a
-`--fix` invocation that exits `1` may already have mutated the graph file. Use
-`--fix` only when you intend to accept the drift repairs; run without `--fix`
-first if you want a pure read-only check. Parse failure (exit `2`) is the one
-case where the graph is guaranteed untouched.
+Parsing and structural validation finish before any repair is persisted. The
+graph source of truth is atomically written before derived plan frontmatter. A
+plan-file write error may therefore leave frontmatter behind the graph, but a
+later `--fix` deterministically recovers it from the graph. Parse or structural
+validation failure leaves both graph and plans untouched.
 
 Maintainers: `tests/run.sh` is the CLI regression suite (exit 0 = all pass);
 `tests/README.md` catalogues the fixtures and the contract each guards.
