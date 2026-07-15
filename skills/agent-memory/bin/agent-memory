@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# agent-memory-managed-launcher
+set -euo pipefail
+
+exec python3 "$HOME/.agents/skills/agent-memory/scripts/memory.py" "$@"

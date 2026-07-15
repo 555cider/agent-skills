@@ -6,6 +6,8 @@
 #   ./install.sh                       # install every skill
 #   ./install.sh <name> [<name>...]    # install only the named skill(s)
 #   ./install.sh --local [<name>...]   # copy local skills into ~/.agents/skills
+#   ./install.sh --local agent-memory --shadow   # install + enable shared recall
+#   ./install.sh --local agent-memory --primary  # install + make it primary memory
 #   ./install.sh --list                # print available skill names and exit
 #   ./install.sh -h | --help           # this help
 # --- END USAGE ---
@@ -70,6 +72,7 @@ fi
 
 # Parse args: --help / flags / positional skill names.
 LOCAL_MODE=0
+INTEGRATION_MODE=""
 SELECTED=()
 for arg in "$@"; do
   case "$arg" in
@@ -82,6 +85,14 @@ for arg in "$@"; do
       ;;
     --local)
       LOCAL_MODE=1
+      ;;
+    --shadow|--primary)
+      requested_mode="${arg#--}"
+      if [ -n "$INTEGRATION_MODE" ] && [ "$INTEGRATION_MODE" != "$requested_mode" ]; then
+        echo "error: --shadow and --primary are mutually exclusive" >&2
+        exit 2
+      fi
+      INTEGRATION_MODE="$requested_mode"
       ;;
     --*)
       echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
@@ -110,6 +121,17 @@ if [ ${#SELECTED[@]} -gt 0 ]; then
       exit 2
     fi
   done
+fi
+
+if [ -n "$INTEGRATION_MODE" ] && [ ${#SELECTED[@]} -gt 0 ]; then
+  has_agent_memory=0
+  for name in "${SELECTED[@]}"; do
+    [ "$name" = "agent-memory" ] && has_agent_memory=1
+  done
+  [ "$has_agent_memory" = "1" ] || {
+    echo "error: --$INTEGRATION_MODE requires agent-memory to be selected" >&2
+    exit 2
+  }
 fi
 
 if [ "$LOCAL_MODE" = "0" ]; then
@@ -345,7 +367,33 @@ ensure_link() {
   fi
 }
 
+install_agent_memory_launcher() {
+  local source="$AGENTS_DIR/agent-memory/bin/agent-memory"
+  local bin_dir="$HOME/.local/bin"
+  local launcher="$bin_dir/agent-memory"
+
+  if [ ! -f "$source" ]; then
+    printf '  WARN agent-memory launcher source is missing: %s\n' "$source" >&2
+    return 1
+  fi
+  if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+    if [ ! -f "$launcher" ] || ! grep -qF 'agent-memory-managed-launcher' "$launcher"; then
+      printf '  WARN %s exists and is not managed by this installer — skipping\n' "$launcher" >&2
+      return 1
+    fi
+  fi
+  mkdir -p "$bin_dir"
+  cp "$source" "$launcher"
+  chmod +x "$launcher"
+  printf '  +    %s\n' "$launcher"
+  case ":$PATH:" in
+    *":$bin_dir:"*) : ;;
+    *) printf '  note add %s to PATH to run `agent-memory` directly\n' "$bin_dir" ;;
+  esac
+}
+
 warnings=0
+agent_memory_installed=0
 for skill_dir in "$SKILLS_SRC"/*/; do
   name="$(basename "$skill_dir")"
 
@@ -377,10 +425,44 @@ for skill_dir in "$SKILLS_SRC"/*/; do
     mkdir -p "$harness"
     ensure_link "$AGENTS_DIR/$name" "$harness/$name" || warnings=$((warnings + 1))
   done
+  if [ "$name" = "agent-memory" ]; then
+    agent_memory_installed=1
+    install_agent_memory_launcher || warnings=$((warnings + 1))
+  fi
 done
+
+integration_failed=0
+if [ -n "$INTEGRATION_MODE" ]; then
+  if [ "$agent_memory_installed" != "1" ]; then
+    printf '\nerror: agent-memory was not installed; integration was not attempted\n' >&2
+    integration_failed=1
+  else
+    printf '\nagent-memory integration: %s\n' "$INTEGRATION_MODE"
+    integration_args=(
+      "$AGENTS_DIR/agent-memory/scripts/memory.py"
+      integrate --mode "$INTEGRATION_MODE" --harness all --apply
+    )
+    if [ "$INTEGRATION_MODE" = "primary" ]; then
+      integration_args+=(--disable-known-conflicts)
+    fi
+    if python3 "${integration_args[@]}" \
+       && python3 "$AGENTS_DIR/agent-memory/scripts/memory.py" index rebuild --format json >/dev/null \
+       && python3 "$AGENTS_DIR/agent-memory/scripts/memory.py" doctor --format json >/dev/null; then
+      printf '  ok   integration applied and self-check passed\n'
+      printf '  next Codex: review the Agent Memory hook in /hooks if prompted\n'
+      printf '  next OpenCode: restart to load the global plugin\n'
+      printf '  check: agent-memory doctor --format json\n'
+    else
+      printf '  ERROR integration failed; skill files remain installed\n' >&2
+      integration_failed=1
+    fi
+  fi
+fi
 
 if [ "$warnings" -gt 0 ]; then
   printf '\ndone with %d warning(s). Resolve manually if you want every step managed by this script.\n' "$warnings"
 else
   printf '\ndone.\n'
 fi
+
+[ "$integration_failed" = "0" ] || exit 1

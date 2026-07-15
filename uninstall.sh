@@ -11,6 +11,7 @@
 #   ~/.claude/skills/<name>        (harness link/junction only)
 #   ~/.codex/skills/<name>         (harness link/junction only)
 #   ~/.agents/skills/<name>/       (the installed skill directory)
+#   ~/.local/bin/agent-memory       (managed launcher, for agent-memory only)
 #
 # Safety:
 #  - Harness paths are removed only when they are a symlink or a junction that
@@ -189,6 +190,20 @@ remove_path() {
   printf '  removed  %s\n' "$path"
 }
 
+remove_agent_memory_launcher() {
+  local launcher="$HOME/.local/bin/agent-memory"
+  if [ ! -e "$launcher" ] && [ ! -L "$launcher" ]; then
+    printf '  -        %s (not present)\n' "$launcher"
+    return 0
+  fi
+  if [ ! -f "$launcher" ] || ! grep -qF 'agent-memory-managed-launcher' "$launcher"; then
+    printf '  SKIP %s (not managed by this installer)\n' "$launcher" >&2
+    return 1
+  fi
+  rm -f -- "$launcher"
+  printf '  removed  %s\n' "$launcher"
+}
+
 errors=0
 for name in "${SELECTED[@]}"; do
   # Refuse empty / path-traversal names — defensive, never expected from
@@ -205,6 +220,9 @@ for name in "${SELECTED[@]}"; do
   if ! clone_removal_safe "$AGENTS_ROOT/$name"; then
     errors=$((errors + 1))
     continue
+  fi
+  if [ "$name" = "agent-memory" ]; then
+    remove_agent_memory_launcher || errors=$((errors + 1))
   fi
   for root in "${ROOTS[@]}"; do
     remove_path "$root/$name" || errors=$((errors + 1))

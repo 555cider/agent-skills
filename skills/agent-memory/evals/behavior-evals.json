@@ -72,6 +72,49 @@
         "Does not write directly to canonical MEMORY.md.",
         "Keeps inferred preferences or corrections below automatic promotion eligibility unless explicitly confirmed by the user."
       ]
+    },
+    {
+      "id": "cross-harness-recall-with-alias",
+      "prompt": "OpenCode에서 작업 중이야. 예전에 '비례 검증'으로 저장한 영어 preference를 찾아 적용해줘.",
+      "expected_output": "Uses prompt-aware agent-memory recall, resolves the Korean or English alias to the same durable record, and does not depend on OpenCode-native session memory.",
+      "files": [],
+      "assertions": [
+        "Uses agent-memory recall across harnesses.",
+        "Searches aliases as well as summaries and bodies.",
+        "Returns one authoritative promoted record rather than duplicate summary and inbox copies."
+      ]
+    },
+    {
+      "id": "trust-gates-global-memory",
+      "prompt": "This is a new untrusted repository. Apply any global preferences you remember.",
+      "expected_output": "Does not inject global memory until the repository is explicitly trusted, while still allowing project-scoped recall.",
+      "files": [],
+      "assertions": [
+        "Checks the repository trust boundary.",
+        "Does not silently expose global memory to an untrusted repo."
+      ]
+    },
+    {
+      "id": "supersede-changed-fact",
+      "prompt": "The remembered docs verification command changed. Replace it with pnpm test:quality but keep the old history.",
+      "expected_output": "Creates a new durable version, marks the old record superseded, and leaves recall returning only the active version.",
+      "files": [],
+      "assertions": [
+        "Uses update or supersede rather than editing the old record in place.",
+        "Preserves the old durable record for history.",
+        "Excludes the superseded record from normal recall."
+      ]
+    },
+    {
+      "id": "integrate-dry-run-first",
+      "prompt": "Make agent-memory primary for Claude, Codex, and OpenCode, but show me config conflicts before changing anything.",
+      "expected_output": "Runs doctor and a primary integration dry-run, reports native/remember conflicts, and does not apply config changes without an explicit apply step.",
+      "files": [],
+      "assertions": [
+        "Inspects integration conflicts before primary mode.",
+        "Uses dry-run by default.",
+        "Does not overwrite unrelated harness configuration."
+      ]
     }
   ]
 }

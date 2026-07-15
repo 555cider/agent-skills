@@ -880,6 +880,276 @@ assert_exit "find --include-topics succeeds" 0
 assert_contains "find --include-topics surfaces topics" "$WORK/out" "Verification Policy"
 
 # ---------------------------------------------------------------------------
+# durable records + FTS recall: full bodies survive promotion, aliases work,
+# promoted inbox notes are deduplicated, and filesystem fallback stays useful.
+# ---------------------------------------------------------------------------
+MEMHOME="$WORK/memory-durable"
+DPROJ="$WORK/project-durable"
+mkdir -p "$DPROJ"
+run_mem note --cwd "$DPROJ" --scope project --priority explicit --type preference \
+  --source user --confidence high --summary "Prefer proportional verification" \
+  --alias "비례 검증" --alias "narrow checks" --tag verification \
+  --body "Run the narrowest useful checks for small scoped changes."
+assert_exit "note accepts multilingual aliases" 0
+DNOTE="$(note_path_from_stdout)"
+assert_contains "note stores Korean alias" "$DNOTE" "비례 검증"
+run_mem promote --cwd "$DPROJ" --note "$DNOTE"
+assert_exit "promotion creates durable record" 0
+DRECORD="$(sed -n 's/^RECORD=//p' "$WORK/out")"
+assert_file_exists "durable record file exists" "$DRECORD"
+assert_contains "durable record preserves full body" "$DRECORD" "Run the narrowest useful checks"
+assert_contains "durable record keeps alias" "$DRECORD" "narrow checks"
+run_mem check --cwd "$DPROJ"
+assert_exit "check validates durable record frontmatter" 0
+
+run_mem index rebuild --format json
+assert_exit "FTS index rebuild succeeds" 0
+assert_json_expr "FTS index contains one deduplicated promoted record" "$WORK/out" "data['backend'] in ('sqlite_fts5', 'filesystem') and data['records'] >= 1"
+run_mem recall --cwd "$DPROJ" --prompt "비례 검증" --format json
+assert_exit "recall finds Korean alias" 0
+assert_json_expr "recall deduplicates promoted source note" "$WORK/out" "data['total'] == 1 and data['results'][0]['kind'] == 'record'"
+
+AGENT_MEMORY_HOME="$MEMHOME" AGENT_MEMORY_DISABLE_FTS5=1 \
+  python3 "$MEM" recall --cwd "$DPROJ" --prompt "narrow checks" --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "filesystem recall fallback succeeds" 0
+assert_json_expr "filesystem fallback returns durable record" "$WORK/out" "data['index_status']['backend'] == 'filesystem' and data['total'] == 1"
+
+# Global recall is denied for a new repo, then enabled by explicit trust.
+run_mem note --cwd "$DPROJ" --scope global --priority explicit --type preference \
+  --source user --confidence high --summary "Use global review convention" \
+  --alias "global-only-alias" --body "Cross-project convention."
+GNOTE="$(note_path_from_stdout)"
+run_mem promote --cwd "$DPROJ" --note "$GNOTE"
+assert_exit "global explicit memory promotes" 0
+run_mem recall --cwd "$DPROJ" --prompt "global-only-alias" --format json
+assert_json_expr "untrusted repo excludes global recall" "$WORK/out" "data['trusted'] is False and data['total'] == 0"
+run_mem trust add --cwd "$DPROJ"
+assert_exit "trust add succeeds" 0
+run_mem recall --cwd "$DPROJ" --prompt "global-only-alias" --format json
+assert_json_expr "trusted repo includes global recall" "$WORK/out" "data['trusted'] is True and data['global_included'] is True and data['total'] == 1"
+
+# Updating creates a new active id while preserving the superseded old record.
+DID="$(basename "$DRECORD" .md)"
+run_mem update --id "$DID" --summary "Prefer targeted verification" \
+  --alias "targeted checks" --body "Use targeted checks, expanding only when risk requires it."
+assert_exit "update creates versioned replacement" 0
+NEW_RECORD="$(sed -n 's/^RECORD=//p' "$WORK/out")"
+NEW_ID="$(basename "$NEW_RECORD" .md)"
+assert_contains "old record is retained as superseded" "$DRECORD" "status: superseded"
+assert_contains "new record points to predecessor" "$NEW_RECORD" "supersedes: $DID"
+run_mem recall --cwd "$DPROJ" --prompt "targeted checks" --format json
+assert_json_expr "normal recall returns only active replacement" "$WORK/out" "data['total'] == 1 and data['results'][0]['id'] == '$NEW_ID'"
+
+# Cleanup may prune old candidates, but never the source note of a promoted record.
+touch -d '2000-01-01 UTC' "$DNOTE"
+run_mem cleanup --cwd "$DPROJ" --older-than-days 1
+assert_exit "cleanup succeeds with promoted source note" 0
+assert_file_exists "cleanup protects promoted source note" "$DNOTE"
+run_mem forget --cwd "$DPROJ" --id "$NEW_ID"
+assert_exit "forget by id removes active durable record" 0
+if [ ! -e "$NEW_RECORD" ]; then
+  pass "forget deletes durable record file"
+else
+  fail "forget deletes durable record file" "still present: $NEW_RECORD"
+fi
+
+# ---------------------------------------------------------------------------
+# migration and native import are preview-first, backed up, and idempotent.
+# ---------------------------------------------------------------------------
+MEMHOME="$WORK/memory-migrate"
+MPROJ="$WORK/project-migrate"
+mkdir -p "$MPROJ"
+MKEY="$(AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" repo-key --cwd "$MPROJ")"
+mkdir -p "$MEMHOME/projects/$MKEY"
+printf '%s\n' '# Project Memory' '' '- [command] Legacy verification command (id: mem_legacy_1234; confidence: high; source_note: old.md; last_verified: 2026-01-01; tags: docs)' >"$MEMHOME/projects/$MKEY/MEMORY.md"
+run_mem migrate --cwd "$MPROJ" --format json
+assert_exit "migration preview succeeds" 0
+assert_json_expr "migration preview reports one action" "$WORK/out" "data['total'] == 1 and data['applied'] is False"
+if [ ! -d "$MEMHOME/projects/$MKEY/topics/memory" ]; then
+  pass "migration preview is non-mutating"
+else
+  fail "migration preview is non-mutating" "topics/memory was created"
+fi
+run_mem migrate --cwd "$MPROJ" --apply --format json
+assert_exit "migration apply succeeds" 0
+assert_file_exists "migration writes durable legacy record" "$MEMHOME/projects/$MKEY/topics/memory/mem_legacy_1234.md"
+assert_contains "migration adds canonical resource pointer" "$MEMHOME/projects/$MKEY/MEMORY.md" "resource: topics/memory/mem_legacy_1234.md"
+assert_json_expr "migration creates backup" "$WORK/out" "len(data['backup']) > 0"
+run_mem migrate --cwd "$MPROJ" --apply --format json
+assert_json_expr "migration rerun is idempotent" "$WORK/out" "data['total'] == 0"
+
+NATIVE="$WORK/native-claude"
+mkdir -p "$NATIVE"
+printf '%s\n' '# Build convention' 'Use the repository wrapper.' >"$NATIVE/build.md"
+run_mem import-native --harness claude --source-dir "$NATIVE" --cwd "$MPROJ" --format json
+assert_json_expr "native import preview reports candidate only" "$WORK/out" "data['total'] == 1 and data['applied'] is False"
+run_mem import-native --harness claude --source-dir "$NATIVE" --cwd "$MPROJ" --apply --format json
+assert_json_expr "native import stages medium candidate" "$WORK/out" "data['total'] == 1 and data['applied'] is True"
+IMPORTED="$(find "$MEMHOME/projects/$MKEY/inbox/auto" -name '*.md' | head -1)"
+assert_contains "native import records source harness" "$IMPORTED" "source: claude"
+assert_contains "native import stays medium confidence" "$IMPORTED" "confidence: medium"
+run_mem import-native --harness claude --source-dir "$NATIVE" --cwd "$MPROJ" --apply --format json
+assert_json_expr "native import rerun is idempotent" "$WORK/out" "data['total'] == 0"
+
+REMEMBER_NATIVE="$WORK/native-remember"
+mkdir -p "$REMEMBER_NATIVE/logs"
+printf '%s\n' \
+  '# Current work' \
+  '## 10:00 | main' \
+  'Keep the alpha handoff.' \
+  '## 11:00 | main' \
+  'Keep the beta handoff.' >"$REMEMBER_NATIVE/now.md"
+printf '%s\n' \
+  '# Today' \
+  '## 11:00 | main' \
+  'Keep the beta handoff.' >"$REMEMBER_NATIVE/today-2026-07-15.md"
+printf '%s\n' '# Recent' 'Historical duplicate.' >"$REMEMBER_NATIVE/recent.md"
+printf '%s\n' '# Log' 'Internal log noise.' >"$REMEMBER_NATIVE/logs/events.md"
+run_mem import-native --harness remember --source-dir "$REMEMBER_NATIVE" --cwd "$MPROJ" --format json
+assert_json_expr "remember import splits active entries and deduplicates content" "$WORK/out" "data['total'] == 2 and len(data['skipped']) == 1 and data['skipped'][0]['reason'] == 'duplicate-content' and all(a['type'] == 'handoff' for a in data['actions'])"
+assert_json_expr "remember import excludes archives by default" "$WORK/out" "all('recent.md' not in a['source'] and '/logs/' not in a['source'] for a in data['actions'])"
+run_mem import-native --harness remember --source-dir "$REMEMBER_NATIVE" --cwd "$MPROJ" --include-history --format json
+assert_json_expr "remember history requires explicit opt-in" "$WORK/out" "data['include_history'] is True and any('recent.md' in a['source'] for a in data['actions'])"
+run_mem import-native --harness remember --source-dir "$REMEMBER_NATIVE" --cwd "$MPROJ" --apply --format json
+assert_json_expr "remember import stages entry-sized candidates" "$WORK/out" "data['total'] == 2 and data['applied'] is True"
+run_mem import-native --harness remember --source-dir "$REMEMBER_NATIVE" --cwd "$MPROJ" --apply --format json
+assert_json_expr "remember import rerun is idempotent" "$WORK/out" "data['total'] == 0 and any(s['reason'] == 'already-imported' for s in data['skipped'])"
+
+CODEX_NATIVE="$WORK/native-codex"
+mkdir -p "$CODEX_NATIVE/extensions/ad_hoc/notes" "$CODEX_NATIVE/rollout_summaries"
+printf '%s\n' '# Memory summary' 'Concise user profile.' >"$CODEX_NATIVE/memory_summary.md"
+printf '%s\n' '# Raw memories' 'Noisy merged history.' >"$CODEX_NATIVE/raw_memories.md"
+printf '%s\n' '# User Preference' 'Prefer proportional verification.' >"$CODEX_NATIVE/extensions/ad_hoc/notes/preference.md"
+printf '%s\n' '# Rollout' 'Old task transcript.' >"$CODEX_NATIVE/rollout_summaries/old.md"
+run_mem import-native --harness codex --source-dir "$CODEX_NATIVE" --cwd "$MPROJ" --scope global --format json
+assert_json_expr "codex import selects curated memory and recognizes preferences" "$WORK/out" "data['total'] == 2 and data['scope'] == 'global' and any(a['type'] == 'preference' for a in data['actions']) and any(a['type'] == 'project-fact' for a in data['actions'])"
+assert_json_expr "codex import excludes raw and rollout history by default" "$WORK/out" "all('raw_memories.md' not in a['source'] and 'rollout_summaries' not in a['source'] for a in data['actions'])"
+run_mem import-native --harness codex --source-dir "$CODEX_NATIVE" --cwd "$MPROJ" --scope global --only-type preference --match proportional --format json
+assert_json_expr "codex import supports safe type and text narrowing" "$WORK/out" "data['total'] == 1 and data['only_type'] == 'preference' and data['match'] == ['proportional'] and data['actions'][0]['type'] == 'preference'"
+run_mem import-native --harness codex --source-dir "$CODEX_NATIVE" --cwd "$MPROJ" --scope global --include-history --format json
+assert_json_expr "codex history requires explicit opt-in" "$WORK/out" "data['total'] == 4 and data['include_history'] is True"
+run_mem import-native --harness codex --source-dir "$CODEX_NATIVE" --cwd "$MPROJ" --scope global --apply --format json
+assert_json_expr "codex import can target global memory" "$WORK/out" "data['total'] == 2 and all('/global/inbox/auto/' in a['note'] for a in data['actions'])"
+
+EXIST_HOME="$WORK/existing-home"
+EXIST_CODEX="$EXIST_HOME/.codex"
+EXIST_MEM="$WORK/memory-existing"
+EXIST_PROJ="$WORK/project-existing"
+EXIST_ENCODED="${EXIST_PROJ//\//-}"
+mkdir -p \
+  "$EXIST_HOME/.claude/projects/$EXIST_ENCODED/memory" \
+  "$EXIST_CODEX/memories/extensions/ad_hoc/notes" \
+  "$EXIST_PROJ/.remember"
+printf '%s\n' '# Claude convention' 'Use the project wrapper.' >"$EXIST_HOME/.claude/projects/$EXIST_ENCODED/memory/convention.md"
+printf '%s\n' '# Now' '## 12:00 | main' 'Resume the current migration.' >"$EXIST_PROJ/.remember/now.md"
+printf '%s\n' 'User preference: keep checks proportional.' >"$EXIST_CODEX/memories/extensions/ad_hoc/notes/ask-before-related-followups.md"
+HOME="$EXIST_HOME" CODEX_HOME="$EXIST_CODEX" AGENT_MEMORY_HOME="$EXIST_MEM" \
+  python3 "$MEM" import-existing --cwd "$EXIST_PROJ" --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "one-command existing-memory preview succeeds" 0
+assert_json_expr "one-command preview combines Claude, remember, and Codex" "$WORK/out" "data['total'] == 3 and data['applied'] is False and [i['harness'] for i in data['imports']] == ['claude', 'remember', 'codex']"
+HOME="$EXIST_HOME" CODEX_HOME="$EXIST_CODEX" AGENT_MEMORY_HOME="$EXIST_MEM" \
+  python3 "$MEM" import-existing --cwd "$EXIST_PROJ" --apply --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "one-command existing-memory apply succeeds" 0
+assert_json_expr "one-command apply stages every selected candidate" "$WORK/out" "data['total'] == 3 and data['applied'] is True"
+HOME="$EXIST_HOME" CODEX_HOME="$EXIST_CODEX" AGENT_MEMORY_HOME="$EXIST_MEM" \
+  python3 "$MEM" import-existing --cwd "$EXIST_PROJ" --apply --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_json_expr "one-command existing-memory rerun is idempotent" "$WORK/out" "data['total'] == 0"
+
+# ---------------------------------------------------------------------------
+# harness adapters: hooks fail open; config install is dry-run-first, merges
+# unrelated settings, and removes only owned adapters.
+# ---------------------------------------------------------------------------
+printf '{not json' | AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" hook --harness codex >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "malformed hook input fails open" 0
+assert_contains "malformed hook emits empty object" "$WORK/out" "{}"
+printf '{"prompt":"Legacy verification command","cwd":"%s"}' "$MPROJ" | \
+  AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" hook --harness codex >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "valid prompt hook recalls context" 0
+assert_json_expr "prompt hook emits UserPromptSubmit additionalContext" "$WORK/out" "data['hookSpecificOutput']['hookEventName'] == 'UserPromptSubmit' and 'Legacy verification command' in data['hookSpecificOutput']['additionalContext']"
+
+IHOME="$WORK/integration-home"
+mkdir -p "$IHOME/.claude"
+printf '%s\n' '{"permissions":{"allow":["Bash(git status)"]}}' >"$IHOME/.claude/settings.json"
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" integrate --mode shadow --harness all --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "integration preview succeeds" 0
+if [ ! -e "$IHOME/.codex/hooks.json" ]; then
+  pass "integration preview does not create config"
+else
+  fail "integration preview does not create config" "unexpected hooks.json"
+fi
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" integrate --mode shadow --harness all --apply --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "shadow integration apply succeeds" 0
+assert_contains "Claude integration preserves unrelated settings" "$IHOME/.claude/settings.json" "Bash(git status)"
+assert_contains "Claude prompt hook is marked as owned" "$IHOME/.claude/settings.json" "agent-memory-managed"
+assert_file_exists "Codex prompt hook config installed" "$IHOME/.codex/hooks.json"
+assert_file_exists "OpenCode adapter installed" "$IHOME/.config/opencode/plugins/agent-memory.js"
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" doctor --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "doctor reports integration state" 0
+assert_json_expr "doctor sees all managed adapters" "$WORK/out" "data['integrations']['claude']['managed'] and data['integrations']['codex_hooks']['managed'] and data['integrations']['opencode']['managed']"
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" integrate --mode off --harness all --apply >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "integration off succeeds" 0
+assert_contains "integration off preserves Claude settings" "$IHOME/.claude/settings.json" "Bash(git status)"
+if [ ! -e "$IHOME/.config/opencode/plugins/agent-memory.js" ]; then
+  pass "integration off removes owned OpenCode adapter"
+else
+  fail "integration off removes owned OpenCode adapter" "adapter remains"
+fi
+
+mkdir -p "$IHOME/.codex"
+printf '%s\n' 'hooks = ["remember@0.1.0"]' >"$IHOME/.codex/config.toml"
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" integrate --mode primary --harness codex --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "primary integration preview reports conflict" 0
+assert_json_expr "primary preview is explicitly blocked" "$WORK/out" "data['blocked'] is True and len(data['conflicts']) == 1 and data['applied'] is False"
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" integrate --mode primary --harness codex --apply >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "primary integration blocks known conflict" 1
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" integrate --mode primary --harness codex --disable-known-conflicts --apply >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "primary integration disables reviewed conflict" 0
+assert_contains "primary integration disables Codex native memory" "$IHOME/.codex/config.toml" "memories = false"
+assert_not_contains "primary integration removes known remember hook" "$IHOME/.codex/config.toml" "remember@"
+
+printf '%s\n' \
+  '[plugins."remember@claude-plugins-official"]' \
+  'enabled = false' \
+  '' \
+  '[plugins."remember-codex-bridge@personal"]' \
+  'enabled = true' >"$IHOME/.codex/config.toml"
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" integrate --mode primary --harness codex --format json >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "primary preview understands Codex plugin tables" 0
+assert_json_expr "primary ignores already disabled plugin" "$WORK/out" "len(data['conflicts']) == 1 and data['conflicts'][0]['token'] == 'remember-codex-bridge'"
+HOME="$IHOME" AGENT_MEMORY_HOME="$MEMHOME" python3 "$MEM" integrate --mode primary --harness codex --disable-known-conflicts --apply >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "primary disables enabled Codex plugin table" 0
+python3 - "$IHOME/.codex/config.toml" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as handle:
+    config = tomllib.load(handle)
+assert config["plugins"]["remember@claude-plugins-official"]["enabled"] is False
+assert config["plugins"]["remember-codex-bridge@personal"]["enabled"] is False
+assert config["features"]["memories"] is False
+PY
+if [ "$?" -eq 0 ]; then
+  pass "primary preserves disabled plugin and disables active bridge"
+else
+  fail "primary preserves disabled plugin and disables active bridge" "unexpected plugin or feature state"
+fi
+
+# ---------------------------------------------------------------------------
 # CLI validation: destructive commands reject invalid values before layout or
 # lock creation, and read-only commands follow the same positive/date contract.
 # ---------------------------------------------------------------------------

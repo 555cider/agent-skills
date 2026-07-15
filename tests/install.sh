@@ -145,11 +145,13 @@ test_uninstall_removes_local_fallback_install() {
 
   mkdir -p "$home/.codex"
 
-  HOME="$home" "$INSTALL" agent-memory >"$WORK/install-agent-memory.out" 2>"$WORK/install-agent-memory.err"
+  HOME="$home" "$INSTALL" --local agent-memory >"$WORK/install-agent-memory.out" 2>"$WORK/install-agent-memory.err"
   [ -f "$home/.agents/skills/agent-memory/SKILL.md" ] ||
     fail "expected agent-memory to be installed before uninstall"
   [ -f "$home/.codex/skills/agent-memory/SKILL.md" ] ||
     fail "expected codex harness link to resolve before uninstall"
+  [ -x "$home/.local/bin/agent-memory" ] ||
+    fail "expected managed agent-memory launcher before uninstall"
 
   HOME="$home" "$UNINSTALL" agent-memory >"$out" 2>"$err"
 
@@ -157,6 +159,8 @@ test_uninstall_removes_local_fallback_install() {
     fail "expected ~/.agents/skills/agent-memory to be removed"
   [ ! -e "$home/.codex/skills/agent-memory" ] && [ ! -L "$home/.codex/skills/agent-memory" ] ||
     fail "expected ~/.codex/skills/agent-memory link to be removed"
+  [ ! -e "$home/.local/bin/agent-memory" ] ||
+    fail "expected managed agent-memory launcher to be removed"
   grep -F "removed  $home/.agents/skills/agent-memory" "$out" >/dev/null ||
     fail "expected uninstall output to report removing agent-memory install root"
 }
@@ -168,7 +172,7 @@ test_uninstall_all_removes_agent_memory_local_fallback_install() {
 
   mkdir -p "$home/.codex"
 
-  HOME="$home" "$INSTALL" agent-memory >"$WORK/install-agent-memory-all.out" 2>"$WORK/install-agent-memory-all.err"
+  HOME="$home" "$INSTALL" --local agent-memory >"$WORK/install-agent-memory-all.out" 2>"$WORK/install-agent-memory-all.err"
   [ -f "$home/.agents/skills/agent-memory/SKILL.md" ] ||
     fail "expected agent-memory to be installed before uninstall --all"
 
@@ -178,6 +182,8 @@ test_uninstall_all_removes_agent_memory_local_fallback_install() {
     fail "expected uninstall --all to remove ~/.agents/skills/agent-memory"
   [ ! -e "$home/.codex/skills/agent-memory" ] && [ ! -L "$home/.codex/skills/agent-memory" ] ||
     fail "expected uninstall --all to remove ~/.codex/skills/agent-memory"
+  [ ! -e "$home/.local/bin/agent-memory" ] ||
+    fail "expected uninstall --all to remove managed launcher"
   grep -F "skill: agent-memory" "$out" >/dev/null ||
     fail "expected uninstall --all output to include agent-memory"
 }
@@ -205,6 +211,99 @@ test_uninstall_preserves_clone_without_upstream() {
     fail "expected uninstall refusal to explain the missing upstream"
 }
 
+test_agent_memory_shadow_one_command_setup() {
+  local home="$WORK/shadow-home"
+  local out="$WORK/shadow.out"
+  local err="$WORK/shadow.err"
+
+  mkdir -p "$home/.claude" "$home/.codex"
+  printf '%s\n' '{"autoMemoryEnabled":true}' >"$home/.claude/settings.json"
+  printf '%s\n' \
+    '[features]' \
+    'memories = true' \
+    '' \
+    '[plugins."remember-codex-bridge@personal"]' \
+    'enabled = true' >"$home/.codex/config.toml"
+
+  HOME="$home" "$INSTALL" --local agent-memory --shadow >"$out" 2>"$err"
+
+  [ -f "$home/.claude/settings.json" ] || fail "expected Claude settings after shadow setup"
+  [ -f "$home/.codex/hooks.json" ] || fail "expected Codex hooks after shadow setup"
+  [ -f "$home/.config/opencode/plugins/agent-memory.js" ] || fail "expected OpenCode plugin after shadow setup"
+  [ -x "$home/.local/bin/agent-memory" ] || fail "expected executable agent-memory launcher"
+  HOME="$home" "$home/.local/bin/agent-memory" doctor --format json >"$WORK/shadow-doctor.json"
+  python3 - "$home" <<'PY'
+import json
+import pathlib
+import sys
+import tomllib
+
+home = pathlib.Path(sys.argv[1])
+claude = json.loads((home / ".claude/settings.json").read_text())
+codex = tomllib.loads((home / ".codex/config.toml").read_text())
+assert claude["autoMemoryEnabled"] is True
+assert codex["features"]["memories"] is True
+assert codex["plugins"]["remember-codex-bridge@personal"]["enabled"] is True
+PY
+  grep -F "agent-memory integration: shadow" "$out" >/dev/null || fail "expected shadow integration summary"
+  grep -F "integration applied and self-check passed" "$out" >/dev/null || fail "expected successful shadow setup"
+}
+
+test_agent_memory_primary_one_command_setup() {
+  local home="$WORK/primary-home"
+  local out="$WORK/primary.out"
+  local err="$WORK/primary.err"
+
+  mkdir -p "$home/.claude" "$home/.codex"
+  printf '%s\n' '{"autoMemoryEnabled":true,"permissions":{"allow":["Bash(git status)"]}}' >"$home/.claude/settings.json"
+  printf '%s\n' \
+    '[features]' \
+    'memories = true' \
+    '' \
+    '[plugins."remember@claude-plugins-official"]' \
+    'enabled = false' \
+    '' \
+    '[plugins."remember-codex-bridge@personal"]' \
+    'enabled = true' >"$home/.codex/config.toml"
+
+  HOME="$home" "$INSTALL" --local agent-memory --primary >"$out" 2>"$err"
+
+  python3 - "$home" <<'PY'
+import json
+import pathlib
+import sys
+import tomllib
+
+home = pathlib.Path(sys.argv[1])
+claude = json.loads((home / ".claude/settings.json").read_text())
+codex = tomllib.loads((home / ".codex/config.toml").read_text())
+hooks = json.loads((home / ".codex/hooks.json").read_text())
+assert claude["autoMemoryEnabled"] is False
+assert claude["permissions"]["allow"] == ["Bash(git status)"]
+assert codex["features"]["memories"] is False
+assert codex["plugins"]["remember@claude-plugins-official"]["enabled"] is False
+assert codex["plugins"]["remember-codex-bridge@personal"]["enabled"] is False
+assert hooks["hooks"]["UserPromptSubmit"]
+assert (home / ".config/opencode/plugins/agent-memory.js").is_file()
+assert (home / ".local/bin/agent-memory").is_file()
+PY
+  grep -F "agent-memory integration: primary" "$out" >/dev/null || fail "expected primary integration summary"
+  grep -F "integration applied and self-check passed" "$out" >/dev/null || fail "expected successful primary self-check"
+  grep -F "review the Agent Memory hook in /hooks" "$out" >/dev/null || fail "expected concise Codex next step"
+  grep -F "restart to load the global plugin" "$out" >/dev/null || fail "expected concise OpenCode next step"
+}
+
+test_agent_memory_mode_requires_selection() {
+  local home="$WORK/mode-validation-home"
+  mkdir -p "$home"
+  if HOME="$home" "$INSTALL" --local peer-review --primary >"$WORK/mode-validation.out" 2>"$WORK/mode-validation.err"; then
+    fail "expected --primary without agent-memory selection to fail"
+  fi
+  grep -F -- "--primary requires agent-memory to be selected" "$WORK/mode-validation.err" >/dev/null ||
+    fail "expected integration selection error"
+  [ ! -e "$home/.agents" ] || fail "expected invalid setup not to mutate HOME"
+}
+
 test_list_includes_agent_memory
 test_uninstall_list_includes_agent_memory
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
@@ -213,5 +312,8 @@ test_default_install_does_not_accept_an_unrelated_git_repo
 test_uninstall_removes_local_fallback_install
 test_uninstall_all_removes_agent_memory_local_fallback_install
 test_uninstall_preserves_clone_without_upstream
+test_agent_memory_shadow_one_command_setup
+test_agent_memory_primary_one_command_setup
+test_agent_memory_mode_requires_selection
 
 echo "install tests passed"
