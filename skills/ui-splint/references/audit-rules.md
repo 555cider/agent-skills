@@ -100,9 +100,24 @@ Segmented/tab/radio groups where the wrong item looks active.
   Rendered-vs-natural aspect ratio differs `> 5%` with `object-fit:fill/unset` → distortion `Risk`.
   Rendered CSS px × dpr `> 1.5× naturalWidth` → upscale-blur `Risk`.
 
-## focusTrapLeak — `Fail` — auto-measured
-- **Method:** when a `[role=dialog]/[aria-modal=true]` is open and visible, enumerate focusable
-  nodes outside it not `tabindex=-1`/`inert`/`aria-hidden`; any → leak. (Run with the modal open.)
+## focusTrapLeak — `Risk` candidate / `Fail` after trusted input
+- **Structural phase:** for the topmost visible `[role=dialog][aria-modal=true]` or
+  `alertdialog`, focusable background controls produce only `Risk/visual-judgment`. Their
+  existence cannot prove whether JavaScript prevents focus escape.
+- **Keyboard phase:** the runners require initial focus inside the dialog, then focus the last
+  and first tab stops and send trusted `Tab` and `Shift+Tab`. A `Fail/auto-measured` requires
+  focus to escape or to wrap anywhere other than last→first and first→last.
+- **FP guards:** inspect only the topmost modal; honor `whitelist` and `baseline`; record every
+  visible modal in coverage while probing the active top layer.
+
+## focusObscured — `Fail` — auto-measured
+- **Method:** traverse the current document or modal tab sequence with trusted `Tab` input.
+  Intersect each focused control with the viewport and sample its clipped box with
+  `elementsFromPoint`. It fails only when no sampled point's top painted element is the
+  control or its descendant, or the focused control is wholly outside the viewport.
+- **Threshold:** fully obscured only. Partial visibility is not a failure.
+- **Coverage guard:** `keyboardProbe.maxSteps` bounds traversal. Hitting the bound or leaving
+  the document before all expected tab stops are visited marks the cell unverified.
 
 ## layoutShiftCLS — `Fail`(>0.25) / `Risk`(>0.1) — auto-measured
 - **Method:** reads a CLS accumulator populated by a `layout-shift` PerformanceObserver. The

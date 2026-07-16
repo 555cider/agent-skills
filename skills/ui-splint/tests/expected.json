@@ -58,6 +58,45 @@
       ]
     },
     {
+      "file": "modal-trapped.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [],
+      "mustNotHit": ["focusTrapLeak"],
+      "note": "A real forward/reverse keyboard trap passes even though background controls remain in the DOM."
+    },
+    {
+      "file": "modal-wrong-wrap.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "focusTrapLeak", "matches": "wrong-boundary-wrap", "severity": "Fail", "note": "Focus remains inside but wraps to the wrong boundary target." }
+      ]
+    },
+    {
+      "file": "focus-obscured.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "focusObscured", "matches": "covered-action", "severity": "Fail", "note": "Keyboard focus is fully painted over by the cookie wall." }
+      ]
+    },
+    {
+      "file": "state-setup-modal.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "states": ["dialog-open"],
+      "stateSetups": {
+        "dialog-open": {
+          "actions": [{ "type": "click", "selector": "#open-dialog" }],
+          "expect": [{ "selector": "[role=dialog][aria-modal=true]", "state": "visible" }]
+        }
+      },
+      "mustHit": [
+        { "rule": "focusTrapLeak", "severity": "Fail", "note": "Structured setup opens the modal, then trusted Tab input proves the leak." }
+      ]
+    },
+    {
       "file": "modal-front-overlay.html",
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "light",

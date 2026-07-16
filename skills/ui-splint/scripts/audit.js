@@ -670,10 +670,24 @@
   }
 
   function ruleFocusTrap(ctx) {
-    var modals = qsa('[role=dialog],[aria-modal=true]').filter(function (m) {
+    var modals = qsa('[role=dialog][aria-modal=true],[role=alertdialog][aria-modal=true]').filter(function (m) {
       return isVisible(m) && getComputedStyle(m).display !== 'none';
     });
     if (!modals.length) return;
+    modals = [modals.map(function (modal, order) {
+      var rect = modal.getBoundingClientRect();
+      var x = Math.max(0, Math.min(innerWidth - 1, rect.left + rect.width / 2));
+      var y = Math.max(0, Math.min(innerHeight - 1, rect.top + rect.height / 2));
+      var hit = document.elementsFromPoint(x, y).some(function (el) {
+        return el === modal || modal.contains(el);
+      });
+      var z = parseInt(getComputedStyle(modal).zIndex, 10);
+      return { modal: modal, hit: hit, z: isFinite(z) ? z : 0, order: order };
+    }).sort(function (a, b) {
+      if (a.hit !== b.hit) return a.hit ? 1 : -1;
+      if (a.z !== b.z) return a.z - b.z;
+      return a.order - b.order;
+    }).pop().modal];
     var FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]';
     modals.forEach(function (modal) {
       var outside = qsa(FOCUSABLE).filter(function (el) {
@@ -683,10 +697,10 @@
         return true;
       });
       if (outside.length) {
-        ctx.findings.push(mk('focusTrapLeak', 'Fail', 'auto-measured', cssPath(modal),
-          'Modal is open but ' + outside.length + ' focusable element(s) remain reachable behind it (e.g. ' + cssPath(outside[0]) + ').',
-          { leakedCount: outside.length, firstLeak: cssPath(outside[0]) }, {}, rectOf(modal),
-          'Trap focus inside the dialog and mark the background inert/aria-hidden while it is open.'));
+        ctx.findings.push(mk('focusTrapLeak', 'Risk', 'visual-judgment', cssPath(modal),
+          'Modal is open with ' + outside.length + ' focusable element(s) behind it; DOM structure alone cannot prove whether Tab escapes.',
+          { outsideFocusableCount: outside.length, firstOutside: cssPath(outside[0]), keyboardProbeRequired: true }, {}, rectOf(modal),
+          'Verify initial focus plus forward/reverse Tab boundaries with trusted browser input; add inert as defense in depth.'));
       }
     });
   }

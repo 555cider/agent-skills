@@ -28,7 +28,8 @@ if (typeof WebSocket === 'undefined') {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AUDIT_JS = readFileSync(join(HERE, 'audit.js'), 'utf8');
-const INIT = AUDIT_JS + '\n;try{window.__uiSplintInstallCLS&&window.__uiSplintInstallCLS();}catch(e){}\n';
+const KEYBOARD_PROBE_JS = readFileSync(join(HERE, 'keyboard-probe.js'), 'utf8');
+const INIT = AUDIT_JS + '\n' + KEYBOARD_PROBE_JS + '\n;try{window.__uiSplintInstallCLS&&window.__uiSplintInstallCLS();}catch(e){}\n';
 
 // ---------- args ----------
 const argv = process.argv.slice(2);
@@ -69,6 +70,8 @@ const scrollPositions = cfg.scrollPositions || ['top', 'bottom'];
 const auditCfg = cfg.auditConfig || {};
 const baseline = cfg.baseline || [];
 const themeInitScripts = cfg.themeInitScripts || {};
+const stateSetups = cfg.stateSetups || {};
+const keyboardCfg = cfg.keyboardProbe || {};
 const settleMs = Number(process.env.UI_SPLINT_SETTLE_MS || cfg.settleMs || 1200);
 
 mkdirSync(join(outDir, 'screens'), { recursive: true });
@@ -211,11 +214,190 @@ function aggregateFindings(source) {
 async function waitFor(fn, timeout = 20000, interval = 50) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const value = fn();
+    const value = await fn();
     if (value) return value;
     await sleep(interval);
   }
   throw new Error('timed out waiting for condition');
+}
+
+async function runtimeJson(cdp, sessionId, expression) {
+  const response = await cdp.send('Runtime.evaluate', {
+    expression: `JSON.stringify(${expression})`, returnByValue: true, awaitPromise: true
+  }, sessionId);
+  if (response.exceptionDetails) {
+    throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'page evaluation failed');
+  }
+  return JSON.parse(response.result.value);
+}
+
+const KEY_CODES = {
+  Tab: 9, Enter: 13, Escape: 27, Space: 32, ArrowLeft: 37, ArrowUp: 38,
+  ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35
+};
+
+async function dispatchKey(cdp, sessionId, chord) {
+  if (typeof chord !== 'string' || !chord) throw new Error('key must be a non-empty string');
+  const parts = chord.split('+');
+  const key = parts.pop();
+  let modifiers = 0;
+  for (const modifier of parts) {
+    if (modifier === 'Alt') modifiers |= 1;
+    else if (modifier === 'Control' || modifier === 'Ctrl') modifiers |= 2;
+    else if (modifier === 'Meta') modifiers |= 4;
+    else if (modifier === 'Shift') modifiers |= 8;
+    else throw new Error(`unsupported key modifier: ${modifier}`);
+  }
+  const windowsVirtualKeyCode = KEY_CODES[key] || (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
+  const code = key === ' ' ? 'Space' : key;
+  const params = { key, code, modifiers, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode };
+  if (key.length === 1 && (modifiers & 7) === 0) {
+    params.text = (modifiers & 8) ? key.toUpperCase() : key;
+    params.unmodifiedText = key;
+  }
+  await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...params }, sessionId);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params }, sessionId);
+}
+
+async function actionTarget(cdp, sessionId, selector, timeoutMs = 5000) {
+  const encoded = JSON.stringify(selector);
+  return waitFor(() => runtimeJson(cdp, sessionId, `(()=>{const matches=document.querySelectorAll(${encoded});if(matches.length!==1)return matches.length?{error:'matched '+matches.length+' elements'}:null;const el=matches[0];el.scrollIntoView({block:'center',inline:'center'});const r=el.getBoundingClientRect();const s=getComputedStyle(el);if(s.display==='none'||s.visibility==='hidden'||r.width<=0||r.height<=0||el.disabled)return null;return{x:r.left+r.width/2,y:r.top+r.height/2,checked:!!el.checked};})()`), timeoutMs).then(result => {
+    if (result.error) throw new Error(`selector ${JSON.stringify(selector)} ${result.error}; actions require exactly one element`);
+    return result;
+  });
+}
+
+async function applyStateSetup(cdp, sessionId, state, setups, timeoutMs = 5000) {
+  if (!setups || typeof setups !== 'object' || Array.isArray(setups)) throw new Error('stateSetups must be an object');
+  const spec = setups[state];
+  if (spec == null) return { configured: false, driver: 'none', status: 'not-configured', actions: 0, assertions: 0 };
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new Error(`stateSetups.${state} must be an object`);
+  const actions = spec.actions || [];
+  const expects = spec.expect;
+  if (!Array.isArray(actions)) throw new Error(`stateSetups.${state}.actions must be an array`);
+  if (!Array.isArray(expects) || !expects.length) throw new Error(`stateSetups.${state}.expect must be a non-empty array`);
+
+  for (let index = 0; index < actions.length; index++) {
+    const action = actions[index];
+    const allowed = new Set(['click', 'fill', 'press', 'hover', 'check', 'selectOption']);
+    if (!action || typeof action !== 'object' || Array.isArray(action)) throw new Error(`stateSetups.${state}.actions[${index}] must be an object`);
+    if (!allowed.has(action.type)) throw new Error(`stateSetups.${state}.actions[${index}].type is unsupported: ${JSON.stringify(action.type)}`);
+    if (typeof action.selector !== 'string' || !action.selector) throw new Error(`stateSetups.${state}.actions[${index}].selector must be non-empty`);
+    const point = await actionTarget(cdp, sessionId, action.selector, timeoutMs);
+    const encoded = JSON.stringify(action.selector);
+    if (action.type === 'click' || (action.type === 'check' && !point.checked)) {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sessionId);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sessionId);
+    } else if (action.type === 'hover') {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y }, sessionId);
+    } else if (action.type === 'fill') {
+      if (typeof action.value !== 'string') throw new Error(`stateSetups.${state}.actions[${index}].value must be a string`);
+      await runtimeJson(cdp, sessionId, `(()=>{const el=document.querySelector(${encoded});el.focus();if(typeof el.select==='function')el.select();return{ok:true};})()`);
+      await cdp.send('Input.insertText', { text: action.value }, sessionId);
+    } else if (action.type === 'press') {
+      if (typeof action.key !== 'string' || !action.key) throw new Error(`stateSetups.${state}.actions[${index}].key must be non-empty`);
+      await runtimeJson(cdp, sessionId, `(()=>{document.querySelector(${encoded}).focus();return{ok:true};})()`);
+      await dispatchKey(cdp, sessionId, action.key);
+    } else if (action.type === 'selectOption') {
+      if (typeof action.value !== 'string') throw new Error(`stateSetups.${state}.actions[${index}].value must be a string`);
+      const value = JSON.stringify(action.value);
+      await runtimeJson(cdp, sessionId, `(()=>{const el=document.querySelector(${encoded});for(const option of el.options)option.selected=option.value===${value};el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return{ok:true};})()`);
+      const selected = await runtimeJson(cdp, sessionId, `({value:document.querySelector(${encoded}).value})`);
+      if (selected.value !== action.value) throw new Error(`stateSetups.${state}.actions[${index}] could not select ${JSON.stringify(action.value)}`);
+    }
+    if (action.type === 'check') {
+      const checked = await runtimeJson(cdp, sessionId, `({checked:!!document.querySelector(${encoded}).checked})`);
+      if (!checked.checked) throw new Error(`stateSetups.${state}.actions[${index}] did not check the target`);
+    }
+    await sleep(50);
+  }
+
+  for (let index = 0; index < expects.length; index++) {
+    const expectation = expects[index];
+    if (!expectation || typeof expectation !== 'object' || Array.isArray(expectation)) throw new Error(`stateSetups.${state}.expect[${index}] must be an object`);
+    const selector = expectation.selector;
+    const expectedState = expectation.state || 'visible';
+    if (typeof selector !== 'string' || !selector) throw new Error(`stateSetups.${state}.expect[${index}].selector must be non-empty`);
+    if (!['visible', 'hidden', 'attached', 'detached'].includes(expectedState)) throw new Error(`stateSetups.${state}.expect[${index}].state is unsupported: ${JSON.stringify(expectedState)}`);
+    const encoded = JSON.stringify(selector);
+    await waitFor(async () => {
+      const actual = await runtimeJson(cdp, sessionId, `(()=>{const matches=[...document.querySelectorAll(${encoded})];return{count:matches.length,visible:matches.filter(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}).length};})()`);
+      if (expectedState === 'attached') return actual.count > 0;
+      if (expectedState === 'detached') return actual.count === 0;
+      if (expectedState === 'visible') return actual.visible > 0;
+      return actual.visible === 0;
+    }, timeoutMs);
+  }
+  return { configured: true, driver: 'structured-actions', status: 'checked', actions: actions.length, assertions: expects.length };
+}
+
+function keyboardFinding(rule, selector, message, measured, rect, suggestedFix) {
+  return { rule, severity: 'Fail', confidence: 'auto-measured', selector, message,
+    measured, threshold: {}, rect: rect || null, suggestedFix };
+}
+
+async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], baselineEntries = []) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('keyboardProbe must be an object');
+  const maxSteps = Number(config.maxSteps ?? 120);
+  const settle = Number(config.settleMs ?? 50);
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 1000) throw new Error('keyboardProbe.maxSteps must be an integer between 1 and 1000');
+  if (!Number.isInteger(settle) || settle < 0 || settle > 5000) throw new Error('keyboardProbe.settleMs must be an integer between 0 and 5000');
+  const findings = [];
+  const whitelistJson = JSON.stringify(whitelist || []);
+  const modal = await runtimeJson(cdp, sessionId, `window.__uiSplintKeyboardProbe.modalPlan(${whitelistJson})`);
+  const violations = [];
+  if (modal.present) {
+    if (!modal.activeInside) violations.push({ type: 'initial-focus-outside', focused: modal.activeSelector });
+    for (const [boundary, chord, direction] of [['last', 'Tab', 'forward'], ['first', 'Shift+Tab', 'reverse']]) {
+      const focused = await runtimeJson(cdp, sessionId, `window.__uiSplintKeyboardProbe.focusModalBoundary(${JSON.stringify(boundary)})`);
+      if (!focused.ok) { violations.push({ type: 'boundary-focus-failed', direction, focused: focused.active }); continue; }
+      await dispatchKey(cdp, sessionId, chord);
+      if (settle) await sleep(settle);
+      const active = await runtimeJson(cdp, sessionId, `window.__uiSplintKeyboardProbe.inspectActive(${whitelistJson})`);
+      const expectedSelector = direction === 'forward' ? modal.firstSelector : modal.lastSelector;
+      if (!active.inModal) violations.push({ type: 'focus-escaped', direction, focused: active.selector });
+      else if (active.selector !== expectedSelector) violations.push({ type: 'wrong-boundary-wrap', direction, focused: active.selector, expected: expectedSelector });
+    }
+    if (violations.length && !modal.whitelisted) findings.push(keyboardFinding('focusTrapLeak', modal.selector,
+      'Modal keyboard focus is not contained: ' + violations.map(v => v.type + (v.direction ? ` (${v.direction})` : '')).join('; ') + '.',
+      { violations, tabbableCount: modal.tabbableCount || 0 }, null,
+      'Move initial focus into the dialog and wrap forward/reverse Tab at its boundaries.'));
+  }
+
+  const traversal = await runtimeJson(cdp, sessionId, 'window.__uiSplintKeyboardProbe.traversalPlan()');
+  const expected = Number(traversal.expected || 0);
+  const visited = [];
+  const obscured = new Set();
+  if (expected) {
+    const started = await runtimeJson(cdp, sessionId, 'window.__uiSplintKeyboardProbe.focusTraversalStart()');
+    if (!started.ok) return { findings, proof: { status: 'error', reason: 'could not focus first tab stop', expected, visited: 0, dialogs: modal.visibleModalCount || 0, modalSelector: modal.selector || null, maxSteps } };
+    for (let step = 0; step < maxSteps; step++) {
+      const active = await runtimeJson(cdp, sessionId, `window.__uiSplintKeyboardProbe.inspectActive(${whitelistJson})`);
+      if (!active.documentFocus || visited.includes(active.selector)) break;
+      visited.push(active.selector);
+      if (active.fullyObscured && !active.whitelisted && !obscured.has(active.selector)) {
+        obscured.add(active.selector);
+        findings.push(keyboardFinding('focusObscured', active.selector,
+          'Keyboard focus is completely hidden by author-created layout or overlay.',
+          { reason: active.reason, coveringSelector: active.coveringSelector }, active.rect,
+          'Reflow the surface or add scroll padding so every focused control remains at least partially visible.'));
+      }
+      if (visited.length >= expected) break;
+      await dispatchKey(cdp, sessionId, 'Tab');
+      if (settle) await sleep(settle);
+    }
+  }
+  let status = modal.present || expected ? 'checked' : 'not-applicable';
+  let reason;
+  if (expected && visited.length < expected) {
+    status = 'incomplete';
+    reason = `visited ${visited.length} of ${expected} tab stops before focus repeated or left the document`;
+  }
+  const proof = { status, expected, visited: visited.length, dialogs: modal.visibleModalCount || 0, modalSelector: modal.selector || null, maxSteps };
+  if (reason) proof.reason = reason;
+  const baselineKeys = new Set((baselineEntries || []).filter(item => item && typeof item === 'object')
+    .map(item => `${item.rule}|${item.selector}`));
+  return { findings: findings.filter(finding => !baselineKeys.has(`${finding.rule}|${finding.selector}`)), proof };
 }
 
 const allFindings = [];
@@ -235,9 +417,12 @@ try {
           cell.stateDriver = state === 'default' ? 'page-default' : 'none';
           cell.interceptions = 0;
           let targetId = null;
+          let browserContextId = null;
           let stopDocumentResponses = null;
           try {
-            const created = await cdp.send('Target.createTarget', { url: 'about:blank' });
+            const isolated = await cdp.send('Target.createBrowserContext');
+            browserContextId = isolated.browserContextId;
+            const created = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId });
             targetId = created.targetId;
             const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
             await cdp.send('Page.enable', {}, sessionId);
@@ -276,6 +461,10 @@ try {
             const status = response && response.response && response.response.status;
             if (status >= 400) throw new Error(`HTTP ${status} loading ${url}`);
             await sleep(settleMs); // settle fonts + load-triggered late content (CLS)
+            const setupProof = await applyStateSetup(cdp, sessionId, state, stateSetups);
+            cell.setupDriver = setupProof.driver;
+            cell.stateSetup = { status: setupProof.status, actions: setupProof.actions, assertions: setupProof.assertions };
+            if (setupProof.configured) await sleep(100);
 
             const cellFindings = [];
             const cellRulesSkipped = [];
@@ -299,6 +488,22 @@ try {
                   Buffer.from(shot.data, 'base64'));
               }
             }
+            const keyboard = await runKeyboardProbe(cdp, sessionId, keyboardCfg, auditCfg.whitelist || [], baseline);
+            cell.keyboardProbe = keyboard.proof;
+            if (['checked', 'not-applicable'].includes(keyboard.proof.status)) {
+              for (let index = cellFindings.length - 1; index >= 0; index--) {
+                const finding = cellFindings[index];
+                if (finding.rule === 'focusTrapLeak' && finding.selector === keyboard.proof.modalSelector &&
+                    finding.measured && finding.measured.keyboardProbeRequired) {
+                  cellFindings.splice(index, 1);
+                }
+              }
+            }
+            for (const finding of keyboard.findings) {
+              finding.scroll = 'keyboard';
+              finding.cell = cell;
+              cellFindings.push(finding);
+            }
             // dedupe within cell
             const seen = new Set(), deduped = [];
             for (const f of cellFindings) { const k = f.rule + '|' + f.selector + '|' + f.message; if (!seen.has(k)) { seen.add(k); deduped.push(f); } }
@@ -308,10 +513,12 @@ try {
               cell.rulesSkipped = cellRulesSkipped;
               cell.status = 'error';
               cell.error = 'audit rule(s) skipped: ' + cellRulesSkipped.join('; ');
-            // This runner has no network mocking, so it cannot force empty/error/loading data
-            // states — a non-default cell just re-renders the default page. Report it honestly as
-            // not-forced rather than pretending the state was verified (silence is not coverage).
-            } else if (state === 'default') {
+            } else if (!['checked', 'not-applicable'].includes(keyboard.proof.status)) {
+              cell.status = 'error';
+              cell.error = 'keyboard probe incomplete: ' + (keyboard.proof.reason || keyboard.proof.status);
+            // This runner cannot mock network data, but a structured state setup with
+            // explicit expectations can independently prove an interaction state.
+            } else if (state === 'default' || setupProof.configured) {
               cell.status = 'checked';
             } else {
               cell.status = 'not-forced';
@@ -324,6 +531,9 @@ try {
             if (stopDocumentResponses) stopDocumentResponses();
             if (targetId) {
               try { await cdp.send('Target.closeTarget', { targetId }); } catch {}
+            }
+            if (browserContextId) {
+              try { await cdp.send('Target.disposeBrowserContext', { browserContextId }); } catch {}
             }
           }
           matrix.push(cell);

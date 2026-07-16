@@ -39,11 +39,12 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 - [`skills/ui-splint/`](skills/ui-splint/) - visual QA gate for frontend work,
   built on **measure-don't-eyeball**: a deterministic browser-injected audit
   (`scripts/audit.js`) MEASURES contrast, overflow, sticky-bar overlap, collapsed
-  regions, text clipping, tap targets, focus traps, layout shift, broken media,
+  regions, text clipping, tap targets, focus traps, fully obscured keyboard focus, layout shift, broken media,
   and more — then a judgment layer covers composition, hierarchy, data-state
   feedback, copy, and brand coherence. Detect-first-then-judge; severity is
   computed from thresholds, not taste. The audit runs via MCP, a zero-dependency
-  Chrome/CDP runner (`scripts/audit-chrome.mjs`), or Playwright; defect fixtures
+  Chrome/CDP runner (`scripts/audit-chrome.mjs`), or Playwright; both batch runners
+  use real Tab/Shift+Tab input and structured interaction-state setup. Defect fixtures
   live under `tests/`.
 - [`skills/dom-picker/`](skills/dom-picker/) — turn a UI issue the user
   points at in a **running** web app into a **minimal, validated frontend patch**.

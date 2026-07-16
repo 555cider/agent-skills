@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Browser context isolation</title>
+<style>body{padding:24px;font:16px system-ui;color:#111827;background:#fff}.fresh{display:block}.leaked{display:none}</style>
+</head><body>
+  <div class="fresh">Fresh browser context</div><div class="leaked">Leaked storage</div>
+  <script>
+    if (localStorage.getItem('ui-splint-seen')) {
+      document.querySelector('.fresh').style.display = 'none';
+      document.querySelector('.leaked').style.display = 'block';
+    }
+    localStorage.setItem('ui-splint-seen', '1');
+  </script>
+</body></html>

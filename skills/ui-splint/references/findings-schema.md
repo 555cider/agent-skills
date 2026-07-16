@@ -28,6 +28,26 @@ aggregates per-cell reports into `findings.json` (a flat array of findings) and
 }
 ```
 
+Batch-runner configuration also accepts deterministic state and keyboard proof:
+
+```jsonc
+{
+  "stateSetups": {
+    "dialog-open": {
+      "actions": [{ "type": "click", "selector": "#open-dialog" }],
+      "expect": [{ "selector": "[role=dialog][aria-modal=true]", "state": "visible" }]
+    }
+  },
+  "keyboardProbe": { "maxSteps": 120, "settleMs": 50 }
+}
+```
+
+Actions require a selector that matches exactly one element. Supported types are `click`,
+`fill` (`value` string), `press` (`key` string), `hover`, `check`, and `selectOption`
+(`value` string). Expectations require a non-empty array; `visible`/`attached` pass when any
+match qualifies, while `hidden` means no match is visible and `detached` means zero matches.
+There is no arbitrary JavaScript action.
+
 ## report (output of `__uiSplintAudit`)
 
 ```jsonc
@@ -93,6 +113,10 @@ and backward-compatible `cell` field come from the worst severity (`Fail` > `Ris
   "matrix": [
     { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default",
       "themeDriver": "media", "stateDriver": "page-default", "interceptions": 0,
+      "setupDriver": "none",
+      "stateSetup": { "status": "not-configured", "actions": 0, "assertions": 0 },
+      "keyboardProbe": { "status": "checked", "expected": 5, "visited": 5,
+        "dialogs": 0, "modalSelector": null, "maxSteps": 120 },
       "status": "checked", "counts": { "Fail": 1, "Risk": 0, "Polish": 0 } },
     { "route": "/", "viewport": "desktop", "theme": "light", "state": "error",
       "status": "error", "error": "TimeoutError: ..." },  // surfaces as "Not verified"
@@ -119,11 +143,23 @@ than `checked`, or any rule in `rulesSkipped`, must be reported as **Not verifie
 blocks the runner's completion gate. Re-run `not-forced` cells with a matching Playwright
 route mock or MCP route mocks to actually exercise them.
 
-`themeDriver` is `media` or `init-script`; `stateDriver` is `page-default`,
-`configured-mock`, `fallback-mock`, or `none`. `interceptions` is the number of requests
+`themeDriver` is `media` or `init-script`; `stateDriver` remains `page-default`,
+`configured-mock`, `fallback-mock`, or `none`. `setupDriver` is `none` or
+`structured-actions`. `interceptions` is the number of requests
 actually handled for the cell, and is the proof required for non-default state coverage.
+
+`keyboardProbe.status` is `checked`, `not-applicable`, `incomplete`, or `error`. The last
+two make the cell `error` and block completion. The probe tests only the topmost visible
+modal but reports the total visible modal count; `modalSelector` identifies the tested layer.
+Runner-generated `focusTrapLeak` and `focusObscured` findings honor the same whitelist and
+baseline as DOM audit findings.
 
 `stateMocks.<state>` is an array of route rules. Each rule requires `pattern` and exactly
 one of `body` or `hold: true`; `status` defaults to 200 and `contentType` to
 `application/json`. Non-string bodies are JSON-serialized. `themeInitScripts.<theme>` is a
 trusted project script installed before page code; use it to set class/data-attribute themes.
+
+`stateSetups.<state>` may prove a non-default interaction state without network mocking.
+When an explicit `stateMocks.<state>` and a setup are both configured, both proofs must
+succeed; fallback mocks are opportunistic and do not invalidate a successful setup when no
+request matches.

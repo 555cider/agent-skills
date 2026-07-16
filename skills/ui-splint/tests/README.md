@@ -13,6 +13,10 @@ detector covers.
 | `dashboard.html` | the real dark dashboard | fixed bottom nav clipping the last content row (only visible at scroll-bottom) |
 | `kitchensink.html` | a broad defect set | horizontal overflow, ancestor-collapsed scroll region, text escape + clamp, tiny/crowded tap targets, off-viewport element, content under a fixed bar, opacity:0 content, broken image, CLS |
 | `layout.html` | layout polish regressions | lone narrow element on its own row, too many buttons in one row |
+| `modal.html` / `modal-trapped.html` / `modal-wrong-wrap.html` | leaky, correct, and internally mis-wrapped modal focus | trusted initial/forward/reverse focus containment; correct trap emits no `focusTrapLeak` |
+| `focus-obscured.html` | a control painted completely behind fixed UI | `focusObscured` from trusted Tab traversal |
+| `state-setup-modal.html` | an interaction state closed on first load | structured click + visible expectation, followed by modal keyboard audit |
+| `context-isolation.html` | storage leaking between matrix cells | fresh storage in every browser context |
 | `clean.html` | a well-built version of the same screens | **nothing** (zero findings) |
 
 `expected.json` is the machine-readable contract: per fixture, the rules that must fire
@@ -32,9 +36,10 @@ node ../../scripts/audit-chrome.mjs http://localhost:8788 \
 #             "themes":["dark"], "states":["default"], "scrollPositions":["top","bottom"] }
 ```
 
-Then check `findings.json` against `expected.json`: every `mustHit` rule present for its
-fixture, and `clean.html` with zero findings. (Or inject `audit.js` via the MCP/DevTools
-console and call `__uiSplintAudit({isMobile:true})` — see `../SKILL.md`.)
+Then check `findings.json` against `expected.json`: every `mustHit` rule is present, every
+`mustNotHit` rule is absent, and `clean.html` has zero findings. Keyboard contracts require
+a runner because synthetic in-page events cannot prove Tab behavior. For DOM-only rules,
+inject `audit.js` via MCP/DevTools and call `__uiSplintAudit({isMobile:true})`.
 
 Validated baseline: login auth defects · dashboard sticky-overlap at bottom ·
 kitchensink all defect classes · layout polish rules · clean **0**.

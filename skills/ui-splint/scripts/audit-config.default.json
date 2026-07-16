@@ -11,7 +11,9 @@
   "waitForSelector": null,
   "apiMockPattern": "**/api/**",
   "stateMocks": {},
+  "stateSetups": {},
   "themeInitScripts": {},
+  "keyboardProbe": { "maxSteps": 120, "settleMs": 50 },
   "baseline": [],
   "auditConfig": {
     "contrast": { "normal": 4.5, "large": 3.0, "washedOut": 1.3, "placeholderFail": 3.0 },

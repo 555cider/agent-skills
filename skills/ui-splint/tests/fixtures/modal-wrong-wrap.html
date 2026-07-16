@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Modal wrong boundary wrap</title>
+<style>
+  body{font:16px system-ui;color:#111827;background:#fff} button{min-width:110px;min-height:44px;background:#1d4ed8;color:#fff;border:0;margin:8px}
+  .dialog{position:fixed;inset:25% 20%;padding:24px;background:#fff;border:2px solid #111827}
+</style></head><body>
+  <button id="background">Background</button>
+  <div class="dialog" role="dialog" aria-modal="true" aria-label="Wrong wrap">
+    <button id="first">First</button><button id="middle">Middle</button><button id="last">Last</button>
+  </div>
+  <script>
+    const dialog = document.querySelector('.dialog');
+    const first = document.querySelector('#first');
+    const middle = document.querySelector('#middle');
+    const last = document.querySelector('#last');
+    first.focus();
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Tab') return;
+      if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+        event.preventDefault(); middle.focus();
+      }
+    });
+  </script>
+</body></html>

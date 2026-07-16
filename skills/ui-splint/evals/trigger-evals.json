@@ -8,7 +8,7 @@
     "should_trigger": true
   },
   {
-    "query": "Review the screenshot and rendered route for layout clipping.",
+    "query": "Review the screenshot and rendered route for layout clipping, then Tab through the open modal to verify focus stays inside.",
     "should_trigger": true
   },
   {
@@ -20,7 +20,7 @@
     "should_trigger": true
   },
   {
-    "query": "Check whether the empty, loading, and error states are visually coherent.",
+    "query": "Open the delete dialog and check whether Tab or Shift+Tab can escape behind it before calling the screen accessible and complete.",
     "should_trigger": true
   },
   { "query": "Audit the entire dashboard across supported themes and viewports before shipping it.", "should_trigger": true },

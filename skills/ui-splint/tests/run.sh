@@ -151,9 +151,11 @@ for fixture in expected:
             "dpr": viewport.get("dpr", 3),
         }],
         "themes": [fixture.get("theme", "light")],
-        "states": ["default"],
+        "states": fixture.get("states", ["default"]),
         "scrollPositions": ["top", "bottom"],
     }
+    if fixture.get("stateSetups"):
+        config["stateSetups"] = fixture["stateSetups"]
     cfg_path = work / (file_name + ".json")
     cfg_path.write_text(json.dumps(config), encoding="utf-8")
     result = subprocess.run(
@@ -218,6 +220,10 @@ for fixture in expected:
                 detail += f" [{sev_mismatch}]"
             rules = ", ".join(sorted({f.get("rule", "?") for f in findings}))
             errors.append(f"{file_name}: missing {rule}{detail}; saw [{rules}]")
+
+    for forbidden in fixture.get("mustNotHit", []):
+        if any(f.get("rule") == forbidden for f in findings):
+            errors.append(f"{file_name}: forbidden rule {forbidden} fired")
 
 if errors:
     print("\n".join(errors), file=sys.stderr)
@@ -288,6 +294,58 @@ then
 else
   fail "whitelist suppresses all matching instances" "off=$(cat "$WORK/wl-off/findings.json" 2>/dev/null | head -c 200) on=$(cat "$WORK/wl-on/findings.json" 2>/dev/null | head -c 200)"
 fi
+
+# ---- runner-generated keyboard findings honor whitelist and baseline ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"auditConfig":{"whitelist":["#covered-action"]}}') \
+  --out-dir "$WORK/keyboard-wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/keyboard-wl/findings.json" <<'PY'
+import json, sys
+findings = json.load(open(sys.argv[1]))
+assert not any(f.get("rule") == "focusObscured" for f in findings), findings
+PY
+then pass "keyboard findings honor whitelist"; else fail "keyboard findings honor whitelist" "focusObscured leaked"; fi
+
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"baseline":[{"rule":"focusObscured","selector":"button#covered-action"}]}') \
+  --out-dir "$WORK/keyboard-base" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/keyboard-base/findings.json" <<'PY'
+import json, sys
+findings = json.load(open(sys.argv[1]))
+assert not any(f.get("rule") == "focusObscured" for f in findings), findings
+PY
+then pass "keyboard findings honor baseline"; else fail "keyboard findings honor baseline" "focusObscured leaked"; fi
+
+# ---- bounded traversal and setup failures remain honest coverage errors ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"keyboardProbe":{"maxSteps":1,"settleMs":0}}') \
+  --out-dir "$WORK/keyboard-cap" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "keyboard traversal cap blocks completion" 1
+if python3 - "$WORK/keyboard-cap/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+assert cell["status"] == "error" and cell["keyboardProbe"]["status"] == "incomplete", cell
+PY
+then pass "keyboard cap is recorded in coverage"; else fail "keyboard cap is recorded in coverage" "missing incomplete proof"; fi
+
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-setup-modal.html"],"themes":["light"],"states":["dialog-open"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateSetups":{"dialog-open":{"actions":[{"type":"click","selector":"#missing"}],"expect":[{"selector":"[role=dialog]","state":"visible"}]}}}') \
+  --out-dir "$WORK/setup-error" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "invalid state setup blocks completion" 1
+if python3 - "$WORK/setup-error/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+assert cell["status"] == "error" and "timed out" in cell["error"], cell
+PY
+then pass "state setup failure is recorded"; else fail "state setup failure is recorded" "missing setup error"; fi
+
+# ---- every cell gets an isolated browser context ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/context-isolation.html"],"themes":["light"],"states":["one","two"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateSetups":{"one":{"expect":[{"selector":".fresh","state":"visible"}]},"two":{"expect":[{"selector":".fresh","state":"visible"}]}}}') \
+  --out-dir "$WORK/context-isolation" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/context-isolation/coverage.json" <<'PY'
+import json, sys
+cells = json.load(open(sys.argv[1]))["matrix"]
+assert len(cells) == 2 and all(c["status"] == "checked" for c in cells), cells
+PY
+then pass "browser storage is isolated per matrix cell"; else fail "browser storage is isolated per matrix cell" "storage leaked"; fi
 
 # ---- non-default data states are recorded as not-forced, not silently 'checked' ----
 node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"states":["default","empty"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":3}]}') \
