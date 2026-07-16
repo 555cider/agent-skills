@@ -255,9 +255,10 @@ clone_skill() {
 
 # sync_local_skill <name>: copy the current checkout's skills/<name>/ into
 # ~/.agents/skills/<name>/. Only .git metadata is preserved; every other file in
-# the matching destination working tree is replaced from the checkout. An
-# unrelated directory or a git clone with local changes is refused; edit in the
-# monorepo checkout, not the installed clone.
+# the matching destination working tree is replaced from the checkout. The
+# monorepo checkout is authoritative whenever this function is reached. In
+# normal install mode clone_skill screens existing git repositories first, so
+# their local work is still protected.
 sync_local_skill() {
   local name="$1"
   local src="$SKILLS_SRC/$name"
@@ -277,17 +278,6 @@ sync_local_skill() {
   if [ -d "$dest" ] && ! local_skill_dir_matches "$dest" "$name"; then
     printf '  WARN %s is not a recognized local %s skill — refusing to overwrite it\n' "$dest" "$name" >&2
     return 1
-  fi
-
-  # A local refresh replaces the working tree. Refuse when a clone has local
-  # work instead of merely warning and destroying it.
-  if [ -d "$dest/.git" ] || [ -f "$dest/.git" ]; then
-    if ! git -C "$dest" diff --quiet 2>/dev/null \
-       || ! git -C "$dest" diff --cached --quiet 2>/dev/null \
-       || [ -n "$(git -C "$dest" ls-files --others --exclude-standard 2>/dev/null)" ]; then
-      printf '  WARN %s has local changes — refusing to overwrite them\n' "$dest" >&2
-      return 1
-    fi
   fi
 
   mkdir -p "$dest"

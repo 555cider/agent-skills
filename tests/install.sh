@@ -114,6 +114,78 @@ SKILL
     fail "expected warning for mismatched plain directory"
 }
 
+test_local_install_overwrites_dirty_managed_clone() {
+  local home="$WORK/local-dirty-home"
+  local dest="$home/.agents/skills/peer-review"
+
+  mkdir -p "$dest" "$home/.codex"
+  git init -q "$dest"
+  git -C "$dest" config user.email "test@example.com"
+  git -C "$dest" config user.name "Test"
+  cp "$ROOT/skills/peer-review/SKILL.md" "$dest/SKILL.md"
+  printf 'stale tracked file\n' >"$dest/stale.txt"
+  git -C "$dest" add SKILL.md stale.txt
+  git -C "$dest" commit -qm init
+  printf '\ndirty installed copy\n' >>"$dest/SKILL.md"
+  printf 'stale untracked file\n' >"$dest/untracked.txt"
+
+  HOME="$home" "$INSTALL" --local peer-review >"$WORK/local-dirty.out" 2>"$WORK/local-dirty.err"
+
+  diff -qr --exclude=.git "$ROOT/skills/peer-review" "$dest" >/dev/null ||
+    fail "expected --local to replace a dirty installed clone from the checkout"
+  [ -d "$dest/.git" ] || fail "expected --local to preserve installed clone metadata"
+  [ -L "$home/.codex/skills/peer-review" ] ||
+    fail "expected local refresh to keep managing the harness link"
+  ! grep -F "has local changes" "$WORK/local-dirty.err" >/dev/null ||
+    fail "expected explicit --local refresh not to reject its dirty destination"
+}
+
+test_default_install_preserves_dirty_managed_clone() {
+  local repo="$WORK/dirty-clone-repo"
+  local home="$WORK/dirty-clone-home"
+  local remote="$WORK/dirty-clone-remote.git"
+  local dest="$home/.agents/skills/local-only"
+
+  mkdir -p "$repo/skills/local-only" "$dest" "$home/.codex"
+  cp "$INSTALL" "$repo/install.sh"
+  chmod +x "$repo/install.sh"
+
+  cat >"$repo/skills/local-only/SKILL.md" <<'SKILL'
+---
+name: local-only
+description: Local-only test skill.
+---
+
+# Local Only
+SKILL
+  git init -q "$repo"
+  git -C "$repo" config user.email "test@example.com"
+  git -C "$repo" config user.name "Test"
+  git -C "$repo" add install.sh skills
+  git -C "$repo" commit -qm init
+  git init --bare -q "$remote"
+  git -C "$repo" remote add origin "$remote"
+
+  cp "$repo/skills/local-only/SKILL.md" "$dest/SKILL.md"
+  git init -q "$dest"
+  git -C "$dest" config user.email "test@example.com"
+  git -C "$dest" config user.name "Test"
+  git -C "$dest" add SKILL.md
+  git -C "$dest" commit -qm init
+  git -C "$dest" branch -m split/local-only
+  git -C "$dest" remote add origin "$remote"
+  git -C "$dest" update-ref refs/remotes/origin/split/local-only HEAD
+  git -C "$dest" branch --set-upstream-to=origin/split/local-only >/dev/null
+  printf 'keep this local work\n' >"$dest/local-work.txt"
+
+  HOME="$home" "$repo/install.sh" local-only >"$WORK/dirty-clone.out" 2>"$WORK/dirty-clone.err"
+
+  grep -Fx "keep this local work" "$dest/local-work.txt" >/dev/null ||
+    fail "expected default install to preserve dirty managed clone contents"
+  grep -F "already cloned" "$WORK/dirty-clone.out" >/dev/null ||
+    fail "expected default install to leave its managed clone alone"
+}
+
 test_default_install_does_not_accept_an_unrelated_git_repo() {
   local home="$WORK/unrelated-git-home"
   local dest="$home/.agents/skills/agent-memory"
@@ -308,6 +380,8 @@ test_list_includes_agent_memory
 test_uninstall_list_includes_agent_memory
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
 test_default_fallback_does_not_overwrite_mismatched_plain_directory
+test_local_install_overwrites_dirty_managed_clone
+test_default_install_preserves_dirty_managed_clone
 test_default_install_does_not_accept_an_unrelated_git_repo
 test_uninstall_removes_local_fallback_install
 test_uninstall_all_removes_agent_memory_local_fallback_install
