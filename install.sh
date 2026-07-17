@@ -5,6 +5,7 @@
 # Usage:
 #   ./install.sh                       # install every skill
 #   ./install.sh <name> [<name>...]    # install only the named skill(s)
+#   ./install.sh ui-splint             # migrate the renamed skill to ui-audit
 #   ./install.sh --local [<name>...]   # copy local skills into ~/.agents/skills
 #   ./install.sh --local agent-memory --shadow   # install + enable shared recall
 #   ./install.sh --local agent-memory --primary  # install + make it primary memory
@@ -58,6 +59,8 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_SRC="$REPO_ROOT/skills"
+LEGACY_UI_AUDIT_NAME="ui-splint"
+UI_AUDIT_NAME="ui-audit"
 
 [ -d "$SKILLS_SRC" ] || { echo "error: $SKILLS_SRC not found" >&2; exit 1; }
 
@@ -100,6 +103,34 @@ for arg in "$@"; do
       SELECTED+=("$arg") ;;
   esac
 done
+
+# ui-splint was renamed to ui-audit. Accepting the old selector here is a
+# migration entry point, not a skill alias: only ui-audit is installed and
+# exposed to harnesses. De-duplicate selections so `ui-splint ui-audit` still
+# performs one install.
+CANONICAL_SELECTED=()
+for name in "${SELECTED[@]}"; do
+  if [ "$name" = "$LEGACY_UI_AUDIT_NAME" ]; then
+    printf 'note: skill %s was renamed to %s; migrating to the new name\n' \
+      "$LEGACY_UI_AUDIT_NAME" "$UI_AUDIT_NAME" >&2
+    name="$UI_AUDIT_NAME"
+  fi
+  duplicate=0
+  for existing in "${CANONICAL_SELECTED[@]}"; do
+    [ "$existing" = "$name" ] && { duplicate=1; break; }
+  done
+  [ "$duplicate" = "1" ] || CANONICAL_SELECTED+=("$name")
+done
+SELECTED=("${CANONICAL_SELECTED[@]}")
+
+MIGRATE_UI_AUDIT=0
+if [ ${#SELECTED[@]} -eq 0 ]; then
+  MIGRATE_UI_AUDIT=1
+else
+  for name in "${SELECTED[@]}"; do
+    [ "$name" = "$UI_AUDIT_NAME" ] && MIGRATE_UI_AUDIT=1
+  done
+fi
 
 # Validate selected names against skills/ — fail fast on typos rather than
 # silently installing nothing.
@@ -158,6 +189,144 @@ fi
 # Windows junctions).
 resolve_phys() {
   ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null
+}
+
+legacy_ui_audit_present() {
+  local harness
+  if [ -e "$AGENTS_DIR/$LEGACY_UI_AUDIT_NAME" ] \
+     || [ -L "$AGENTS_DIR/$LEGACY_UI_AUDIT_NAME" ]; then
+    return 0
+  fi
+  for harness in "${HARNESSES[@]}"; do
+    if [ -e "$harness/$LEGACY_UI_AUDIT_NAME" ] \
+       || [ -L "$harness/$LEGACY_UI_AUDIT_NAME" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+legacy_local_sync_matches_repository() {
+  local path="$1"
+  local deletion_commit snapshot prefix mode type blob tracked installed rel
+  local checked=0
+
+  [ "$LOCAL_MODE" = "1" ] || return 1
+  prefix="skills/$LEGACY_UI_AUDIT_NAME"
+  deletion_commit="$(git -C "$REPO_ROOT" log -1 --format=%H --diff-filter=D -- "$prefix/SKILL.md" 2>/dev/null || true)"
+  [ -n "$deletion_commit" ] || return 1
+  snapshot="$(git -C "$REPO_ROOT" rev-parse "$deletion_commit^" 2>/dev/null || true)"
+  [ -n "$snapshot" ] || return 1
+  git -C "$REPO_ROOT" cat-file -e "$snapshot:$prefix/SKILL.md" 2>/dev/null || return 1
+
+  # A prior --local sync preserves the split clone's .git directory while
+  # replacing its working tree from the monorepo. Recognize that exact tree so
+  # the rename can migrate it without treating the managed sync as user work.
+  while read -r mode type blob tracked; do
+    rel="${tracked#"$prefix/"}"
+    installed="$path/$rel"
+    [ -f "$installed" ] || return 1
+    [ "$(git hash-object "$installed" 2>/dev/null || true)" = "$blob" ] || return 1
+    checked=$((checked + 1))
+  done < <(git -C "$REPO_ROOT" ls-tree -r "$snapshot" -- "$prefix")
+  [ "$checked" -gt 0 ] || return 1
+
+  # Reject every extra file except interpreter caches produced while running
+  # the installed skill. User notes, outputs, or edits therefore still block
+  # automatic deletion.
+  while IFS= read -r -d '' installed; do
+    rel="${installed#"$path/"}"
+    case "$rel" in
+      __pycache__/*|*/__pycache__/*|*.pyc) continue ;;
+    esac
+    git -C "$REPO_ROOT" cat-file -e "$snapshot:$prefix/$rel" 2>/dev/null || return 1
+  done < <(find "$path" -path "$path/.git" -prune -o -type f -print0)
+}
+
+legacy_clone_removal_safe() {
+  local path="$1" quiet="${2:-0}" upstream
+  if [ ! -d "$path/.git" ] && [ ! -f "$path/.git" ]; then
+    return 0
+  fi
+  if ! git -C "$path" diff --quiet 2>/dev/null \
+     || [ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+    if git -C "$path" diff --cached --quiet 2>/dev/null \
+       && legacy_local_sync_matches_repository "$path"; then
+      [ "$quiet" = "1" ] || printf '  note recognized managed --local ui-splint sync; safe to migrate\n'
+    else
+      printf '  WARN refusing ui-audit migration: %s has local changes\n' "$path" >&2
+      return 1
+    fi
+  elif ! git -C "$path" diff --cached --quiet 2>/dev/null; then
+    printf '  WARN refusing ui-audit migration: %s has staged changes\n' "$path" >&2
+    return 1
+  fi
+  upstream="$(git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  if [ -z "$upstream" ]; then
+    printf '  WARN refusing ui-audit migration: %s has no upstream\n' "$path" >&2
+    return 1
+  fi
+  if [ -n "$(git -C "$path" log "$upstream..HEAD" --oneline 2>/dev/null)" ]; then
+    printf '  WARN refusing ui-audit migration: %s has unpushed commits\n' "$path" >&2
+    return 1
+  fi
+}
+
+legacy_ui_audit_preflight() {
+  local quiet="${1:-0}"
+  local dest="$AGENTS_DIR/$LEGACY_UI_AUDIT_NAME"
+  local harness link dest_phys link_phys
+
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    if [ -L "$dest" ] || [ ! -d "$dest" ]; then
+      printf '  WARN refusing ui-audit migration: %s is not a managed skill directory\n' "$dest" >&2
+      return 1
+    fi
+    if ! local_skill_dir_matches "$dest" "$LEGACY_UI_AUDIT_NAME"; then
+      printf '  WARN refusing ui-audit migration: %s does not declare name: %s\n' \
+        "$dest" "$LEGACY_UI_AUDIT_NAME" >&2
+      return 1
+    fi
+    legacy_clone_removal_safe "$dest" "$quiet" || return 1
+  fi
+
+  dest_phys="$(resolve_phys "$dest")"
+  for harness in "${HARNESSES[@]}"; do
+    link="$harness/$LEGACY_UI_AUDIT_NAME"
+    [ -e "$link" ] || [ -L "$link" ] || continue
+    if [ -L "$link" ]; then
+      if [ "$(readlink "$link")" != "$dest" ]; then
+        printf '  WARN refusing ui-audit migration: %s points outside the managed legacy install\n' "$link" >&2
+        return 1
+      fi
+      continue
+    fi
+    link_phys="$(resolve_phys "$link")"
+    if [ -z "$dest_phys" ] || [ "$link_phys" != "$dest_phys" ]; then
+      printf '  WARN refusing ui-audit migration: %s is a real or unrelated directory\n' "$link" >&2
+      return 1
+    fi
+  done
+}
+
+remove_legacy_ui_audit() {
+  local dest="$AGENTS_DIR/$LEGACY_UI_AUDIT_NAME"
+  local harness link
+
+  # Re-check immediately before deletion in case the installed clone changed
+  # while the new skill was being installed.
+  legacy_ui_audit_preflight 1 || return 1
+  for harness in "${HARNESSES[@]}"; do
+    link="$harness/$LEGACY_UI_AUDIT_NAME"
+    if [ -e "$link" ] || [ -L "$link" ]; then
+      rm -rf -- "$link" || return 1
+      printf '  removed legacy link %s\n' "$link"
+    fi
+  done
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    rm -rf -- "$dest" || return 1
+    printf '  removed legacy skill %s\n' "$dest"
+  fi
 }
 
 split_branch_status() {
@@ -383,6 +552,18 @@ install_agent_memory_launcher() {
 }
 
 warnings=0
+migration_failed=0
+ui_audit_migration_needed=0
+if [ "$MIGRATE_UI_AUDIT" = "1" ] && legacy_ui_audit_present; then
+  printf '\nui-audit migration: found an existing %s install\n' "$LEGACY_UI_AUDIT_NAME"
+  if legacy_ui_audit_preflight; then
+    ui_audit_migration_needed=1
+  else
+    migration_failed=1
+    warnings=$((warnings + 1))
+  fi
+fi
+
 agent_memory_installed=0
 for skill_dir in "$SKILLS_SRC"/*/; do
   name="$(basename "$skill_dir")"
@@ -397,6 +578,12 @@ for skill_dir in "$SKILLS_SRC"/*/; do
 
   printf '\nskill: %s\n' "$name"
 
+  if [ "$name" = "$UI_AUDIT_NAME" ] && [ "$migration_failed" = "1" ]; then
+    printf '  WARN leaving %s installed; resolve the migration warning before installing %s\n' \
+      "$LEGACY_UI_AUDIT_NAME" "$UI_AUDIT_NAME" >&2
+    continue
+  fi
+
   # Tier 1: install into ~/.agents/skills/<name>/
   if [ "$LOCAL_MODE" = "1" ]; then
     install_ok=1
@@ -407,17 +594,35 @@ for skill_dir in "$SKILLS_SRC"/*/; do
   fi
   if [ "$install_ok" = "0" ]; then
     warnings=$((warnings + 1))
+    if [ "$name" = "$UI_AUDIT_NAME" ] && [ "$ui_audit_migration_needed" = "1" ]; then
+      migration_failed=1
+      printf '  WARN new ui-audit install failed; preserving the existing ui-splint install\n' >&2
+    fi
     continue
   fi
 
   # Tier 2: per-harness link → ~/.agents/skills/<name>/
+  skill_links_ok=1
   for harness in "${HARNESSES[@]}"; do
     mkdir -p "$harness"
-    ensure_link "$AGENTS_DIR/$name" "$harness/$name" || warnings=$((warnings + 1))
+    if ! ensure_link "$AGENTS_DIR/$name" "$harness/$name"; then
+      warnings=$((warnings + 1))
+      skill_links_ok=0
+    fi
   done
   if [ "$name" = "agent-memory" ]; then
     agent_memory_installed=1
     install_agent_memory_launcher || warnings=$((warnings + 1))
+  fi
+  if [ "$name" = "$UI_AUDIT_NAME" ] && [ "$ui_audit_migration_needed" = "1" ]; then
+    if [ "$skill_links_ok" = "1" ] && remove_legacy_ui_audit; then
+      printf '  ok   migrated %s to %s\n' "$LEGACY_UI_AUDIT_NAME" "$UI_AUDIT_NAME"
+      ui_audit_migration_needed=0
+    else
+      warnings=$((warnings + 1))
+      migration_failed=1
+      printf '  WARN ui-audit is installed, but the legacy ui-splint install could not be removed\n' >&2
+    fi
   fi
 done
 
@@ -455,4 +660,4 @@ else
   printf '\ndone.\n'
 fi
 
-[ "$integration_failed" = "0" ] || exit 1
+[ "$integration_failed" = "0" ] && [ "$migration_failed" = "0" ] || exit 1

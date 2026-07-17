@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ui-splint runner — drives a route x viewport x theme x state matrix, injects the
+ui-audit runner — drives a route x viewport x theme x state matrix, injects the
 deterministic audit (audit.js) into every rendered state, captures viewport-clipped
 screenshots + per-finding element crops, and writes findings.json + coverage.json.
 
@@ -12,8 +12,8 @@ sticky-bar-overlaps-content defect class and downscale away small-text contrast.
 This runner measures defects in the live DOM instead of asking a model to eyeball them.
 
 Usage:
-  python3 run-ui-splint.py http://localhost:3000 \
-      [--config audit-config.json] [--out-dir .ui-splint] [--routes /,/login] \
+  python3 run-ui-audit.py http://localhost:3000 \
+      [--config audit-config.json] [--out-dir .ui-audit] [--routes /,/login] \
       [--no-screenshots]
 
 Exit code: non-zero if any un-baselined Fail is found (so it can gate completion).
@@ -51,14 +51,14 @@ def init_script():
     """audit.js + auto-install of the CLS observer, run BEFORE page scripts."""
     src = AUDIT_JS.read_text(encoding="utf-8")
     keyboard = KEYBOARD_PROBE_JS.read_text(encoding="utf-8")
-    return src + "\n" + keyboard + "\n;try{window.__uiSplintInstallCLS&&window.__uiSplintInstallCLS();}catch(e){}\n"
+    return src + "\n" + keyboard + "\n;try{window.__uiAuditInstallCLS&&window.__uiAuditInstallCLS();}catch(e){}\n"
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Run the ui-splint deterministic audit across a render matrix.")
+    ap = argparse.ArgumentParser(description="Run the ui-audit deterministic audit across a render matrix.")
     ap.add_argument("base_url", help="Base URL of the running app, e.g. http://localhost:3000")
     ap.add_argument("--config", default=None, help="Path to a project audit-config.json (merged over defaults)")
-    ap.add_argument("--out-dir", default=".ui-splint", help="Output directory for screenshots + JSON")
+    ap.add_argument("--out-dir", default=".ui-audit", help="Output directory for screenshots + JSON")
     ap.add_argument("--routes", default=None, help="Comma-separated routes overriding config (e.g. /,/login)")
     ap.add_argument("--no-screenshots", action="store_true", help="Skip screenshot capture (audit JSON only)")
     args = ap.parse_args()
@@ -153,7 +153,7 @@ def main():
                         if theme_script:
                             context.add_init_script(
                                 "(()=>{const run=()=>{try{" + str(theme_script) +
-                                "\n;window.__uiSplintThemeInit={ok:true};}catch(e){window.__uiSplintThemeInit={ok:false,error:String(e&&e.message||e)};}};"
+                                "\n;window.__uiAuditThemeInit={ok:true};}catch(e){window.__uiAuditThemeInit={ok:false,error:String(e&&e.message||e)};}};"
                                 "if(document.documentElement)run();else{const o=new MutationObserver(()=>{if(document.documentElement){o.disconnect();run();}});o.observe(document,{childList:true});}})();"
                             )
                         context.add_init_script(init)
@@ -167,7 +167,7 @@ def main():
                             if response and response.status >= 400:
                                 raise RuntimeError(f"HTTP {response.status} loading {url}")
                             if theme_script:
-                                theme_proof = page.evaluate("window.__uiSplintThemeInit || {ok:false,error:'theme init did not run'}")
+                                theme_proof = page.evaluate("window.__uiAuditThemeInit || {ok:false,error:'theme init did not run'}")
                                 if not theme_proof.get("ok"):
                                     raise RuntimeError(f"theme init failed: {theme_proof.get('error')}")
                             if wait_selector:
@@ -186,7 +186,7 @@ def main():
                                 scroll_to(page, sp)
                                 page.wait_for_timeout(120)
                                 report = page.evaluate(
-                                    "(cfg) => window.__uiSplintAudit(cfg)",
+                                    "(cfg) => window.__uiAudit(cfg)",
                                     {**audit_cfg, "route": route, "theme": theme,
                                      "state": state, "isMobile": is_mobile, "baseline": baseline},
                                 )
@@ -252,7 +252,7 @@ def main():
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     totals = count_sev(findings)
-    print(f"\nUI Splint: {totals} across {len(coverage_cells)} matrix cells -> {out_dir}/findings.json")
+    print(f"\nUI Audit: {totals} across {len(coverage_cells)} matrix cells -> {out_dir}/findings.json")
     errors = [cell for cell in coverage_cells if cell.get("status") != "checked"]
     if errors:
         print(f"BLOCKED: {len(errors)} matrix cell(s) were not verified. Review coverage.json before claiming the work complete.")
@@ -459,7 +459,7 @@ def run_keyboard_probe(page, config=None, whitelist=None, baseline=None):
     evaluate = lambda expression: page.evaluate(expression)
     findings = []
     whitelist_json = json.dumps(whitelist or [], ensure_ascii=False)
-    modal = evaluate(f"window.__uiSplintKeyboardProbe.modalPlan({whitelist_json})")
+    modal = evaluate(f"window.__uiAuditKeyboardProbe.modalPlan({whitelist_json})")
     modal_violations = []
     if modal.get("present"):
         if not modal.get("activeInside"):
@@ -469,7 +469,7 @@ def run_keyboard_probe(page, config=None, whitelist=None, baseline=None):
             })
         for boundary, key, direction in (("last", "Tab", "forward"),
                                          ("first", "Shift+Tab", "reverse")):
-            focused = evaluate(f"window.__uiSplintKeyboardProbe.focusModalBoundary({json.dumps(boundary)})")
+            focused = evaluate(f"window.__uiAuditKeyboardProbe.focusModalBoundary({json.dumps(boundary)})")
             if not focused.get("ok"):
                 modal_violations.append({"type": "boundary-focus-failed", "direction": direction,
                                          "focused": focused.get("active")})
@@ -477,7 +477,7 @@ def run_keyboard_probe(page, config=None, whitelist=None, baseline=None):
             page.keyboard.press(key)
             if settle_ms:
                 page.wait_for_timeout(settle_ms)
-            active = evaluate(f"window.__uiSplintKeyboardProbe.inspectActive({whitelist_json})")
+            active = evaluate(f"window.__uiAuditKeyboardProbe.inspectActive({whitelist_json})")
             expected_selector = modal.get("firstSelector") if direction == "forward" else modal.get("lastSelector")
             if not active.get("inModal"):
                 modal_violations.append({"type": "focus-escaped", "direction": direction,
@@ -497,19 +497,19 @@ def run_keyboard_probe(page, config=None, whitelist=None, baseline=None):
                 "Move initial focus into the dialog and wrap forward/reverse Tab at its boundaries.",
             ))
 
-    traversal = evaluate("window.__uiSplintKeyboardProbe.traversalPlan()")
+    traversal = evaluate("window.__uiAuditKeyboardProbe.traversalPlan()")
     expected = int(traversal.get("expected", 0))
     visited = []
     obscured = set()
     if expected:
-        started = evaluate("window.__uiSplintKeyboardProbe.focusTraversalStart()")
+        started = evaluate("window.__uiAuditKeyboardProbe.focusTraversalStart()")
         if not started.get("ok"):
             return findings, {"status": "error", "reason": "could not focus first tab stop",
                               "expected": expected, "visited": 0,
                               "dialogs": modal.get("visibleModalCount", 0),
                               "modalSelector": modal.get("selector"), "maxSteps": max_steps}
         for step in range(max_steps):
-            active = evaluate(f"window.__uiSplintKeyboardProbe.inspectActive({whitelist_json})")
+            active = evaluate(f"window.__uiAuditKeyboardProbe.inspectActive({whitelist_json})")
             selector = active.get("selector")
             if not active.get("documentFocus"):
                 break

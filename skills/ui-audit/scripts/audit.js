@@ -1,5 +1,5 @@
 /*
- * ui-splint deterministic audit — the SOURCE OF TRUTH for measurable UI defects.
+ * ui-audit deterministic audit — the SOURCE OF TRUTH for measurable UI defects.
  *
  * Pure DOM/CSSOM/geometry. No dependencies. Safe to inject into any live page via
  * Playwright `page.evaluate`, Playwright-MCP `browser_evaluate`, chrome-devtools
@@ -9,12 +9,12 @@
  *
  * Usage:
  *   1. (optional, BEFORE navigation) install the layout-shift observer so CLS is
- *      captured from first paint:  window.__uiSplintInstallCLS && __uiSplintInstallCLS()
- *      The runner injects `__uiSplintInstallCLS` via add_init_script.
+ *      captured from first paint:  window.__uiAuditInstallCLS && __uiAuditInstallCLS()
+ *      The runner injects `__uiAuditInstallCLS` via add_init_script.
  *   2. After the page reaches the state you want to check, call:
- *        const report = window.__uiSplintAudit(config)   // returns JSON-able object
+ *        const report = window.__uiAudit(config)   // returns JSON-able object
  *   3. The caller scrolls (top/mid/bottom), opens overlays, switches theme/state,
- *      and calls __uiSplintAudit again per cell. Geometry rules reflect the CURRENT
+ *      and calls __uiAudit again per cell. Geometry rules reflect the CURRENT
  *      scroll/overlay state, so call at scroll-bottom to catch sticky-bar overlap.
  *
  * Returns: { meta, coverage, findings[] }  — see references/findings-schema.md.
@@ -44,27 +44,27 @@
 
   // ----- layout-shift (CLS) observer; install BEFORE navigation for full capture -----
   function installCLS() {
-    if (root.__uiSplint && root.__uiSplint.clsInstalled) return;
-    root.__uiSplint = root.__uiSplint || {};
-    root.__uiSplint.cls = 0;
-    root.__uiSplint.clsSources = [];
+    if (root.__uiAuditState && root.__uiAuditState.clsInstalled) return;
+    root.__uiAuditState = root.__uiAuditState || {};
+    root.__uiAuditState.cls = 0;
+    root.__uiAuditState.clsSources = [];
     try {
       var po = new PerformanceObserver(function (list) {
         list.getEntries().forEach(function (e) {
           if (e.hadRecentInput) return;
-          root.__uiSplint.cls += e.value;
+          root.__uiAuditState.cls += e.value;
           (e.sources || []).forEach(function (s) {
-            if (s.node && root.__uiSplint.clsSources.length < 20) {
-              root.__uiSplint.clsSources.push({ value: e.value, node: describe(s.node) });
+            if (s.node && root.__uiAuditState.clsSources.length < 20) {
+              root.__uiAuditState.clsSources.push({ value: e.value, node: describe(s.node) });
             }
           });
         });
       });
       po.observe({ type: 'layout-shift', buffered: true });
-      root.__uiSplint.clsInstalled = true;
+      root.__uiAuditState.clsInstalled = true;
     } catch (err) { /* layout-shift unsupported */ }
   }
-  root.__uiSplintInstallCLS = installCLS;
+  root.__uiAuditInstallCLS = installCLS;
 
   // -------------------------------- defaults --------------------------------
   var DEFAULTS = {
@@ -706,12 +706,12 @@
   }
 
   function ruleCLS(ctx) {
-    var s = root.__uiSplint;
+    var s = root.__uiAuditState;
     if (!s || typeof s.cls !== 'number' || !s.clsInstalled) {
       ctx.findings.push(mk('layoutShiftCLS', 'Risk', 'needs-visual', 'html',
         'CLS not measured — the layout-shift observer was not installed before navigation.',
         { installed: false }, {}, null,
-        'Install __uiSplintInstallCLS() via add_init_script before navigating so CLS is captured from first paint.'));
+        'Install __uiAuditInstallCLS() via add_init_script before navigating so CLS is captured from first paint.'));
       return;
     }
     if (s.cls > ctx.cfg.cls.risk) {
@@ -1427,6 +1427,6 @@
     return out;
   }
 
-  root.__uiSplintAudit = audit;
+  root.__uiAudit = audit;
   if (typeof module !== 'undefined' && module.exports) module.exports = { audit: audit, installCLS: installCLS };
 })(typeof window !== 'undefined' ? window : this);

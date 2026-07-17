@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./uninstall.sh <name> [<name>...]    # remove the named skill(s)
-#   ./uninstall.sh --all                 # remove every skill defined in this monorepo
+#   ./uninstall.sh --all                 # remove every skill plus recognized legacy installs
 #   ./uninstall.sh --list                # print this monorepo's skill names and exit
 #   ./uninstall.sh -h | --help           # this help
 #
@@ -23,10 +23,9 @@
 #    directories are removed.
 # Commit/push or `rm -rf` manually to override a protected clone.
 #
-# `--list` and `--all` enumerate this monorepo's skills/<name>/SKILL.md entries,
-# never the union of whatever else lives under the harness skill dirs. Plugin-
-# managed or third-party skills sharing those dirs are out of scope by design;
-# remove them with their own tooling, or pass an explicit <name>.
+# `--list` enumerates this monorepo's current skills/<name>/SKILL.md entries.
+# `--all` removes those plus recognized legacy installs owned by this repo; it
+# never enumerates unrelated plugin-managed or third-party skills.
 #
 # Idempotent: targets that are already absent are reported and skipped.
 # Works on POSIX symlinks and NTFS junctions; real harness directories are
@@ -39,6 +38,7 @@ HARNESS_ROOTS=("$HOME/.claude/skills" "$HOME/.codex/skills")
 ROOTS=("${HARNESS_ROOTS[@]}" "$AGENTS_ROOT")
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_SRC="$REPO_ROOT/skills"
+LEGACY_SKILLS=("ui-splint")
 
 # resolve_phys <path>: print the physical (symlink/junction-followed) absolute
 # path in POSIX form, or nothing if the path can't be entered. Mirrors
@@ -120,6 +120,25 @@ compute_monorepo_skills() {
   done | sort -u
 }
 
+legacy_skill_present() {
+  local name="$1" path harness phys agents_phys
+  path="$AGENTS_ROOT/$name"
+  [ -f "$path/SKILL.md" ] \
+    && grep -Eq "^[[:space:]]*name:[[:space:]]*['\"]?${name}['\"]?[[:space:]]*$" "$path/SKILL.md" \
+    && return 0
+  agents_phys="$(resolve_phys "$AGENTS_ROOT")"
+  for harness in "${HARNESS_ROOTS[@]}"; do
+    path="$harness/$name"
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    if [ -L "$path" ] && [ "$(readlink "$path")" = "$AGENTS_ROOT/$name" ]; then
+      return 0
+    fi
+    phys="$(resolve_phys "$path")"
+    [ -n "$agents_phys" ] && [ "$phys" = "$agents_phys/$name" ] && return 0
+  done
+  return 1
+}
+
 if [ "$LIST" = "1" ]; then
   [ "$ALL" = "0" ] && [ ${#SELECTED[@]} -eq 0 ] \
     || { echo "error: --list takes no other arguments" >&2; exit 2; }
@@ -134,6 +153,9 @@ if [ "$ALL" = "1" ]; then
   while IFS= read -r name; do
     [ -n "$name" ] && SELECTED+=("$name")
   done < <(compute_monorepo_skills)
+  for name in "${LEGACY_SKILLS[@]}"; do
+    legacy_skill_present "$name" && SELECTED+=("$name")
+  done
   if [ ${#SELECTED[@]} -eq 0 ]; then
     echo "no skills declared under $SKILLS_SRC"
     exit 0

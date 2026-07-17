@@ -1,5 +1,5 @@
 {
-  "_comment": "Defaults for run-ui-splint.py. Copy to your project as audit-config.json and override. routes/states/waitForSelector are project-specific; thresholds rarely need changing.",
+  "_comment": "Defaults for run-ui-audit.py. Copy to your project as audit-config.json and override. routes/states/waitForSelector are project-specific; thresholds rarely need changing.",
   "routes": ["/"],
   "viewports": [
     { "name": "mobile", "width": 390, "height": 844, "isMobile": true, "dpr": 3 },

@@ -1,5 +1,5 @@
 /*
- * UI Splint keyboard probe helpers.
+ * UI Audit keyboard probe helpers.
  *
  * This file deliberately does not synthesize keyboard events. Calling
  * HTMLElement.focus() plus dispatchEvent(new KeyboardEvent(...)) cannot prove
@@ -10,7 +10,7 @@
 (function installUiSplintKeyboardProbe(root) {
   'use strict';
 
-  if (root.__uiSplintKeyboardProbe) return;
+  if (root.__uiAuditKeyboardProbe) return;
 
   var FOCUSABLE = [
     'a[href]', 'area[href]', 'button', 'input', 'select', 'textarea',
@@ -273,7 +273,7 @@
     return { ok: deepActive() === stops[0], empty: false, active: cssPath(deepActive()) };
   }
 
-  root.__uiSplintKeyboardProbe = {
+  root.__uiAuditKeyboardProbe = {
     version: 1,
     modalPlan: modalPlan,
     focusModalBoundary: focusModalBoundary,

@@ -16,6 +16,8 @@ tests/*
 !skills/**/tests/fixtures/**
 
 # local state dirs written by the skills when run from a clone
+.ui-audit/
+# Keep pre-rename audit output ignored; migration never deletes project artifacts.
 .ui-splint/
 .playwright-mcp/
 .peer-review/

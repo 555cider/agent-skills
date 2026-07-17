@@ -1,4 +1,4 @@
-# UI Splint — audit rules
+# UI Audit — audit rules
 
 The exact spec of every rule in `scripts/audit.js`. Each entry: what it measures, the
 method, the threshold→severity mapping, confidence, and the false-positive guards.
@@ -121,7 +121,7 @@ Segmented/tab/radio groups where the wrong item looks active.
 
 ## layoutShiftCLS — `Fail`(>0.25) / `Risk`(>0.1) — auto-measured
 - **Method:** reads a CLS accumulator populated by a `layout-shift` PerformanceObserver. The
-  observer must be installed **before navigation** — `__uiSplintInstallCLS()` (the runner does
+  observer must be installed **before navigation** — `__uiAuditInstallCLS()` (the runner does
   this via `add_init_script`). If not installed, emits a `needs-visual` note instead of a number.
 
 ## designSystemDrift — `Polish` — visual-judgment

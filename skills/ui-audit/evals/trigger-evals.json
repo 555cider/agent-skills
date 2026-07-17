@@ -16,7 +16,7 @@
     "should_trigger": true
   },
   {
-    "query": "Use ui-splint on http://localhost:3000/settings before finalizing.",
+    "query": "Use ui-audit on http://localhost:3000/settings before finalizing.",
     "should_trigger": true
   },
   {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * ui-splint runner — ZERO-DEPENDENCY path. Drives an already-installed Chrome/Chromium
+ * ui-audit runner — ZERO-DEPENDENCY path. Drives an already-installed Chrome/Chromium
  * directly over the DevTools Protocol (CDP) using Node's built-in WebSocket (Node >= 22).
  * No pip, no npm install. Use this when Playwright isn't set up (the common case).
  *
@@ -9,7 +9,7 @@
  * coverage.json. Screenshots are viewport-clipped evidence, never the source of truth.
  *
  *   node audit-chrome.mjs http://localhost:3000 \
- *       [--config audit-config.json] [--out-dir .ui-splint] [--routes /,/login] [--no-screenshots]
+ *       [--config audit-config.json] [--out-dir .ui-audit] [--routes /,/login] [--no-screenshots]
  *
  * Chrome binary: $CHROME, else google-chrome / chromium / chrome / Edge are auto-detected.
  * Exit code: non-zero if any un-baselined Fail is found (so it can gate completion).
@@ -21,15 +21,15 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 if (typeof WebSocket === 'undefined') {
-  console.error('ui-splint audit-chrome.mjs requires Node >= 22 (built-in WebSocket). Detected ' + process.version +
-    '. Upgrade Node, or use the Playwright runner: python3 run-ui-splint.py');
+  console.error('ui-audit audit-chrome.mjs requires Node >= 22 (built-in WebSocket). Detected ' + process.version +
+    '. Upgrade Node, or use the Playwright runner: python3 run-ui-audit.py');
   process.exit(2);
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AUDIT_JS = readFileSync(join(HERE, 'audit.js'), 'utf8');
 const KEYBOARD_PROBE_JS = readFileSync(join(HERE, 'keyboard-probe.js'), 'utf8');
-const INIT = AUDIT_JS + '\n' + KEYBOARD_PROBE_JS + '\n;try{window.__uiSplintInstallCLS&&window.__uiSplintInstallCLS();}catch(e){}\n';
+const INIT = AUDIT_JS + '\n' + KEYBOARD_PROBE_JS + '\n;try{window.__uiAuditInstallCLS&&window.__uiAuditInstallCLS();}catch(e){}\n';
 
 // ---------- args ----------
 const argv = process.argv.slice(2);
@@ -41,7 +41,7 @@ const baseUrl = argv[0].replace(/\/$/, '');
 const opt = (name, def) => { const i = argv.indexOf(name); return (i >= 0 && i + 1 < argv.length) ? argv[i + 1] : def; };
 const DEFAULT_CONFIG = join(HERE, 'audit-config.default.json');
 const configPath = opt('--config', DEFAULT_CONFIG);
-const outDir = opt('--out-dir', '.ui-splint');
+const outDir = opt('--out-dir', '.ui-audit');
 const noShots = argv.includes('--no-screenshots');
 const routesOverride = opt('--routes', null);
 const allowNoSandbox = argv.includes('--allow-no-sandbox');
@@ -344,16 +344,16 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
   if (!Number.isInteger(settle) || settle < 0 || settle > 5000) throw new Error('keyboardProbe.settleMs must be an integer between 0 and 5000');
   const findings = [];
   const whitelistJson = JSON.stringify(whitelist || []);
-  const modal = await runtimeJson(cdp, sessionId, `window.__uiSplintKeyboardProbe.modalPlan(${whitelistJson})`);
+  const modal = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.modalPlan(${whitelistJson})`);
   const violations = [];
   if (modal.present) {
     if (!modal.activeInside) violations.push({ type: 'initial-focus-outside', focused: modal.activeSelector });
     for (const [boundary, chord, direction] of [['last', 'Tab', 'forward'], ['first', 'Shift+Tab', 'reverse']]) {
-      const focused = await runtimeJson(cdp, sessionId, `window.__uiSplintKeyboardProbe.focusModalBoundary(${JSON.stringify(boundary)})`);
+      const focused = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.focusModalBoundary(${JSON.stringify(boundary)})`);
       if (!focused.ok) { violations.push({ type: 'boundary-focus-failed', direction, focused: focused.active }); continue; }
       await dispatchKey(cdp, sessionId, chord);
       if (settle) await sleep(settle);
-      const active = await runtimeJson(cdp, sessionId, `window.__uiSplintKeyboardProbe.inspectActive(${whitelistJson})`);
+      const active = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.inspectActive(${whitelistJson})`);
       const expectedSelector = direction === 'forward' ? modal.firstSelector : modal.lastSelector;
       if (!active.inModal) violations.push({ type: 'focus-escaped', direction, focused: active.selector });
       else if (active.selector !== expectedSelector) violations.push({ type: 'wrong-boundary-wrap', direction, focused: active.selector, expected: expectedSelector });
@@ -364,15 +364,15 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
       'Move initial focus into the dialog and wrap forward/reverse Tab at its boundaries.'));
   }
 
-  const traversal = await runtimeJson(cdp, sessionId, 'window.__uiSplintKeyboardProbe.traversalPlan()');
+  const traversal = await runtimeJson(cdp, sessionId, 'window.__uiAuditKeyboardProbe.traversalPlan()');
   const expected = Number(traversal.expected || 0);
   const visited = [];
   const obscured = new Set();
   if (expected) {
-    const started = await runtimeJson(cdp, sessionId, 'window.__uiSplintKeyboardProbe.focusTraversalStart()');
+    const started = await runtimeJson(cdp, sessionId, 'window.__uiAuditKeyboardProbe.focusTraversalStart()');
     if (!started.ok) return { findings, proof: { status: 'error', reason: 'could not focus first tab stop', expected, visited: 0, dialogs: modal.visibleModalCount || 0, modalSelector: modal.selector || null, maxSteps } };
     for (let step = 0; step < maxSteps; step++) {
-      const active = await runtimeJson(cdp, sessionId, `window.__uiSplintKeyboardProbe.inspectActive(${whitelistJson})`);
+      const active = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.inspectActive(${whitelistJson})`);
       if (!active.documentFocus || visited.includes(active.selector)) break;
       visited.push(active.selector);
       if (active.fullyObscured && !active.whitelisted && !obscured.has(active.selector)) {
@@ -434,7 +434,7 @@ try {
             await cdp.send('Emulation.setEmulatedMedia',
               { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
             if (themeInitScripts[theme]) {
-              const themeSource = `(()=>{const run=()=>{try{${String(themeInitScripts[theme])}\n;window.__uiSplintThemeInit={ok:true};}catch(e){window.__uiSplintThemeInit={ok:false,error:String(e&&e.message||e)};}};if(document.documentElement)run();else{const o=new MutationObserver(()=>{if(document.documentElement){o.disconnect();run();}});o.observe(document,{childList:true});}})();`;
+              const themeSource = `(()=>{const run=()=>{try{${String(themeInitScripts[theme])}\n;window.__uiAuditThemeInit={ok:true};}catch(e){window.__uiAuditThemeInit={ok:false,error:String(e&&e.message||e)};}};if(document.documentElement)run();else{const o=new MutationObserver(()=>{if(document.documentElement){o.disconnect();run();}});o.observe(document,{childList:true});}})();`;
               await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: themeSource }, sessionId);
             }
             await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INIT }, sessionId);
@@ -450,7 +450,7 @@ try {
             await loaded;
             if (themeInitScripts[theme]) {
               const themeResult = await cdp.send('Runtime.evaluate',
-                { expression: 'JSON.stringify(window.__uiSplintThemeInit||{ok:false,error:"theme init did not run"})', returnByValue: true }, sessionId);
+                { expression: 'JSON.stringify(window.__uiAuditThemeInit||{ok:false,error:"theme init did not run"})', returnByValue: true }, sessionId);
               const themeProof = JSON.parse(themeResult.result.value);
               if (!themeProof.ok) throw new Error('theme init failed: ' + themeProof.error);
             }
@@ -475,7 +475,7 @@ try {
               await sleep(150);
               const acfg = JSON.stringify({ ...auditCfg, route, theme, state, isMobile, baseline });
               const r = await cdp.send('Runtime.evaluate',
-                { expression: `JSON.stringify(window.__uiSplintAudit(${acfg}))`, returnByValue: true }, sessionId);
+                { expression: `JSON.stringify(window.__uiAudit(${acfg}))`, returnByValue: true }, sessionId);
               const report = JSON.parse(r.result.value);
               for (const skipped of (report.coverage && report.coverage.rulesSkipped) || []) {
                 if (!cellRulesSkipped.includes(skipped)) cellRulesSkipped.push(skipped);
@@ -522,7 +522,7 @@ try {
               cell.status = 'checked';
             } else {
               cell.status = 'not-forced';
-              cell.reason = 'data state not forced (audit-chrome.mjs has no network mocking); use run-ui-splint.py (Playwright) to mock empty/error/loading';
+              cell.reason = 'data state not forced (audit-chrome.mjs has no network mocking); use run-ui-audit.py (Playwright) to mock empty/error/loading';
             }
           } catch (e) {
             cell.status = 'error'; cell.error = String(e && e.message || e);
@@ -567,11 +567,11 @@ writeFileSync(join(outDir, 'findings.json'), JSON.stringify(findings, null, 2));
 writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({ base_url: baseUrl, generated_at: new Date().toISOString(), matrix, totals: countSev(findings) }, null, 2));
 
 const totals = countSev(findings);
-console.log(`\nUI Splint: ${JSON.stringify(totals)} across ${matrix.length} cells -> ${outDir}/findings.json`);
+console.log(`\nUI Audit: ${JSON.stringify(totals)} across ${matrix.length} cells -> ${outDir}/findings.json`);
 const notForced = matrix.filter(c => c.status === 'not-forced');
 if (notForced.length) {
   console.log(`NOTE: ${notForced.length} non-default data-state cell(s) were NOT forced by this runner (no network mocking). ` +
-    `They are recorded as "not-forced" in coverage.json — use run-ui-splint.py to actually exercise empty/error/loading.`);
+    `They are recorded as "not-forced" in coverage.json — use run-ui-audit.py to actually exercise empty/error/loading.`);
 }
 const errors = matrix.filter(c => c.status !== 'checked');
 if (errors.length) { console.log(`BLOCKED: ${errors.length} matrix cell(s) were not verified. Review coverage.json before claiming the work complete.`); process.exit(1); }

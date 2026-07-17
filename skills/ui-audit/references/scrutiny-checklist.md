@@ -1,4 +1,4 @@
-# UI Splint — Scrutiny Checklist (judgment layer)
+# UI Audit — Scrutiny Checklist (judgment layer)
 
 This is the **taste layer**, not the detector. `scripts/audit.js` already MEASURES
 contrast, overflow, overlap, collapse, clipping, tap targets, focus leaks, CLS,

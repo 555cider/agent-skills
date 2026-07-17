@@ -283,6 +283,162 @@ test_uninstall_preserves_clone_without_upstream() {
     fail "expected uninstall refusal to explain the missing upstream"
 }
 
+test_ui_audit_is_the_only_listed_name() {
+  local install_out="$WORK/ui-audit-install-list.out"
+  local uninstall_out="$WORK/ui-audit-uninstall-list.out"
+
+  "$INSTALL" --list >"$install_out"
+  "$UNINSTALL" --list >"$uninstall_out"
+  assert_contains_line "ui-audit" "$install_out"
+  assert_contains_line "ui-audit" "$uninstall_out"
+  ! grep -Fx "ui-splint" "$install_out" >/dev/null || fail "legacy ui-splint must not be listed for install"
+  ! grep -Fx "ui-splint" "$uninstall_out" >/dev/null || fail "legacy ui-splint must not be listed for uninstall"
+}
+
+test_ui_audit_migrates_managed_legacy_install() {
+  local home="$WORK/ui-audit-migrate-home"
+  local legacy="$home/.agents/skills/ui-splint"
+
+  mkdir -p "$legacy" "$home/.codex/skills"
+  cat >"$legacy/SKILL.md" <<'SKILL'
+---
+name: ui-splint
+description: Legacy UI audit skill.
+---
+SKILL
+  ln -s "$legacy" "$home/.codex/skills/ui-splint"
+
+  HOME="$home" "$INSTALL" --local ui-splint >"$WORK/ui-audit-migrate.out" 2>"$WORK/ui-audit-migrate.err"
+
+  [ -f "$home/.agents/skills/ui-audit/SKILL.md" ] || fail "expected canonical ui-audit install"
+  [ -L "$home/.codex/skills/ui-audit" ] || fail "expected canonical ui-audit harness link"
+  [ ! -e "$legacy" ] || fail "expected legacy ui-splint install to be removed"
+  [ ! -e "$home/.codex/skills/ui-splint" ] && [ ! -L "$home/.codex/skills/ui-splint" ] ||
+    fail "expected legacy ui-splint harness link to be removed"
+  grep -F "was renamed to ui-audit" "$WORK/ui-audit-migrate.err" >/dev/null ||
+    fail "expected old selector to report the rename"
+  grep -F "migrated ui-splint to ui-audit" "$WORK/ui-audit-migrate.out" >/dev/null ||
+    fail "expected successful migration summary"
+}
+
+test_ui_audit_migrates_managed_local_sync_clone() {
+  local home="$WORK/ui-audit-local-sync-home"
+  local legacy="$home/.agents/skills/ui-splint"
+  local remote="$WORK/ui-audit-local-sync-remote.git"
+  local deletion_commit snapshot
+
+  mkdir -p "$legacy" "$home/.codex/skills"
+  cat >"$legacy/SKILL.md" <<'SKILL'
+---
+name: ui-splint
+description: Published legacy baseline.
+---
+SKILL
+  git init -q "$legacy"
+  git -C "$legacy" config user.email "test@example.com"
+  git -C "$legacy" config user.name "Test"
+  git -C "$legacy" add SKILL.md
+  git -C "$legacy" commit -qm init
+  git -C "$legacy" branch -m split/ui-splint
+  git init --bare -q "$remote"
+  git -C "$legacy" remote add origin "$remote"
+  git -C "$legacy" push -qu origin split/ui-splint
+
+  # Reproduce the old --local behavior: preserve .git, but replace the whole
+  # working tree with the monorepo's last canonical ui-splint snapshot.
+  find "$legacy" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
+  deletion_commit="$(git -C "$ROOT" log -1 --format=%H --diff-filter=D -- skills/ui-splint/SKILL.md)"
+  snapshot="$(git -C "$ROOT" rev-parse "$deletion_commit^")"
+  git -C "$ROOT" archive "$snapshot:skills/ui-splint" | tar -x -C "$legacy"
+  mkdir -p "$legacy/scripts/__pycache__"
+  printf 'generated cache\n' >"$legacy/scripts/__pycache__/capture.cpython-312.pyc"
+  ln -s "$legacy" "$home/.codex/skills/ui-splint"
+
+  HOME="$home" "$INSTALL" --local ui-audit >"$WORK/ui-audit-local-sync.out" 2>"$WORK/ui-audit-local-sync.err"
+
+  [ -f "$home/.agents/skills/ui-audit/SKILL.md" ] || fail "expected managed local sync to migrate"
+  [ ! -e "$legacy" ] || fail "expected managed local-sync clone to be removed"
+  [ -L "$home/.codex/skills/ui-audit" ] || fail "expected canonical harness link after local-sync migration"
+  grep -F "recognized managed --local ui-splint sync" "$WORK/ui-audit-local-sync.out" >/dev/null ||
+    fail "expected managed local-sync recognition note"
+}
+
+test_ui_audit_migration_preserves_dirty_legacy_clone() {
+  local home="$WORK/ui-audit-dirty-home"
+  local legacy="$home/.agents/skills/ui-splint"
+
+  mkdir -p "$legacy" "$home/.codex/skills"
+  cat >"$legacy/SKILL.md" <<'SKILL'
+---
+name: ui-splint
+description: Legacy UI audit skill.
+---
+SKILL
+  git init -q "$legacy"
+  git -C "$legacy" config user.email "test@example.com"
+  git -C "$legacy" config user.name "Test"
+  git -C "$legacy" add SKILL.md
+  git -C "$legacy" commit -qm init
+  printf 'local work\n' >"$legacy/local-work.txt"
+  ln -s "$legacy" "$home/.codex/skills/ui-splint"
+
+  if HOME="$home" "$INSTALL" --local ui-audit >"$WORK/ui-audit-dirty.out" 2>"$WORK/ui-audit-dirty.err"; then
+    fail "expected dirty legacy clone migration to fail"
+  fi
+  [ -f "$legacy/local-work.txt" ] || fail "expected dirty legacy clone to be preserved"
+  [ -L "$home/.codex/skills/ui-splint" ] || fail "expected legacy harness link to be preserved"
+  [ ! -e "$home/.agents/skills/ui-audit" ] || fail "expected canonical install to wait for safe migration"
+  grep -F "has local changes" "$WORK/ui-audit-dirty.err" >/dev/null ||
+    fail "expected dirty-clone migration warning"
+}
+
+test_ui_audit_new_install_failure_preserves_legacy() {
+  local home="$WORK/ui-audit-failure-home"
+  local legacy="$home/.agents/skills/ui-splint"
+  local canonical="$home/.agents/skills/ui-audit"
+
+  mkdir -p "$legacy" "$canonical" "$home/.codex/skills"
+  cat >"$legacy/SKILL.md" <<'SKILL'
+---
+name: ui-splint
+description: Legacy UI audit skill.
+---
+SKILL
+  printf 'unrelated canonical directory\n' >"$canonical/keep.txt"
+  ln -s "$legacy" "$home/.codex/skills/ui-splint"
+
+  if HOME="$home" "$INSTALL" --local ui-audit >"$WORK/ui-audit-failure.out" 2>"$WORK/ui-audit-failure.err"; then
+    fail "expected canonical install failure during migration"
+  fi
+  [ -f "$legacy/SKILL.md" ] || fail "expected legacy install to survive canonical install failure"
+  [ -L "$home/.codex/skills/ui-splint" ] || fail "expected legacy link to survive canonical install failure"
+  grep -Fx "unrelated canonical directory" "$canonical/keep.txt" >/dev/null ||
+    fail "expected unrelated canonical directory to be preserved"
+  grep -F "preserving the existing ui-splint install" "$WORK/ui-audit-failure.err" >/dev/null ||
+    fail "expected rollback-preservation warning"
+}
+
+test_uninstall_all_removes_recognized_ui_splint_legacy() {
+  local home="$WORK/ui-splint-uninstall-all-home"
+  local legacy="$home/.agents/skills/ui-splint"
+
+  mkdir -p "$legacy" "$home/.codex/skills"
+  cat >"$legacy/SKILL.md" <<'SKILL'
+---
+name: ui-splint
+description: Legacy UI audit skill.
+---
+SKILL
+  ln -s "$legacy" "$home/.codex/skills/ui-splint"
+
+  HOME="$home" "$UNINSTALL" --all >"$WORK/ui-splint-uninstall-all.out" 2>"$WORK/ui-splint-uninstall-all.err"
+  [ ! -e "$legacy" ] || fail "expected --all to remove recognized ui-splint legacy install"
+  [ ! -e "$home/.codex/skills/ui-splint" ] && [ ! -L "$home/.codex/skills/ui-splint" ] ||
+    fail "expected --all to remove recognized ui-splint legacy link"
+  grep -F "skill: ui-splint" "$WORK/ui-splint-uninstall-all.out" >/dev/null ||
+    fail "expected --all output to include recognized legacy cleanup"
+}
+
 test_agent_memory_shadow_one_command_setup() {
   local home="$WORK/shadow-home"
   local out="$WORK/shadow.out"
@@ -386,6 +542,12 @@ test_default_install_does_not_accept_an_unrelated_git_repo
 test_uninstall_removes_local_fallback_install
 test_uninstall_all_removes_agent_memory_local_fallback_install
 test_uninstall_preserves_clone_without_upstream
+test_ui_audit_is_the_only_listed_name
+test_ui_audit_migrates_managed_legacy_install
+test_ui_audit_migrates_managed_local_sync_clone
+test_ui_audit_migration_preserves_dirty_legacy_clone
+test_ui_audit_new_install_failure_preserves_legacy
+test_uninstall_all_removes_recognized_ui_splint_legacy
 test_agent_memory_shadow_one_command_setup
 test_agent_memory_primary_one_command_setup
 test_agent_memory_mode_requires_selection

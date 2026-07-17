@@ -1,4 +1,4 @@
-# UI Splint — defect fixtures
+# UI Audit — defect fixtures
 
 These are the RED/GREEN record for `scripts/audit.js`: each broken fixture has planted
 defects the audit MUST catch; `clean.html` is the precision gate (the audit must stay
@@ -27,10 +27,10 @@ detector covers.
 Serve the fixture directory and point a runner at it:
 
 ```bash
-# from skills/ui-splint/tests/fixtures
+# from skills/ui-audit/tests/fixtures
 python3 -m http.server 8788 &
 node ../../scripts/audit-chrome.mjs http://localhost:8788 \
-  --config /tmp/cfg.json --out-dir /tmp/ui-splint-check --no-screenshots
+  --config /tmp/cfg.json --out-dir /tmp/ui-audit-check --no-screenshots
 # cfg.json: { "routes": ["/login.html","/dashboard.html","/kitchensink.html","/layout.html","/clean.html"],
 #             "viewports":[{"name":"mobile","width":390,"height":844,"isMobile":true,"dpr":3}],
 #             "themes":["dark"], "states":["default"], "scrollPositions":["top","bottom"] }
@@ -39,7 +39,7 @@ node ../../scripts/audit-chrome.mjs http://localhost:8788 \
 Then check `findings.json` against `expected.json`: every `mustHit` rule is present, every
 `mustNotHit` rule is absent, and `clean.html` has zero findings. Keyboard contracts require
 a runner because synthetic in-page events cannot prove Tab behavior. For DOM-only rules,
-inject `audit.js` via MCP/DevTools and call `__uiSplintAudit({isMobile:true})`.
+inject `audit.js` via MCP/DevTools and call `__uiAudit({isMobile:true})`.
 
 Validated baseline: login auth defects · dashboard sticky-overlap at bottom ·
 kitchensink all defect classes · layout polish rules · clean **0**.

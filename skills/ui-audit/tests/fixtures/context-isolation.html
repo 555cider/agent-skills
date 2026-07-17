@@ -5,10 +5,10 @@
 </head><body>
   <div class="fresh">Fresh browser context</div><div class="leaked">Leaked storage</div>
   <script>
-    if (localStorage.getItem('ui-splint-seen')) {
+    if (localStorage.getItem('ui-audit-seen')) {
       document.querySelector('.fresh').style.display = 'none';
       document.querySelector('.leaked').style.display = 'block';
     }
-    localStorage.setItem('ui-splint-seen', '1');
+    localStorage.setItem('ui-audit-seen', '1');
   </script>
 </body></html>

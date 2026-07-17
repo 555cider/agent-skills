@@ -36,7 +36,7 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
   `claude`, `opencode`, `agy`). Multiple reviewers run in
   parallel; saves each review to `<repo>/.peer-review/reviews/`. Invoked by
   `/peer-review` in Claude Code or natural-language ask in Codex.
-- [`skills/ui-splint/`](skills/ui-splint/) - visual QA gate for frontend work,
+- [`skills/ui-audit/`](skills/ui-audit/) - visual QA gate for frontend work,
   built on **measure-don't-eyeball**: a deterministic browser-injected audit
   (`scripts/audit.js`) MEASURES contrast, overflow, sticky-bar overlap, collapsed
   regions, text clipping, tap targets, focus traps, fully obscured keyboard focus, layout shift, broken media,
@@ -103,8 +103,27 @@ split branch exists, use local mode:
 
 ```bash
 ./install.sh --local               # copy every local skill into ~/.agents/skills
-./install.sh --local ui-splint     # copy one local skill into ~/.agents/skills
+./install.sh --local ui-audit      # copy one local skill into ~/.agents/skills
 ```
+
+### Migrating `ui-splint` to `ui-audit`
+
+`ui-splint` was renamed to `ui-audit`, including its runner, browser globals,
+and default output directory. Run either of these from an up-to-date monorepo
+checkout:
+
+```bash
+./install.sh ui-audit
+./install.sh ui-splint  # accepted only as a migration selector
+```
+
+The installer verifies that the old clone has no local changes or unpushed
+commits, installs and links `ui-audit`, and only then removes the managed
+`ui-splint` installation. If the safety check or new install fails, the old
+installation is preserved. The old `split/ui-splint` branch is removed after
+`split/ui-audit` is published, so a standalone old clone cannot migrate with
+`git pull`; rerun this repository's installer instead. Existing project-local
+`.ui-splint/` results are left untouched.
 
 Local mode does not read `origin` or clone `split/<skill-name>`. It
 synchronizes the current checkout's `skills/<skill-name>/` into

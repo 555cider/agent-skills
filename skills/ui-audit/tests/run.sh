@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Self-contained regression checks for the zero-dependency ui-splint runner.
+# Self-contained regression checks for the zero-dependency ui-audit runner.
 #
-# Run: bash skills/ui-splint/tests/run.sh
+# Run: bash skills/ui-audit/tests/run.sh
 set -u
 export UI_SPLINT_SETTLE_MS=350
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$HERE/../scripts/audit-chrome.mjs"
-PY_RUNNER="$HERE/../scripts/run-ui-splint.py"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ui-splint-tests.XXXXXX")"
+PY_RUNNER="$HERE/../scripts/run-ui-audit.py"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/ui-audit-tests.XXXXXX")"
 PROFILES_BEFORE="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"
 SERVER_PID=""
 trap '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
@@ -392,7 +392,7 @@ else
 fi
 
 # ---- Python helpers: aggregation parity + state interception proof ----
-if python3 - "$HERE/../scripts/run-ui-splint.py" <<'PY'
+if python3 - "$HERE/../scripts/run-ui-audit.py" <<'PY'
 import importlib.util, json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("ui_splint_runner", path)

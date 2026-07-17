@@ -1,7 +1,7 @@
-# UI Splint — findings & coverage JSON contract
+# UI Audit — findings & coverage JSON contract
 
-`window.__uiSplintAudit(config)` returns one **report** object per render state.
-Either batch runner — `run-ui-splint.py` (Playwright) or `audit-chrome.mjs` (CDP) —
+`window.__uiAudit(config)` returns one **report** object per render state.
+Either batch runner — `run-ui-audit.py` (Playwright) or `audit-chrome.mjs` (CDP) —
 aggregates per-cell reports into `findings.json` (a flat array of findings) and
 `coverage.json` (the matrix that was actually exercised).
 
@@ -48,7 +48,7 @@ Actions require a selector that matches exactly one element. Supported types are
 match qualifies, while `hidden` means no match is visible and `detached` means zero matches.
 There is no arbitrary JavaScript action.
 
-## report (output of `__uiSplintAudit`)
+## report (output of `__uiAudit`)
 
 ```jsonc
 {

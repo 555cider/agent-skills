@@ -1,11 +1,11 @@
 ---
-name: ui-splint
+name: ui-audit
 description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots — to catch rendered visual and keyboard defects (contrast, layout, overlap, overflow, clipped regions, focus containment/obscuring, state, responsive behavior, affordance) before claiming frontend work complete. Triggers on visual QA, "looks off/weird", alignment/spacing/contrast concerns, modal or keyboard-focus review, and any "is this screen done" check.
 license: MIT
 compatibility: Requires rendered DOM access; use Node 22 or newer plus Chrome/Chromium, or Python 3 with Playwright.
 ---
 
-# UI Splint
+# UI Audit
 
 Catch frontend defects that read fine in code but are wrong in the rendered screen.
 The core principle: **measure, don't eyeball.** Most missable UI defects — contrast,
@@ -48,24 +48,24 @@ Use the user's language in reports. Group findings by failure mode, not discover
    — it runs anywhere you can evaluate JS in the page. Pick whichever path is available:
    - **Interactive (MCP):** navigate, then `browser_evaluate` (Playwright MCP) or
      `evaluate_script` (chrome-devtools MCP) the contents of `scripts/audit.js`, then
-     call `window.__uiSplintAudit({route, theme, state, isMobile})`. Run it at scroll
+     call `window.__uiAudit({route, theme, state, isMobile})`. Run it at scroll
      **top and bottom** of each long screen (sticky-bar overlaps only appear at bottom).
      CLS needs the observer installed *before* first paint: inject `audit.js` **and call
-     `window.__uiSplintInstallCLS()`** via an init script that runs on the new document
+     `window.__uiAuditInstallCLS()`** via an init script that runs on the new document
      (`Page.addScriptToEvaluateOnNewDocument` / `add_init_script`) — a plain `evaluate`
      after navigation is too late and CLS will read "not measured". If your MCP can't run
      an init script, treat interactive CLS as unmeasured and rely on a batch runner for it.
    - **Batch, zero dependencies (preferred), Node ≥ 22:** `node scripts/audit-chrome.mjs <url> --config audit-config.json`
      — drives an installed Chrome/Chromium over the DevTools Protocol with Node's built-in
      WebSocket (requires **Node ≥ 22**; it exits 2 with a clear message on older Node). No
-     pip/npm install. Writes `.ui-splint/findings.json` + `coverage.json`, exits non-zero on
+     pip/npm install. Writes `.ui-audit/findings.json` + `coverage.json`, exits non-zero on
      any Fail or unverified matrix cell. It supports structured click/fill/press/hover/check/
      select interaction setup, but **cannot mock network**, so it renders the default
      page for every state and records non-`default` cells as `not-forced` in coverage (honest:
      it did not verify them, and the runner exits non-zero).
      Use the Playwright runner to actually exercise empty/error/loading. (Note: the bare
      `playwright`/Chrome CLI only takes screenshots — it cannot inject and measure — so it is not enough.)
-   - **Batch, Playwright (if already set up):** `python3 scripts/run-ui-splint.py <url> --config audit-config.json`
+   - **Batch, Playwright (if already set up):** `python3 scripts/run-ui-audit.py <url> --config audit-config.json`
      — same `findings.json`/`coverage.json` shape, and additionally **forces data states**
      (mocks `**/api/**` for empty/error/loading), runs the same structured `stateSetups`,
      waits on `waitForSelector`/`document.fonts.ready`,
@@ -127,7 +127,7 @@ across the recorded matrix, and the subjective residue was judged.
 - `scripts/audit.js` — the deterministic detector. Pure DOM/CSSOM/geometry; engine-agnostic.
 - `scripts/keyboard-probe.js` — shared focus-order and paint-occlusion helpers; runners supply trusted key events.
 - `scripts/audit-chrome.mjs` — zero-dependency batch runner (drives installed Chrome via CDP / Node WebSocket, **Node ≥ 22**). No network mocking: non-`default` states are recorded `not-forced`.
-- `scripts/run-ui-splint.py` — Playwright batch runner (same JSON shape, **plus** explicit state mocking and theme init scripts; for envs that already use Playwright).
+- `scripts/run-ui-audit.py` — Playwright batch runner (same JSON shape, **plus** explicit state mocking and theme init scripts; for envs that already use Playwright).
 - `scripts/audit-config.default.json` — thresholds, matrix, whitelist/baseline.
 - `references/audit-rules.md` — every audit rule: signal, method, threshold→severity, FP guards.
 - `references/findings-schema.md` — the findings/coverage JSON contract.
@@ -160,7 +160,7 @@ in code and taste in the checklist.
 - **Downgrading a measured `Fail` to taste.** Severity is computed from thresholds; only
   `visual-judgment` findings are yours to weigh, and they are already capped at `Risk`.
 - **Evaluating `audit.js` and expecting CLS.** That only defines the observer installer —
-  you must call `__uiSplintInstallCLS()` via an init script before navigation (see step 2).
+  you must call `__uiAuditInstallCLS()` via an init script before navigation (see step 2).
 - **Calling outside focusables a proven trap leak.** `aria-modal` pages often leave background
   controls in the DOM while JavaScript correctly wraps focus. Require trusted forward and
   reverse boundary input before emitting `Fail`.

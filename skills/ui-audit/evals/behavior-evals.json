@@ -1,5 +1,5 @@
 {
-  "skill_name": "ui-splint",
+  "skill_name": "ui-audit",
   "evals": [
     {
       "id": "measure-before-judging",
@@ -25,7 +25,7 @@
     },
     {
       "id": "fix-known-visual-findings",
-      "prompt": "Fix the sticky footer covering content and low-contrast placeholder findings from the ui-splint report.",
+      "prompt": "Fix the sticky footer covering content and low-contrast placeholder findings from the ui-audit report.",
       "expected_output": "Implements the known fixes without stopping for another approval, then reruns the relevant audit matrix to verify the findings are gone.",
       "files": [],
       "assertions": [
@@ -81,7 +81,7 @@
     {
       "id": "avoid-backend-only-trigger",
       "prompt": "Fix the JSON serialization bug in the API handler.",
-      "expected_output": "Does not invoke ui-splint because the task has no rendered UI surface to verify.",
+      "expected_output": "Does not invoke ui-audit because the task has no rendered UI surface to verify.",
       "files": [],
       "assertions": [
         "Uses backend tests or static checks instead.",
