@@ -31,6 +31,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 AUDIT_JS = HERE / "audit.js"
 KEYBOARD_PROBE_JS = HERE / "keyboard-probe.js"
+POINTER_PROBE_JS = HERE / "pointer-probe.js"
 DEFAULT_CONFIG = HERE / "audit-config.default.json"
 
 
@@ -51,7 +52,8 @@ def init_script():
     """audit.js + auto-install of the CLS observer, run BEFORE page scripts."""
     src = AUDIT_JS.read_text(encoding="utf-8")
     keyboard = KEYBOARD_PROBE_JS.read_text(encoding="utf-8")
-    return src + "\n" + keyboard + "\n;try{window.__uiAuditInstallCLS&&window.__uiAuditInstallCLS();}catch(e){}\n"
+    pointer = POINTER_PROBE_JS.read_text(encoding="utf-8")
+    return src + "\n" + keyboard + "\n" + pointer + "\n;try{window.__uiAuditInstallCLS&&window.__uiAuditInstallCLS();}catch(e){}\n"
 
 
 def main():
@@ -84,8 +86,9 @@ def main():
         )
         sys.exit(2)
 
-    if not AUDIT_JS.exists() or not KEYBOARD_PROBE_JS.exists():
-        missing = AUDIT_JS if not AUDIT_JS.exists() else KEYBOARD_PROBE_JS
+    required_scripts = (AUDIT_JS, KEYBOARD_PROBE_JS, POINTER_PROBE_JS)
+    if any(not script.exists() for script in required_scripts):
+        missing = next(script for script in required_scripts if not script.exists())
         sys.stderr.write(f"Error: required script not found at {missing}\n")
         sys.exit(2)
 
@@ -106,6 +109,7 @@ def main():
     state_setups = cfg.get("stateSetups", {})
     theme_init_scripts = cfg.get("themeInitScripts", {})
     keyboard_cfg = cfg.get("keyboardProbe", {})
+    hover_cfg = cfg.get("hoverProbe", {})
     viewports = cfg.get("viewports", [
         {"name": "mobile", "width": 390, "height": 844, "isMobile": True, "dpr": 3},
         {"name": "desktop", "width": 1280, "height": 900, "isMobile": False, "dpr": 1},
@@ -200,6 +204,23 @@ def main():
                                 if not args.no_screenshots and sp in ("top", "bottom"):
                                     shot = out_dir / "screens" / f"{slug(route)}_{vp['name']}_{theme}_{state}_{sp}.png"
                                     page.screenshot(path=str(shot))  # viewport-clipped (NOT full_page)
+                            try:
+                                pointer_findings, pointer_proof = run_pointer_probe(
+                                    page, is_mobile, hover_cfg,
+                                    audit_cfg.get("whitelist", []), baseline
+                                )
+                            except Exception as exc:
+                                pointer_findings = []
+                                pointer_proof = {
+                                    "status": "error", "reason": str(exc),
+                                    "expected": 0, "checked": 0, "missing": 0,
+                                }
+                            cell["hoverProbe"] = pointer_proof
+                            for finding in pointer_findings:
+                                finding["scroll"] = "pointer"
+                                finding["cell"] = cell
+                            cell_findings += pointer_findings
+
                             keyboard_findings, keyboard_proof = run_keyboard_probe(
                                 page, keyboard_cfg, audit_cfg.get("whitelist", []), baseline
                             )
@@ -228,6 +249,9 @@ def main():
                                 if keyboard_proof["status"] not in ("checked", "not-applicable"):
                                     status = "error"
                                     reason = "keyboard probe incomplete: " + keyboard_proof.get("reason", keyboard_proof["status"])
+                                elif pointer_proof["status"] not in ("checked", "not-applicable"):
+                                    status = "error"
+                                    reason = "hover probe incomplete: " + pointer_proof.get("reason", pointer_proof["status"])
                                 cell["status"] = status
                                 if reason:
                                     cell["error" if status == "error" else "reason"] = reason
@@ -442,6 +466,147 @@ def keyboard_finding(rule, selector, message, measured, rect, suggested_fix):
         "rect": rect,
         "suggestedFix": suggested_fix,
     }
+
+
+def pointer_finding(target, dense_gap_px):
+    dense = bool(target.get("dense"))
+    return {
+        "rule": "missingHoverFeedback",
+        "severity": "Risk" if dense else "Polish",
+        "confidence": "auto-measured",
+        "selector": target["selector"],
+        "message": (
+            "A pointer-hovered control in a dense action group has no visible feedback beyond cursor state."
+            if dense else
+            "A pointer-hovered control has no visible feedback beyond cursor state."
+        ),
+        "measured": {
+            "visualStyleChanged": False,
+            "cursorChangeIgnored": True,
+            "dense": dense,
+            "sameSemanticGroup": bool(target.get("sameSemanticGroup")),
+            "nearestInteractiveGapPx": target.get("nearestInteractiveGapPx"),
+            "groupSelector": target.get("groupSelector"),
+        },
+        "threshold": {"denseGapPx": dense_gap_px},
+        "rect": target.get("rect"),
+        "suggestedFix": (
+            "Add a visible :hover treatment such as a background, border, underline, shadow, icon, or tooltip change; "
+            "keep keyboard focus styling distinct too."
+        ),
+    }
+
+
+def run_pointer_probe(page, is_mobile, config=None, whitelist=None, baseline=None):
+    """Use trusted pointer movement and compare rendered hover styles."""
+    config = config or {}
+    if not isinstance(config, dict):
+        raise ValueError("hoverProbe must be an object")
+    def integer_setting(name, default):
+        try:
+            value = float(config.get(name, default))
+        except (TypeError, ValueError):
+            raise ValueError(f"hoverProbe.{name} must be an integer") from None
+        if not value.is_integer():
+            raise ValueError(f"hoverProbe.{name} must be an integer")
+        return int(value)
+
+    max_targets = integer_setting("maxTargets", 80)
+    settle_ms = integer_setting("settleMs", 50)
+    max_wait_ms = integer_setting("maxWaitMs", 250)
+    dense_gap_px = float(config.get("denseGapPx", 12))
+    if max_targets < 1 or max_targets > 1000:
+        raise ValueError("hoverProbe.maxTargets must be between 1 and 1000")
+    if settle_ms < 0 or settle_ms > 5000:
+        raise ValueError("hoverProbe.settleMs must be between 0 and 5000")
+    if max_wait_ms < settle_ms or max_wait_ms > 5000:
+        raise ValueError("hoverProbe.maxWaitMs must be between settleMs and 5000")
+    if dense_gap_px < 0 or dense_gap_px > 100:
+        raise ValueError("hoverProbe.denseGapPx must be between 0 and 100")
+    if is_mobile:
+        return [], {"status": "not-applicable", "expected": 0, "checked": 0,
+                    "missing": 0, "maxTargets": max_targets}
+
+    args = {"whitelist": whitelist or [], "maxTargets": max_targets, "denseGapPx": dense_gap_px}
+    plan = page.evaluate(
+        "(args) => window.__uiAuditPointerProbe.plan(args.whitelist, args.maxTargets, args.denseGapPx)",
+        args,
+    )
+    if not plan.get("hoverCapable"):
+        return [], {
+            "status": "not-applicable", "reason": "viewport does not expose a fine hover pointer",
+            "expected": plan.get("expected", 0), "checked": 0, "missing": 0,
+            "maxTargets": max_targets,
+        }
+    if not plan.get("expected"):
+        return [], {"status": "not-applicable", "expected": 0, "checked": 0,
+                    "missing": 0, "maxTargets": max_targets}
+
+    findings = []
+    checked = 0
+    initial_scroll = page.evaluate("({x:window.scrollX,y:window.scrollY})")
+    try:
+        for target in plan["targets"]:
+            neutral = page.evaluate("window.__uiAuditPointerProbe.neutralPoint()")
+            page.mouse.move(neutral["x"], neutral["y"])
+            if settle_ms:
+                page.wait_for_timeout(settle_ms)
+            prepared = page.evaluate(
+                "(selector) => window.__uiAuditPointerProbe.prepare(selector)", target["selector"]
+            )
+            if not prepared.get("ok"):
+                raise RuntimeError(f"hover target {target['selector']}: {prepared.get('reason')}")
+            page.mouse.move(prepared["point"]["x"], prepared["point"]["y"])
+            if settle_ms:
+                page.wait_for_timeout(settle_ms)
+            inspect_args = {
+                "selector": target["selector"], "before": prepared["before"],
+                "tooltipsBefore": prepared["tooltipsBefore"],
+            }
+            result = page.evaluate(
+                "(args) => window.__uiAuditPointerProbe.inspect(args.selector, args.before, args.tooltipsBefore)",
+                inspect_args,
+            )
+            if not result.get("ok"):
+                raise RuntimeError(f"hover target {target['selector']}: {result.get('reason')}")
+            if not result.get("hovered"):
+                raise RuntimeError(f"hover target {target['selector']}: trusted pointer did not reach the target")
+            if not result.get("changed") and max_wait_ms > settle_ms:
+                page.wait_for_timeout(max_wait_ms - settle_ms)
+                result = page.evaluate(
+                    "(args) => window.__uiAuditPointerProbe.inspect(args.selector, args.before, args.tooltipsBefore)",
+                    inspect_args,
+                )
+                if not result.get("ok"):
+                    raise RuntimeError(f"hover target {target['selector']}: {result.get('reason')}")
+                if not result.get("hovered"):
+                    raise RuntimeError(f"hover target {target['selector']}: trusted pointer left the target")
+            checked += 1
+            if not result.get("changed"):
+                target["rect"] = prepared.get("rect")
+                findings.append(pointer_finding(target, dense_gap_px))
+    finally:
+        try:
+            neutral = page.evaluate("window.__uiAuditPointerProbe.neutralPoint()")
+            page.mouse.move(neutral["x"], neutral["y"])
+            page.evaluate("point => window.scrollTo(point.x, point.y)", initial_scroll)
+        except Exception:
+            pass
+
+    baseline_keys = {
+        (entry.get("rule"), entry.get("selector"))
+        for entry in (baseline or []) if isinstance(entry, dict)
+    }
+    findings = [finding for finding in findings
+                if (finding.get("rule"), finding.get("selector")) not in baseline_keys]
+    proof = {
+        "status": "incomplete" if plan.get("truncated") else "checked",
+        "expected": plan["expected"], "checked": checked, "missing": len(findings),
+        "maxTargets": max_targets,
+    }
+    if plan.get("truncated"):
+        proof["reason"] = f"checked {checked} of {plan['expected']} hover targets before reaching maxTargets"
+    return findings, proof
 
 
 def run_keyboard_probe(page, config=None, whitelist=None, baseline=None):

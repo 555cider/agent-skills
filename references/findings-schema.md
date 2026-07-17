@@ -28,7 +28,7 @@ aggregates per-cell reports into `findings.json` (a flat array of findings) and
 }
 ```
 
-Batch-runner configuration also accepts deterministic state and keyboard proof:
+Batch-runner configuration also accepts deterministic state, keyboard proof, and pointer-hover proof:
 
 ```jsonc
 {
@@ -38,7 +38,8 @@ Batch-runner configuration also accepts deterministic state and keyboard proof:
       "expect": [{ "selector": "[role=dialog][aria-modal=true]", "state": "visible" }]
     }
   },
-  "keyboardProbe": { "maxSteps": 120, "settleMs": 50 }
+  "keyboardProbe": { "maxSteps": 120, "settleMs": 50 },
+  "hoverProbe": { "maxTargets": 80, "settleMs": 50, "maxWaitMs": 250, "denseGapPx": 12 }
 }
 ```
 
@@ -117,6 +118,8 @@ and backward-compatible `cell` field come from the worst severity (`Fail` > `Ris
       "stateSetup": { "status": "not-configured", "actions": 0, "assertions": 0 },
       "keyboardProbe": { "status": "checked", "expected": 5, "visited": 5,
         "dialogs": 0, "modalSelector": null, "maxSteps": 120 },
+      "hoverProbe": { "status": "not-applicable", "expected": 0, "checked": 0,
+        "missing": 0, "maxTargets": 80 },
       "status": "checked", "counts": { "Fail": 1, "Risk": 0, "Polish": 0 } },
     { "route": "/", "viewport": "desktop", "theme": "light", "state": "error",
       "status": "error", "error": "TimeoutError: ..." },  // surfaces as "Not verified"
@@ -153,6 +156,12 @@ two make the cell `error` and block completion. The probe tests only the topmost
 modal but reports the total visible modal count; `modalSelector` identifies the tested layer.
 Runner-generated `focusTrapLeak` and `focusObscured` findings honor the same whitelist and
 baseline as DOM audit findings.
+
+`hoverProbe.status` uses the same four values. Mobile/touch cells and desktop cells with no
+eligible action are `not-applicable`; desktop fine-pointer cells are `checked` only after every
+eligible action was hovered with trusted input. Reaching `maxTargets` produces `incomplete`,
+and the last two statuses block completion. Runner-generated `missingHoverFeedback` findings
+honor the same whitelist and baseline. Their `scroll` value is `pointer`.
 
 `stateMocks.<state>` is an array of route rules. Each rule requires `pattern` and exactly
 one of `body` or `hold: true`; `status` defaults to 200 and `contentType` to

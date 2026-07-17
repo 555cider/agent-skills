@@ -109,8 +109,9 @@ if python3 - "$WORK/theme-valid/coverage.json" <<'PY'
 import json, sys
 cell = json.load(open(sys.argv[1]))["matrix"][0]
 assert cell["themeDriver"] == "init-script" and cell["status"] == "checked", cell
+assert cell["hoverProbe"]["status"] == "not-applicable", cell
 PY
-then pass "theme init script records verified driver"; else fail "theme init script records verified driver" "invalid coverage"; fi
+then pass "theme init script records verified driver and mobile hover is not applicable"; else fail "theme init script records verified driver and mobile hover is not applicable" "invalid coverage"; fi
 
 cat >"$WORK/theme-error.json" <<'EOF'
 {"routes":["/clean.html"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"themes":["broken"],"states":["default"],"scrollPositions":["top"],"themeInitScripts":{"broken":"throw new Error('theme boom')"}}
@@ -314,6 +315,25 @@ assert not any(f.get("rule") == "focusObscured" for f in findings), findings
 PY
 then pass "keyboard findings honor baseline"; else fail "keyboard findings honor baseline" "focusObscured leaked"; fi
 
+# ---- runner-generated pointer findings honor whitelist and baseline ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/interaction-layout.html"],"themes":["light"],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"auditConfig":{"whitelist":["#search-action","#sort-order"]}}') \
+  --out-dir "$WORK/pointer-wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/pointer-wl/findings.json" <<'PY'
+import json, sys
+findings = json.load(open(sys.argv[1]))
+assert not any(f.get("rule") == "missingHoverFeedback" for f in findings), findings
+PY
+then pass "pointer findings honor whitelist"; else fail "pointer findings honor whitelist" "missingHoverFeedback leaked"; fi
+
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/interaction-layout.html"],"themes":["light"],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"baseline":[{"rule":"missingHoverFeedback","selector":"#search-action"},{"rule":"missingHoverFeedback","selector":"#sort-order"}]}') \
+  --out-dir "$WORK/pointer-base" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/pointer-base/findings.json" <<'PY'
+import json, sys
+findings = json.load(open(sys.argv[1]))
+assert not any(f.get("rule") == "missingHoverFeedback" for f in findings), findings
+PY
+then pass "pointer findings honor baseline"; else fail "pointer findings honor baseline" "missingHoverFeedback leaked"; fi
+
 # ---- bounded traversal and setup failures remain honest coverage errors ----
 node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"keyboardProbe":{"maxSteps":1,"settleMs":0}}') \
   --out-dir "$WORK/keyboard-cap" --no-screenshots >"$WORK/out" 2>"$WORK/err"
@@ -325,6 +345,18 @@ cell = json.load(open(sys.argv[1]))["matrix"][0]
 assert cell["status"] == "error" and cell["keyboardProbe"]["status"] == "incomplete", cell
 PY
 then pass "keyboard cap is recorded in coverage"; else fail "keyboard cap is recorded in coverage" "missing incomplete proof"; fi
+
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/hover-valid.html"],"themes":["light"],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"hoverProbe":{"maxTargets":1,"settleMs":0,"maxWaitMs":0,"denseGapPx":12}}') \
+  --out-dir "$WORK/pointer-cap" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "pointer target cap blocks completion" 1
+if python3 - "$WORK/pointer-cap/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+assert cell["status"] == "error" and cell["hoverProbe"]["status"] == "incomplete", cell
+assert cell["hoverProbe"]["checked"] == 1 and cell["hoverProbe"]["expected"] == 4, cell
+PY
+then pass "pointer cap is recorded in coverage"; else fail "pointer cap is recorded in coverage" "missing incomplete proof"; fi
 
 node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-setup-modal.html"],"themes":["light"],"states":["dialog-open"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateSetups":{"dialog-open":{"actions":[{"type":"click","selector":"#missing"}],"expect":[{"selector":"[role=dialog]","state":"visible"}]}}}') \
   --out-dir "$WORK/setup-error" --no-screenshots >"$WORK/out" 2>"$WORK/err"
@@ -439,6 +471,10 @@ route = FakeRoute()
 page.handler(route)
 assert tracker["driver"] == "configured-mock" and tracker["interceptions"] == 1
 assert json.loads(route.fulfilled["body"])["stale"] is True
+
+pointer_findings, pointer_proof = mod.run_pointer_probe(object(), True, {"maxTargets": 5})
+assert pointer_findings == [] and pointer_proof["status"] == "not-applicable", pointer_proof
+assert "pointer-probe.js" in str(mod.POINTER_PROBE_JS), mod.POINTER_PROBE_JS
 PY
 then
   pass "Python aggregation and state interception helpers"

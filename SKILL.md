@@ -31,6 +31,9 @@ Use the user's language in reports. Group findings by failure mode, not discover
 - **Use trusted input for keyboard claims.** DOM structure can identify a suspicious modal,
   but only real `Tab`/`Shift+Tab` input proves focus containment. Run the bundled keyboard
   probe through Playwright or CDP; an incomplete probe is unverified coverage.
+- **Use trusted input for hover claims.** A computed resting cursor cannot prove `:hover`.
+  Run the bundled pointer probe on desktop fine-pointer cells and require a visible style,
+  descendant/icon, or tooltip change beyond the cursor; an incomplete probe is unverified coverage.
 - **Respect the request's authority.** A build/edit/finish request authorizes safe fixes to
   in-scope defects found by the audit. A review/audit-only request authorizes reporting only;
   list findings with evidence and wait before changing source.
@@ -75,9 +78,10 @@ Use the user's language in reports. Group findings by failure mode, not discover
      data attribute instead of `prefers-color-scheme`. This is
      the runner to use when the matrix has non-`default` states.
      Needs `pip install playwright && playwright install chromium`.
-   Both runners inject `scripts/keyboard-probe.js` and use trusted browser input once per
-   matrix cell. They verify modal initial focus, forward/reverse boundary wrap, and whether
-   keyboard-focused controls are fully hidden by the viewport or an author overlay.
+   Both runners inject `scripts/keyboard-probe.js` and `scripts/pointer-probe.js` and use
+   trusted browser input once per matrix cell. They verify modal initial focus,
+   forward/reverse boundary wrap, keyboard-focus obscuring, and visible desktop hover
+   feedback for buttons, links, menu/tab actions, and related click targets.
 3. **Resolve.** Any finding with `confidence: needs-visual` (text over a gradient/image,
    unmeasured CLS) must be confirmed by pixel-sampling a screenshot crop or installing
    the observer. A structural `focusTrapLeak` Risk must be resolved with the trusted
@@ -95,8 +99,8 @@ Use the user's language in reports. Group findings by failure mode, not discover
 | Severity | Meaning | Examples (measured) |
 |----------|---------|---------------------|
 | `Fail` | Broken now in the rendered state | text contrast < 4.5:1 (3:1 large); horizontal overflow; content covered by a sticky bar; region collapsed to ~0 with content; text clipped/escaping; tap target < 24px; broken image; trusted Tab escapes an open modal; focused control fully obscured; CLS > 0.25 |
-| `Risk` | Will break with realistic data/state/locale/viewport, or near threshold | placeholder < 4.5:1; tap target < 44px; ambiguous empty-vs-error; auth-mode nav conflict; selected-state inversion; CLS > 0.1 |
-| `Polish` | Functional but visibly unpolished | design-system drift (too many radii/shadows/accent hues); weak rhythm; wasted space |
+| `Risk` | Will break with realistic data/state/locale/viewport, or near threshold | placeholder < 4.5:1; tap target < 44px; dense adjacent actions with no visible hover feedback; selected-state inversion; CLS > 0.1 |
+| `Polish` | Functional but visibly unpolished | inconsistent multi-row control padding; orphaned narrow controls; standalone action with no visible hover feedback; design-system drift |
 
 Escalate when the issue hits a primary workflow, a repeated component, or a surface the
 user asked you to finish. See `references/audit-rules.md` for each rule's exact method.
@@ -126,6 +130,7 @@ across the recorded matrix, and the subjective residue was judged.
 
 - `scripts/audit.js` — the deterministic detector. Pure DOM/CSSOM/geometry; engine-agnostic.
 - `scripts/keyboard-probe.js` — shared focus-order and paint-occlusion helpers; runners supply trusted key events.
+- `scripts/pointer-probe.js` — shared hover target/style comparison helpers; runners supply trusted pointer movement.
 - `scripts/audit-chrome.mjs` — zero-dependency batch runner (drives installed Chrome via CDP / Node WebSocket, **Node ≥ 22**). No network mocking: non-`default` states are recorded `not-forced`.
 - `scripts/run-ui-audit.py` — Playwright batch runner (same JSON shape, **plus** explicit state mocking and theme init scripts; for envs that already use Playwright).
 - `scripts/audit-config.default.json` — thresholds, matrix, whitelist/baseline.
