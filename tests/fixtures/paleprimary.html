@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Disabled-looking primary</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#ffffff;color:#111827;font-family:system-ui,sans-serif;padding:20px;max-width:480px;margin:0 auto}
+  h1{font-size:22px;margin:16px 4px}
+  form{margin-top:16px}
+  label{display:block;font-size:14px;color:#374151;margin:0 4px 6px}
+  .field{display:block;width:100%;border:1px solid #d1d5db;border-radius:10px;padding:14px;
+    margin-bottom:16px;font-size:16px;color:#111827;min-height:48px}
+  .field::placeholder{color:#6b7280}
+  /* G: enabled primary submit, but it is pale grey — reads as disabled (saturation ~0, near-white fill on white page). */
+  .submit{display:block;width:100%;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:700;
+    background:#eeeeee;color:#222222;min-height:48px;cursor:pointer}
+</style></head>
+<body>
+  <h1>Create your account</h1>
+  <form>
+    <label for="email">Email</label>
+    <input class="field" id="email" placeholder="you@example.com">
+    <button class="submit" type="submit">Create account</button>
+  </form>
+</body></html>

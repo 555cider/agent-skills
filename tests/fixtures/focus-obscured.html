@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Obscured keyboard focus</title>
+<style>
+  body{margin:0;min-height:1200px;padding:24px;font:16px system-ui;color:#111827;background:#fff}
+  button{min-width:150px;min-height:44px;border:0;background:#1d4ed8;color:#fff;font:inherit}
+  #covered-action{position:fixed;left:24px;bottom:12px}
+  .cookie-wall{position:fixed;z-index:10;left:0;right:0;bottom:0;height:80px;background:#111827;color:#fff;padding:20px}
+</style></head><body>
+  <button id="top-action">Top action</button>
+  <button id="covered-action">Covered action</button>
+  <div class="cookie-wall">Cookie notice deliberately covers the focused action.</div>
+</body></html>

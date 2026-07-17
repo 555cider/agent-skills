@@ -1,0 +1,157 @@
+{
+  "_comment": "Regression contract for audit.js. Each fixture lists rules that MUST fire (mustHit) and, for the clean baseline, that NOTHING fires. Render at the given viewport and run top/bottom scroll positions; for kitchensink install CLS before the late banner. These were validated live in Chromium during the redesign.",
+  "fixtures": [
+    {
+      "file": "login.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "dark",
+      "mustHit": [
+        { "rule": "effectiveContrast", "matches": "회원가입", "confidence": "auto-measured", "note": "G1 washed-out unselected tab label" },
+        { "rule": "effectiveContrast", "matches": "Google", "confidence": "auto-measured", "note": "G2 white button pale text" },
+        { "rule": "effectiveContrast", "matches": "카카오", "confidence": "auto-measured", "note": "G3 yellow button pale text" },
+        { "rule": "effectiveContrast", "matches": "네이버", "confidence": "auto-measured", "note": "G4 green button pale text" },
+        { "rule": "placeholderContrast", "note": "G6 low-contrast input placeholders" },
+        { "rule": "selectedStateAmbiguity", "matches": "회원가입", "confidence": "visual-judgment", "note": "G1 selected-state inversion" },
+        { "rule": "authModeNavConflict", "note": "G7 authenticated bottom nav on auth screen" }
+      ]
+    },
+    {
+      "file": "dashboard.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "dark",
+      "setup": "scroll .scroll to bottom",
+      "mustHit": [
+        { "rule": "stickyOverlapContent", "note": "G9/G11 fixed nav clips last content row" }
+      ]
+    },
+    {
+      "file": "kitchensink.html",
+      "viewport": { "width": 375, "height": 812, "isMobile": true },
+      "setup": "wait for late banner, install CLS observer, scroll bottom",
+      "mustHit": [
+        { "rule": "horizontalOverflow", "severity": "Fail", "note": "D1" },
+        { "rule": "ancestorCollapse", "severity": "Fail", "note": "D2 collapsed scroll region" },
+        { "rule": "textClip", "note": "D3 escape + D4 clamp" },
+        { "rule": "tapTarget", "note": "D5 tiny crowded targets" },
+        { "rule": "offViewport", "severity": "Risk", "note": "D6 element off-screen" },
+        { "rule": "stickyOverlapContent", "severity": "Fail", "note": "D7 content under fixed bar" },
+        { "rule": "invisibleContent", "note": "D8 opacity:0 content" },
+        { "rule": "brokenOrDistortedMedia", "note": "D9 broken image" },
+        { "rule": "layoutShiftCLS", "note": "D10 late banner CLS>0.1" }
+      ]
+    },
+    {
+      "file": "layout.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "loneNarrowElement", "matches": "Filter", "note": "L1 narrow control stranded on its own row" },
+        { "rule": "excessiveButtonsInRow", "matches": "5 buttons", "note": "L2 too many peer actions in one row" }
+      ]
+    },
+    {
+      "file": "modal.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "focusTrapLeak", "matches": "bg-action", "note": "M1 open dialog with focusable button reachable behind it" }
+      ]
+    },
+    {
+      "file": "modal-trapped.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [],
+      "mustNotHit": ["focusTrapLeak"],
+      "note": "A real forward/reverse keyboard trap passes even though background controls remain in the DOM."
+    },
+    {
+      "file": "modal-wrong-wrap.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "focusTrapLeak", "matches": "wrong-boundary-wrap", "severity": "Fail", "note": "Focus remains inside but wraps to the wrong boundary target." }
+      ]
+    },
+    {
+      "file": "focus-obscured.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "focusObscured", "matches": "covered-action", "severity": "Fail", "note": "Keyboard focus is fully painted over by the cookie wall." }
+      ]
+    },
+    {
+      "file": "state-setup-modal.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "states": ["dialog-open"],
+      "stateSetups": {
+        "dialog-open": {
+          "actions": [{ "type": "click", "selector": "#open-dialog" }],
+          "expect": [{ "selector": "[role=dialog][aria-modal=true]", "state": "visible" }]
+        }
+      },
+      "mustHit": [
+        { "rule": "focusTrapLeak", "severity": "Fail", "note": "Structured setup opens the modal, then trusted Tab input proves the leak." }
+      ]
+    },
+    {
+      "file": "modal-front-overlay.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "missingModalBackdrop", "matches": "dialog", "note": "Backdrop candidate above the modal does not count as a backdrop behind it" }
+      ]
+    },
+    {
+      "file": "paleprimary.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "disabledLookingPrimary", "matches": "Create account", "note": "P1 enabled submit with pale near-white fill reads as disabled" }
+      ]
+    },
+    {
+      "file": "drift.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "designSystemDrift", "matches": "border-radius", "note": "S1 five one-off corner radii" }
+      ]
+    },
+    {
+      "file": "newcases.html",
+      "viewport": { "width": 800, "height": 600, "isMobile": false },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "tinyText", "matches": "tiny", "note": "tinyText Risk" },
+        { "rule": "tinyText", "matches": "small", "note": "tinyText Polish" },
+        { "rule": "unlabeledInput", "matches": "unlabeled-text-input", "note": "unlabeledInput on input" },
+        { "rule": "unlabeledInput", "matches": "unlabeled-textarea", "note": "unlabeledInput on textarea" },
+        { "rule": "unlabeledInput", "matches": "unlabeled-select", "note": "unlabeledInput on select" },
+        { "rule": "lineLength", "matches": "long-paragraph", "note": "lineLength Polish" },
+        { "rule": "inconsistentSiblingsSpacing", "note": "inconsistentSiblingsSpacing Polish" },
+        { "rule": "textLineHeightOverlap", "note": "textLineHeightOverlap Risk" },
+        { "rule": "emptyInteractiveTarget", "note": "emptyInteractiveTarget Fail" },
+        { "rule": "misalignedRowItems", "note": "misalignedRowItems Polish" },
+        { "rule": "accidentalFlexWrap", "note": "accidentalFlexWrap Polish" },
+        { "rule": "nonScrollableOverflow", "note": "nonScrollableOverflow Risk" },
+        { "rule": "inconsistentBorderRadius", "note": "inconsistentBorderRadius Polish" },
+        { "rule": "excessiveFirstViewportSpacing", "note": "excessiveFirstViewportSpacing Polish" },
+        { "rule": "buttonSelfHeightMismatch", "note": "buttonSelfHeightMismatch Polish" },
+        { "rule": "stretchedIconDistortion", "note": "stretchedIconDistortion Risk" },
+        { "rule": "missingClickableCursor", "note": "missingClickableCursor Polish" },
+        { "rule": "missingModalBackdrop", "note": "missingModalBackdrop Risk" }
+      ]
+    },
+    {
+      "file": "clean.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true },
+      "theme": "dark",
+      "mustHit": [],
+      "expectZeroFindings": true,
+      "note": "Precision gate: a well-built page must produce no findings (no cry-wolf)."
+    }
+  ]
+}

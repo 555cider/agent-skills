@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>kitchensink defects</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,sans-serif;background:#fff;color:#222}
+  section{padding:14px;border-bottom:1px solid #eee}
+  h2{font-size:13px;color:#888;margin:0 0 8px;text-transform:uppercase;letter-spacing:.05em}
+
+  /* D1 horizontal overflow */
+  .overflow{width:1600px;height:30px;background:linear-gradient(90deg,#cde,#abc)}
+
+  /* D2 ancestor-collapsed scroll region: a sibling consumes all height; the scroll
+     container is a flex item with overflow:auto (auto min-height => 0) so it collapses
+     to ~0 while still holding 400px of rows. */
+  .collapse-wrap{display:flex;flex-direction:column;height:140px;border:1px solid #ccc}
+  .collapse-big{flex:0 0 140px;background:#eef}
+  .collapse-scroll{flex:1 1 auto;overflow:auto;background:#f0f4ff}
+  .collapse-scroll .tall{height:400px;background:repeating-linear-gradient(#dde,#dde 20px,#cce 20px,#cce 40px)}
+
+  /* D3 text overflow escaping button */
+  .clipbtn{display:inline-block;width:120px;height:36px;white-space:nowrap;overflow:visible;background:#2563eb;color:#fff;border-radius:8px;padding:8px}
+
+  /* D4 line-clamp truncation hiding content */
+  .clamp{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;width:200px}
+
+  /* D5 tiny + crowded tap targets */
+  .tap{display:inline-block;width:18px;height:18px;background:#444;margin:1px;border:0}
+
+  /* D6 element pushed off-viewport right */
+  .offscreen{position:absolute;left:3000px;top:10px;background:#fee;padding:6px}
+
+  /* D7 fixed bar overlapping content */
+  .fixedbar{position:fixed;left:0;right:0;bottom:0;height:72px;background:#111;color:#fff;display:flex;align-items:center;justify-content:center}
+  .lastrow{margin-bottom:0;min-height:140px}   /* tall + no space reserved for the fixed bar => lower part is occluded */
+
+  /* D8 invisible-but-in-DOM primary content (opacity:0 / visibility) */
+  .ghost{opacity:0}
+
+  /* D9 zero-size image / broken media */
+  .broken{width:80px;height:60px}
+</style></head>
+<body>
+  <section><h2>D1 horizontal overflow</h2><div class="overflow"></div></section>
+
+  <section><h2>D2 ancestor-collapsed scroll region</h2>
+    <div class="collapse-wrap">
+      <div class="collapse-big">this sibling eats all the height</div>
+      <div class="collapse-scroll"><div class="tall">400px of rows that should scroll but the region collapsed to ~0</div></div>
+    </div>
+  </section>
+
+  <section><h2>D3 text escaping button</h2>
+    <span class="clipbtn">This label is far too long for the button</span>
+  </section>
+
+  <section><h2>D4 clamped/truncated content</h2>
+    <div class="clamp">This important sentence is truncated by line-clamp and the rest is hidden from the user silently.</div>
+  </section>
+
+  <section><h2>D5 tiny crowded tap targets</h2>
+    <button class="tap"></button><button class="tap"></button><button class="tap"></button><button class="tap"></button>
+  </section>
+
+  <section><h2>D8 invisible primary content</h2>
+    <p class="ghost">CRITICAL: your account is past due — pay now (rendered invisible)</p>
+  </section>
+
+  <section><h2>D9 broken image</h2>
+    <img class="broken" src="/does-not-exist.png" alt="product photo">
+  </section>
+
+  <section style="margin-bottom:0"><h2>D7 last content under fixed bar</h2>
+    <p class="lastrow">This final paragraph sits under the fixed bottom bar and is partially covered.</p>
+  </section>
+
+  <div class="offscreen">D6 off-viewport element</div>
+  <div class="fixedbar">Fixed action bar (covers content)</div>
+
+  <script>
+    // D10 layout shift: insert a tall banner after load to push content down (CLS)
+    addEventListener('load',()=>{ setTimeout(()=>{ const b=document.createElement('div'); b.style.cssText='height:240px;background:#fde68a'; b.textContent='late banner causing a large layout shift'; document.body.insertBefore(b, document.body.firstChild); },300); });
+  </script>
+</body></html>

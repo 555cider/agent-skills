@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>State setup modal</title>
+<style>
+  body{padding:24px;font:16px system-ui;color:#111827;background:#fff} button{min-width:120px;min-height:44px;border:0;background:#1d4ed8;color:#fff}
+  [hidden]{display:none}.dialog{position:fixed;inset:25%;padding:24px;background:#fff;border:2px solid #111827}
+</style></head><body>
+  <button id="open-dialog">Open dialog</button>
+  <div class="dialog" role="dialog" aria-modal="true" aria-label="Delete item" hidden>
+    <button id="confirm">Confirm</button>
+  </div>
+  <script>
+    document.querySelector('#open-dialog').addEventListener('click', () => {
+      const dialog = document.querySelector('.dialog');
+      dialog.hidden = false;
+      document.querySelector('#confirm').focus();
+    });
+  </script>
+</body></html>

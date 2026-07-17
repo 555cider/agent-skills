@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Focus trap leak</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#ffffff;color:#111827;font-family:system-ui,sans-serif;padding:20px;max-width:480px;margin:0 auto}
+  h1{font-size:22px;margin:16px 4px}
+  .action{display:block;min-height:48px;min-width:120px;border:0;border-radius:10px;padding:14px 18px;
+    font-size:16px;font-weight:600;background:#1d4ed8;color:#ffffff;cursor:pointer}
+  .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5)}
+  .dialog{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:300px;background:#ffffff;
+    color:#111827;border-radius:12px;padding:20px}
+  .dialog button{min-height:48px;min-width:120px;border:0;border-radius:10px;padding:14px 18px;
+    font-size:16px;font-weight:600;background:#1d4ed8;color:#ffffff;cursor:pointer}
+</style></head>
+<body>
+  <!-- G: modal is open, but the background "Delete account" button is still focusable behind it. -->
+  <h1>Account settings</h1>
+  <button class="action" id="bg-action">Delete account</button>
+
+  <div class="backdrop"></div>
+  <div class="dialog" role="dialog" aria-modal="true" aria-label="Confirm">
+    <p>Are you sure you want to delete your account?</p>
+    <button>Confirm</button>
+  </div>
+</body></html>

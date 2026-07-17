@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>로그인</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:#0d0f0d;color:#eaeaea;font-family:system-ui,sans-serif;padding:16px 16px 96px}
+  .seg{display:flex;gap:8px;margin:8px 0 20px}
+  .seg button{flex:1;border:0;border-radius:12px;padding:18px;font-size:18px;font-weight:700;cursor:pointer}
+  /* G1: selected tab dark, UNSELECTED tab bright white with near-white label (inverted + washed out) */
+  .seg .sel{background:#3a3a3a;color:#ffffff}
+  .seg .unsel{background:#fdfdfd;color:#ededed}
+  .oauth{display:block;width:100%;border:0;border-radius:12px;padding:18px;margin-bottom:12px;font-size:17px;font-weight:700;text-align:center;cursor:pointer}
+  /* G2 google: white bg, pale blue text */
+  .google{background:#ffffff;color:#cfe0ff}
+  /* G3 kakao: yellow bg, pale blue text (brand wants near-black) */
+  .kakao{background:#ffe600;color:#d2e3ff}
+  /* G4 naver: green bg, pale text */
+  .naver{background:#03c75a;color:#bfe8cf}
+  .divider{display:flex;align-items:center;gap:12px;color:#888;margin:22px 0 16px;font-size:14px}
+  .divider::before,.divider::after{content:"";flex:1;height:1px;background:#2a2a2a}
+  .field{display:block;width:100%;border:1px solid #2a2a2a;border-radius:12px;background:#181a18;padding:18px;margin-bottom:12px;font-size:16px;color:#eaeaea}
+  /* G6 placeholder low contrast on dark input */
+  .field::placeholder{color:#5a5d5a}
+  /* G5 primary submit: pale mint, reads disabled, no affordance */
+  .submit{display:block;width:100%;border:0;border-radius:12px;padding:18px;margin-top:4px;font-size:17px;font-weight:700;background:#d9e8da;color:#2c2c2c;cursor:pointer}
+  /* G7 authenticated bottom nav present on auth screen, 마이 highlighted */
+  nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:#0a0c0a;border-top:1px solid #1e201e;padding:8px 0 14px}
+  nav a{flex:1;text-align:center;font-size:12px;color:#9aa39a;text-decoration:none}
+  nav a .i{display:block;font-size:22px;margin-bottom:2px}
+  nav a.active{background:#243024;color:#5b8cff;border-radius:12px;margin:0 6px;padding:6px 0}
+</style></head>
+<body>
+  <div class="seg">
+    <button class="sel">로그인</button>
+    <button class="unsel">회원가입</button>
+  </div>
+  <button class="oauth google">Google 로그인</button>
+  <button class="oauth kakao">카카오 로그인</button>
+  <button class="oauth naver">네이버 로그인</button>
+  <div class="divider">또는</div>
+  <input class="field" placeholder="이메일">
+  <input class="field" type="password" placeholder="비밀번호">
+  <button class="submit">로그인</button>
+
+  <nav>
+    <a href="#"><span class="i">🏠</span>홈</a>
+    <a href="#"><span class="i">📍</span>스팟</a>
+    <a href="#"><span class="i">📁</span>포켓</a>
+    <a href="#" class="active"><span class="i">👤</span>마이</a>
+  </nav>
+</body></html>

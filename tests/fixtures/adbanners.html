@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Whitelist suppression</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#ffffff;color:#111827;font-family:system-ui,sans-serif;padding:20px}
+  /* Two third-party ad slots with intentionally low-contrast text. A project whitelist of
+     `.ad-banner` must suppress BOTH findings, not just the first — the safeMatch regression. */
+  .ad-banner{border:1px solid #eee;border-radius:8px;padding:24px;margin-bottom:16px;
+    font-size:16px;color:#cccccc;background:#ffffff}
+</style></head>
+<body>
+  <div class="ad-banner">Sponsored content from a partner network</div>
+  <div class="ad-banner">Another sponsored placement you cannot restyle</div>
+</body></html>

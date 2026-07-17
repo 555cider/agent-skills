@@ -1,0 +1,58 @@
+[
+  {
+    "query": "Before calling this React screen done, run visual QA across mobile and desktop.",
+    "should_trigger": true
+  },
+  {
+    "query": "This page looks off; check contrast, overflow, and sticky footer overlap.",
+    "should_trigger": true
+  },
+  {
+    "query": "Review the screenshot and rendered route for layout clipping, then Tab through the open modal to verify focus stays inside.",
+    "should_trigger": true
+  },
+  {
+    "query": "Finish the frontend component and verify no text overlaps in dark mode.",
+    "should_trigger": true
+  },
+  {
+    "query": "Use ui-audit on http://localhost:3000/settings before finalizing.",
+    "should_trigger": true
+  },
+  {
+    "query": "Open the delete dialog and check whether Tab or Shift+Tab can escape behind it before calling the screen accessible and complete.",
+    "should_trigger": true
+  },
+  { "query": "Audit the entire dashboard across supported themes and viewports before shipping it.", "should_trigger": true },
+  { "query": "이 프론트 화면 완성됐는지 실제 렌더링으로 대비와 잘림을 검사해줘.", "should_trigger": true },
+  { "query": "Finish this component, fix any measured overflow or tap-target defects, and verify the rendered result.", "should_trigger": true },
+  { "query": "The page feels visually inconsistent; inspect all cards rather than one selected DOM node.", "should_trigger": true },
+  {
+    "query": "Fix the API pagination bug in the backend service.",
+    "should_trigger": false
+  },
+  {
+    "query": "Review this SQL migration for data loss risk.",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain CSS specificity without opening a browser.",
+    "should_trigger": false
+  },
+  {
+    "query": "Update README copy for the install section.",
+    "should_trigger": false
+  },
+  {
+    "query": "Run unit tests for the parser package.",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a CLI helper that prints JSON.",
+    "should_trigger": false
+  },
+  { "query": "I selected this one button in Chrome; change only its padding and return a minimal source diff.", "should_trigger": false },
+  { "query": "Use the DOM picker to map this highlighted badge to its component.", "should_trigger": false },
+  { "query": "Add a Playwright interaction test for the checkout submit flow; visual layout is out of scope.", "should_trigger": false },
+  { "query": "Review the CSS file statically without running or rendering the app.", "should_trigger": false }
+]

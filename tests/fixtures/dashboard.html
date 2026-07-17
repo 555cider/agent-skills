@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>홈</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#0c0e0c;color:#e8e8e8;font-family:system-ui,sans-serif}
+  .scroll{height:100vh;overflow:auto;padding:16px 16px 8px}
+  .hero{background:#141714;border-radius:16px;padding:20px;margin-bottom:20px}
+  .hero .eyebrow{color:#7a7a7a;font-size:13px}
+  .hero h1{margin:4px 0 8px;font-size:26px}
+  .hero p{color:#8a8a8a;font-size:14px;line-height:1.5;margin:0}
+  .row{display:flex;gap:12px;margin-bottom:18px}
+  .card{flex:1;background:#15181500;background:#141714;border:1px solid #1d201d;border-radius:14px;padding:16px;min-width:0}
+  /* G8: orange/red title on near-black card (borderline contrast) */
+  .card h3{margin:0 0 18px;color:#e0552e;font-size:15px}
+  .card p{margin:0;color:#dcdcdc;font-size:15px}
+  .sec{display:flex;justify-content:space-between;align-items:baseline;margin:8px 2px}
+  .sec .t{font-size:20px;font-weight:700}
+  /* G10: pale blue "전체 보기" on dark */
+  .sec a{color:#9fc2ff;font-size:14px;text-decoration:none}
+  .wide-card{background:#141714;border:1px solid #1d201d;border-radius:14px;padding:16px;margin-bottom:14px}
+  .wide-card h4{margin:0 0 6px;font-size:18px}
+  .wide-card .sub{color:#8a8a8a;font-size:14px}
+  /* G9/G11: sticky bottom nav overlaps last content because scroll padding-bottom is too small */
+  nav{position:fixed;left:0;right:0;bottom:0;height:64px;display:flex;background:#0a0c0a;border-top:1px solid #1e201e;align-items:center}
+  nav a{flex:1;text-align:center;font-size:12px;color:#9aa39a;text-decoration:none}
+</style></head>
+<body>
+  <div class="scroll">
+    <div class="hero">
+      <div class="eyebrow">서울</div>
+      <h1>월드컵공원 반려견놀이터</h1>
+      <p>반려동물과 가기 좋은 산책지 테마의 월드컵공원 반려견놀이터 정보. 반려견, 마포, 공공놀이터 키워드로 묶었습니다.</p>
+    </div>
+    <div class="row">
+      <div class="card"><h3>저장 많은 스팟</h3><p>사람들이 다시 꺼내보는 장소</p></div>
+      <div class="card"><h3>짧은 코스</h3><p>지금 바로 따라갈 동선</p></div>
+      <div class="card"><h3>내 포켓 지도</h3><p>저장한 장소를 색으로 보기</p></div>
+    </div>
+    <div class="sec"><span class="t">큐레이션 저니</span><a href="#">전체 보기</a></div>
+    <div class="wide-card">
+      <h4>야경 포토 워크</h4>
+      <div class="sub">가벽/브리지 쪽 야간 포인트만 빠르게 보기</div>
+    </div>
+    <div class="wide-card">
+      <h4>한적한 오전 산책</h4>
+      <div class="sub">사람 적은 시간대의 추천 코스만 모았습니다</div>
+    </div>
+    <div class="wide-card">
+      <h4>강아지 동반 카페</h4>
+      <div class="sub">반려견과 함께 머무를 수 있는 실내 공간</div>
+    </div>
+    <div class="wide-card">
+      <h4>한강 러닝 코스</h4>
+      <div class="sub">조명이 좋은 야간 러닝 추천 구간</div>
+    </div>
+    <div class="wide-card">
+      <h4>주말 플리마켓</h4>
+      <div class="sub">이번 주말 열리는 동네 마켓 모음</div>
+    </div>
+    <div class="wide-card">
+      <h4>노을 명소</h4>
+      <div class="sub">해질녘에 가기 좋은 전망 포인트만 빠르게 보기</div>
+    </div>
+  </div>
+  <nav>
+    <a href="#">🏠<br>홈</a>
+    <a href="#">📍<br>스팟</a>
+    <a href="#">📁<br>포켓</a>
+    <a href="#">👤<br>마이</a>
+  </nav>
+</body></html>
