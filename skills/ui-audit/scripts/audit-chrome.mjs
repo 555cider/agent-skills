@@ -29,7 +29,9 @@ if (typeof WebSocket === 'undefined') {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AUDIT_JS = readFileSync(join(HERE, 'audit.js'), 'utf8');
 const KEYBOARD_PROBE_JS = readFileSync(join(HERE, 'keyboard-probe.js'), 'utf8');
-const INIT = AUDIT_JS + '\n' + KEYBOARD_PROBE_JS + '\n;try{window.__uiAuditInstallCLS&&window.__uiAuditInstallCLS();}catch(e){}\n';
+const POINTER_PROBE_JS = readFileSync(join(HERE, 'pointer-probe.js'), 'utf8');
+const INIT = AUDIT_JS + '\n' + KEYBOARD_PROBE_JS + '\n' + POINTER_PROBE_JS +
+  '\n;try{window.__uiAuditInstallCLS&&window.__uiAuditInstallCLS();}catch(e){}\n';
 
 // ---------- args ----------
 const argv = process.argv.slice(2);
@@ -72,6 +74,7 @@ const baseline = cfg.baseline || [];
 const themeInitScripts = cfg.themeInitScripts || {};
 const stateSetups = cfg.stateSetups || {};
 const keyboardCfg = cfg.keyboardProbe || {};
+const hoverCfg = cfg.hoverProbe || {};
 const settleMs = Number(process.env.UI_SPLINT_SETTLE_MS || cfg.settleMs || 1200);
 
 mkdirSync(join(outDir, 'screens'), { recursive: true });
@@ -400,6 +403,97 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
   return { findings: findings.filter(finding => !baselineKeys.has(`${finding.rule}|${finding.selector}`)), proof };
 }
 
+function pointerFinding(target) {
+  return {
+    rule: 'missingHoverFeedback',
+    severity: target.dense ? 'Risk' : 'Polish',
+    confidence: 'auto-measured',
+    selector: target.selector,
+    message: target.dense
+      ? 'A pointer-hovered control in a dense action group has no visible feedback beyond cursor state.'
+      : 'A pointer-hovered control has no visible feedback beyond cursor state.',
+    measured: {
+      visualStyleChanged: false,
+      cursorChangeIgnored: true,
+      dense: !!target.dense,
+      sameSemanticGroup: !!target.sameSemanticGroup,
+      nearestInteractiveGapPx: target.nearestInteractiveGapPx,
+      groupSelector: target.groupSelector || null
+    },
+    threshold: { denseGapPx: target.denseGapPx },
+    rect: target.rect || null,
+    suggestedFix: 'Add a visible :hover treatment such as a background, border, underline, shadow, icon, or tooltip change; keep keyboard focus styling distinct too.'
+  };
+}
+
+async function runPointerProbe(cdp, sessionId, isMobile, config = {}, whitelist = [], baselineEntries = []) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('hoverProbe must be an object');
+  const maxTargets = Number(config.maxTargets ?? 80);
+  const settle = Number(config.settleMs ?? 50);
+  const maxWait = Number(config.maxWaitMs ?? 250);
+  const denseGapPx = Number(config.denseGapPx ?? 12);
+  if (!Number.isInteger(maxTargets) || maxTargets < 1 || maxTargets > 1000) throw new Error('hoverProbe.maxTargets must be an integer between 1 and 1000');
+  if (!Number.isInteger(settle) || settle < 0 || settle > 5000) throw new Error('hoverProbe.settleMs must be an integer between 0 and 5000');
+  if (!Number.isInteger(maxWait) || maxWait < settle || maxWait > 5000) throw new Error('hoverProbe.maxWaitMs must be an integer between settleMs and 5000');
+  if (!Number.isFinite(denseGapPx) || denseGapPx < 0 || denseGapPx > 100) throw new Error('hoverProbe.denseGapPx must be between 0 and 100');
+  if (isMobile) return { findings: [], proof: { status: 'not-applicable', expected: 0, checked: 0, missing: 0, maxTargets } };
+
+  const whitelistJson = JSON.stringify(whitelist || []);
+  const plan = await runtimeJson(cdp, sessionId,
+    `window.__uiAuditPointerProbe.plan(${whitelistJson},${maxTargets},${denseGapPx})`);
+  if (!plan.hoverCapable) {
+    return { findings: [], proof: { status: 'not-applicable', reason: 'viewport does not expose a fine hover pointer', expected: plan.expected || 0, checked: 0, missing: 0, maxTargets } };
+  }
+  if (!plan.expected) return { findings: [], proof: { status: 'not-applicable', expected: 0, checked: 0, missing: 0, maxTargets } };
+
+  const findings = [];
+  const initialScroll = await runtimeJson(cdp, sessionId, '({x:window.scrollX,y:window.scrollY})');
+  let checked = 0;
+  try {
+    for (const target of plan.targets) {
+      const neutral = await runtimeJson(cdp, sessionId, 'window.__uiAuditPointerProbe.neutralPoint()');
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: neutral.x, y: neutral.y }, sessionId);
+      if (settle) await sleep(settle);
+      const prepared = await runtimeJson(cdp, sessionId,
+        `window.__uiAuditPointerProbe.prepare(${JSON.stringify(target.selector)})`);
+      if (!prepared.ok) throw new Error(`hover target ${target.selector}: ${prepared.reason}`);
+      await cdp.send('Input.dispatchMouseEvent',
+        { type: 'mouseMoved', x: prepared.point.x, y: prepared.point.y }, sessionId);
+      if (settle) await sleep(settle);
+      const inspectExpression = `window.__uiAuditPointerProbe.inspect(${JSON.stringify(target.selector)},${JSON.stringify(prepared.before)},${JSON.stringify(prepared.tooltipsBefore)})`;
+      let result = await runtimeJson(cdp, sessionId, inspectExpression);
+      if (!result.ok) throw new Error(`hover target ${target.selector}: ${result.reason}`);
+      if (!result.hovered) throw new Error(`hover target ${target.selector}: trusted pointer did not reach the target`);
+      if (!result.changed && maxWait > settle) {
+        await sleep(maxWait - settle);
+        result = await runtimeJson(cdp, sessionId, inspectExpression);
+        if (!result.ok) throw new Error(`hover target ${target.selector}: ${result.reason}`);
+        if (!result.hovered) throw new Error(`hover target ${target.selector}: trusted pointer left the target`);
+      }
+      checked++;
+      if (!result.changed) findings.push(pointerFinding({ ...target, denseGapPx, rect: prepared.rect }));
+    }
+  } finally {
+    try {
+      const neutral = await runtimeJson(cdp, sessionId, 'window.__uiAuditPointerProbe.neutralPoint()');
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: neutral.x, y: neutral.y }, sessionId);
+      await cdp.send('Runtime.evaluate', { expression: `window.scrollTo(${initialScroll.x},${initialScroll.y})` }, sessionId);
+    } catch {}
+  }
+  const baselineKeys = new Set((baselineEntries || []).filter(item => item && typeof item === 'object')
+    .map(item => `${item.rule}|${item.selector}`));
+  const clean = findings.filter(finding => !baselineKeys.has(`${finding.rule}|${finding.selector}`));
+  const proof = {
+    status: plan.truncated ? 'incomplete' : 'checked',
+    expected: plan.expected,
+    checked,
+    missing: clean.length,
+    maxTargets
+  };
+  if (plan.truncated) proof.reason = `checked ${checked} of ${plan.expected} hover targets before reaching maxTargets`;
+  return { findings: clean, proof };
+}
+
 const allFindings = [];
 const matrix = [];
 
@@ -488,6 +582,18 @@ try {
                   Buffer.from(shot.data, 'base64'));
               }
             }
+            let pointer;
+            try {
+              pointer = await runPointerProbe(cdp, sessionId, isMobile, hoverCfg, auditCfg.whitelist || [], baseline);
+            } catch (error) {
+              pointer = { findings: [], proof: { status: 'error', reason: String(error && error.message || error), expected: 0, checked: 0, missing: 0 } };
+            }
+            cell.hoverProbe = pointer.proof;
+            for (const finding of pointer.findings) {
+              finding.scroll = 'pointer';
+              finding.cell = cell;
+              cellFindings.push(finding);
+            }
             const keyboard = await runKeyboardProbe(cdp, sessionId, keyboardCfg, auditCfg.whitelist || [], baseline);
             cell.keyboardProbe = keyboard.proof;
             if (['checked', 'not-applicable'].includes(keyboard.proof.status)) {
@@ -516,6 +622,9 @@ try {
             } else if (!['checked', 'not-applicable'].includes(keyboard.proof.status)) {
               cell.status = 'error';
               cell.error = 'keyboard probe incomplete: ' + (keyboard.proof.reason || keyboard.proof.status);
+            } else if (!['checked', 'not-applicable'].includes(pointer.proof.status)) {
+              cell.status = 'error';
+              cell.error = 'hover probe incomplete: ' + (pointer.proof.reason || pointer.proof.status);
             // This runner cannot mock network data, but a structured state setup with
             // explicit expectations can independently prove an interaction state.
             } else if (state === 'default' || setupProof.configured) {

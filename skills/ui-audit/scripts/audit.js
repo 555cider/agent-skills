@@ -75,7 +75,14 @@
     cls: { risk: 0.1, fail: 0.25 },
     mediaAspectTolerance: 0.05,
     polish: { maxRadii: 4, maxShadows: 4, maxAccentHues: 6, maxFontPairs: 10, lineLenMin: 45, lineLenMax: 95, tinyTextPx: 11 },
-    layout: { loneNarrowWidth: 180, maxButtonsInRow: 4 },
+    layout: {
+      loneNarrowWidth: 180,
+      maxButtonsInRow: 4,
+      controlGroupMinInset: 8,
+      controlGroupRowInsetDelta: 12,
+      orphanControlMaxWidth: 180,
+      orphanControlMaxRatio: 0.25
+    },
     // selectors matching authenticated destinations for the auth-mode-conflict rule
     authedNavWords: ['my', 'account', 'profile', 'mypage', '마이', '계정', '프로필', '내정보'],
     isMobile: null,        // null => infer from innerWidth <= 600
@@ -107,6 +114,7 @@
       cachedElements.forEach(function (el) {
         delete el.__cs;
         delete el.__rect;
+        delete el.__uiAuditControlGroupData;
       });
       cachedElements = [];
       if (_getBoundingClientRect) {
@@ -136,6 +144,8 @@
       ['tinyText', ruleTinyText],
       ['unlabeledInput', ruleUnlabeledInput],
       ['lineLength', ruleLineLength],
+      ['controlGroupSpacing', ruleControlGroupSpacing],
+      ['orphanedControlRow', ruleOrphanedControlRow],
       ['inconsistentSiblingsSpacing', ruleInconsistentSpacing],
       ['textLineHeightOverlap', ruleTextLineHeightOverlap],
       ['emptyInteractiveTarget', ruleEmptyInteractiveTarget],
@@ -961,6 +971,126 @@
     });
   }
 
+  function controlGroupData(group) {
+    var controlSelector = 'button,a[href],input:not([type=hidden]),select,textarea,[role=button],[role=link],[role=menuitem],[role=tab],summary';
+    var controls = qsa(controlSelector, group).filter(function (el) {
+      if (!isVisible(el) || isExempt(el)) return false;
+      var parentControl = el.parentElement && el.parentElement.closest(controlSelector);
+      return !parentControl || !group.contains(parentControl);
+    });
+    var metadata = qsa('span,p,output,small,strong,div', group).filter(function (el) {
+      if (!isVisible(el) || isExempt(el) || !hasOwnText(el)) return false;
+      return !el.closest(controlSelector);
+    });
+    var items = controls.concat(metadata).filter(function (el, index, all) {
+      var r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && all.indexOf(el) === index;
+    });
+    items.sort(function (a, b) {
+      var ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+      return ar.top - br.top || ar.left - br.left;
+    });
+    var rows = [];
+    items.forEach(function (el) {
+      var r = el.getBoundingClientRect();
+      var row = rows.find(function (candidate) {
+        var overlap = Math.min(candidate.bottom, r.bottom) - Math.max(candidate.top, r.top);
+        return overlap >= Math.min(candidate.height, r.height) * 0.25 || Math.abs(candidate.top - r.top) < 8;
+      });
+      if (!row) {
+        row = { top: r.top, bottom: r.bottom, height: r.height, items: [], controls: [] };
+        rows.push(row);
+      }
+      row.items.push(el);
+      if (controls.indexOf(el) >= 0) row.controls.push(el);
+      row.top = Math.min(row.top, r.top);
+      row.bottom = Math.max(row.bottom, r.bottom);
+      row.height = row.bottom - row.top;
+    });
+    rows.sort(function (a, b) { return a.top - b.top; });
+    return { controls: controls, rows: rows };
+  }
+
+  function semanticControlGroups() {
+    var selector = 'form,[role=search],[role=toolbar],nav,[aria-label*="pagination" i],[class*="pagination" i],[class*="toolbar" i],[class*="search" i]';
+    var seen = {};
+    return qsa(selector).filter(function (group) {
+      if (!isVisible(group) || isExempt(group)) return false;
+      if (group.matches('[role=tablist],[role=menu],[data-ui-audit-edge-to-edge=true],[data-ui-audit-layout-exempt=true]')) return false;
+      var data = controlGroupData(group);
+      if (data.controls.length < 2 || data.rows.length < 2) return false;
+      var signature = data.controls.map(cssPath).sort().join('|');
+      if (seen[signature]) return false;
+      seen[signature] = true;
+      group.__uiAuditControlGroupData = data;
+      cachedElements.push(group);
+      return true;
+    });
+  }
+
+  function styledControlSurface(group) {
+    var cs = getComputedStyle(group);
+    var parent = group.parentElement && getComputedStyle(group.parentElement);
+    var border = ['borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth']
+      .some(function (property) { return parseFloat(cs[property]) > 0; });
+    var rounded = parseFloat(cs.borderTopLeftRadius) > 0 || parseFloat(cs.borderTopRightRadius) > 0 ||
+      parseFloat(cs.borderBottomLeftRadius) > 0 || parseFloat(cs.borderBottomRightRadius) > 0;
+    var surfaced = parent && cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== parent.backgroundColor;
+    return border || rounded || surfaced;
+  }
+
+  function ruleControlGroupSpacing(ctx) {
+    var minInset = Number(ctx.cfg.layout.controlGroupMinInset || 8);
+    var maxDelta = Number(ctx.cfg.layout.controlGroupRowInsetDelta || 12);
+    semanticControlGroups().forEach(function (group) {
+      if (!styledControlSurface(group)) return;
+      var data = group.__uiAuditControlGroupData || controlGroupData(group);
+      var bounds = group.getBoundingClientRect();
+      var insets = data.rows.map(function (row) {
+        var rects = row.items.map(function (item) { return item.getBoundingClientRect(); });
+        var left = Math.min.apply(null, rects.map(function (r) { return r.left; })) - bounds.left;
+        var right = bounds.right - Math.max.apply(null, rects.map(function (r) { return r.right; }));
+        return { left: round2(left), right: round2(right), items: row.items.length };
+      });
+      var lefts = insets.map(function (value) { return value.left; });
+      var rights = insets.map(function (value) { return value.right; });
+      var smallest = Math.min.apply(null, lefts.concat(rights));
+      var leftDelta = Math.max.apply(null, lefts) - Math.min.apply(null, lefts);
+      var rightDelta = Math.max.apply(null, rights) - Math.min.apply(null, rights);
+      if (smallest >= minInset && leftDelta <= maxDelta && rightDelta <= maxDelta) return;
+      ctx.findings.push(mk('controlGroupSpacing', 'Polish', 'auto-measured', cssPath(group),
+        'Rows in this control group do not share a clear, consistent edge inset.',
+        { rowInsets: insets, minInsetPx: round2(smallest), leftInsetDeltaPx: round2(leftDelta), rightInsetDeltaPx: round2(rightDelta) },
+        { minInsetPx: minInset, maxRowInsetDeltaPx: maxDelta }, rectOf(group),
+        'Give every control-group row a shared horizontal padding token and align its content edges.'));
+    });
+  }
+
+  function ruleOrphanedControlRow(ctx) {
+    var maxWidth = Number(ctx.cfg.layout.orphanControlMaxWidth || 180);
+    var maxRatio = Number(ctx.cfg.layout.orphanControlMaxRatio || 0.25);
+    semanticControlGroups().forEach(function (group) {
+      if (group.matches('[data-ui-audit-stacked=true]')) return;
+      var data = group.__uiAuditControlGroupData || controlGroupData(group);
+      var bounds = group.getBoundingClientRect();
+      data.rows.forEach(function (row, index) {
+        if (row.controls.length !== 1) return;
+        var neighbor = (index > 0 && data.rows[index - 1].controls.length >= 2) ||
+          (index + 1 < data.rows.length && data.rows[index + 1].controls.length >= 2);
+        if (!neighbor) return;
+        var control = row.controls[0];
+        var width = control.getBoundingClientRect().width;
+        var ratio = bounds.width ? width / bounds.width : 1;
+        if (width > maxWidth || ratio > maxRatio) return;
+        ctx.findings.push(mk('orphanedControlRow', 'Polish', 'auto-measured', cssPath(control),
+          'A narrow control is stranded on its own row next to a denser related control row.',
+          { controlWidthPx: round2(width), groupWidthPx: round2(bounds.width), widthRatio: round2(ratio), rowIndex: index, rowCount: data.rows.length },
+          { maxWidthPx: maxWidth, maxWidthRatio: maxRatio }, rectOf(control),
+          'Place the related control with its peers, or create an explicit secondary toolbar with consistent padding and alignment.'));
+      });
+    });
+  }
+
   function ruleInconsistentSpacing(ctx) {
     qsa('body *').forEach(function (parent) {
       if (parent.childElementCount < 3) return;
@@ -1227,9 +1357,9 @@
       if (!cs) return;
       if (cs.cursor !== 'pointer') {
         ctx.findings.push(mk('missingClickableCursor', 'Polish', 'auto-measured', cssPath(el),
-          'Clickable element lacks "cursor: pointer" style on hover, reducing affordance.',
+          'Clickable element has no pointer cursor in its resting rendered state, reducing affordance.',
           { cursor: cs.cursor }, {}, rectOf(el),
-          'Add "cursor: pointer" to the clickable element\'s hover state.'));
+          'Apply "cursor: pointer" to the clickable element; visible hover feedback is checked separately by the trusted pointer probe.'));
       }
     });
   }

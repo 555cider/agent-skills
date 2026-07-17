@@ -17,6 +17,8 @@ detector covers.
 | `focus-obscured.html` | a control painted completely behind fixed UI | `focusObscured` from trusted Tab traversal |
 | `state-setup-modal.html` | an interaction state closed on first load | structured click + visible expectation, followed by modal keyboard audit |
 | `context-isolation.html` | storage leaking between matrix cells | fresh storage in every browser context |
+| `interaction-layout.html` | screenshot-like search/count/sort control group | row inset mismatch, orphaned sort control, dense cursor-only hover |
+| `hover-valid.html` | valid background, underline, child-icon, and tooltip hover treatments | no `missingHoverFeedback` |
 | `clean.html` | a well-built version of the same screens | **nothing** (zero findings) |
 
 `expected.json` is the machine-readable contract: per fixture, the rules that must fire
@@ -38,7 +40,8 @@ node ../../scripts/audit-chrome.mjs http://localhost:8788 \
 
 Then check `findings.json` against `expected.json`: every `mustHit` rule is present, every
 `mustNotHit` rule is absent, and `clean.html` has zero findings. Keyboard contracts require
-a runner because synthetic in-page events cannot prove Tab behavior. For DOM-only rules,
+a runner because synthetic in-page events cannot prove Tab behavior. Hover contracts likewise
+require trusted runner pointer movement; dispatching `mouseover` in the page is not proof. For DOM-only rules,
 inject `audit.js` via MCP/DevTools and call `__uiAudit({isMobile:true})`.
 
 Validated baseline: login auth defects · dashboard sticky-overlap at bottom ·

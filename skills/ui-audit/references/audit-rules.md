@@ -153,6 +153,16 @@ Segmented/tab/radio groups where the wrong item looks active.
 - **Threshold:** text length `> 95` characters and inner width `> maxLinePixels`.
 - **FP guards:** ignores hidden/exempt elements; ignores elements inside formatting/interactive scopes like code blocks, nav, tables, forms, or buttons.
 
+## controlGroupSpacing — `Polish` — auto-measured
+- **Method:** inspects multi-row forms and search/toolbar/navigation/pagination control groups with a visible surface (border, radius, or distinct background). It groups controls and direct metadata text by rendered row, then measures every row's left/right inset from the group boundary.
+- **Threshold:** any row inset `< 8px`, or left/right inset spread across rows `> 12px` (configurable through `layout.controlGroupMinInset` and `layout.controlGroupRowInsetDelta`).
+- **FP guards:** requires at least two active controls and two rendered rows; skips tab/menu groups plus explicit `[data-ui-audit-edge-to-edge=true]` and `[data-ui-audit-layout-exempt=true]` patterns.
+
+## orphanedControlRow — `Polish` — auto-measured
+- **Method:** within the same semantic multi-row control group, finds a row containing one narrow interactive control when an adjacent row contains at least two related controls.
+- **Threshold:** lone control width `≤ 180px` and `≤ 25%` of group width (configurable through `layout.orphanControlMaxWidth` and `layout.orphanControlMaxRatio`).
+- **FP guards:** metadata such as result counts does not count as an interactive peer; explicit `[data-ui-audit-stacked=true]` groups are skipped.
+
 ## inconsistentSiblingsSpacing — `Polish` — auto-measured
 - **Method:** Groups sibling elements by tag name and classes under a parent (minimum 3 items). Compares computed horizontal margins/paddings.
 - **Threshold:** padding/margin differs among sibling elements of the same type.
@@ -207,6 +217,12 @@ Segmented/tab/radio groups where the wrong item looks active.
 - **Method:** Finds visible interactive elements (`button`, `a[href]`, `[role=button]`, `[onclick]`, checkboxes/radios, submit inputs). Checks if their computed style has `cursor: pointer`.
 - **Threshold:** clickable element lacks `cursor: pointer`.
 - **FP guards:** ignores hidden/exempt elements.
+
+## missingHoverFeedback — `Polish` / `Risk` — auto-measured by runner
+- **Method:** the Playwright/CDP runner moves a trusted fine pointer onto each visible enabled button, link, menu/tab action, button-like input, `summary`, or click target. It compares rendered target/descendant/near-ancestor and `::before`/`::after` visual styles before and after hover; a newly visible tooltip also counts.
+- **Threshold:** no change in color, background, border, shadow, outline, text decoration, opacity, filter, transform, or font weight after the configured settle/retry window. A cursor-only change does not count.
+- **Severity:** `Polish` for a standalone action; `Risk` when another action is in the same form/search/toolbar/nav/menu/tab group or within `denseGapPx` (default `12px`).
+- **FP guards:** desktop fine-pointer cells only; ignores disabled, hidden, pointer-disabled, nested duplicate, whitelist, and baseline targets. `maxTargets` truncation or a probe error makes coverage incomplete instead of silently skipping targets.
 
 ## missingModalBackdrop — `Risk` — auto-measured
 - **Method:** Detects open modals (`[role=dialog]`, `[aria-modal=true]`) that lack a full-screen, semi-transparent z-index backdrop overlay to obscure background content.

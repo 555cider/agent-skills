@@ -79,6 +79,17 @@
       ]
     },
     {
+      "id": "prove-visible-hover-feedback",
+      "prompt": "These toolbar links only change the cursor on hover. Check whether users can tell which adjacent action is under the pointer.",
+      "expected_output": "Uses trusted pointer movement on a desktop fine-pointer cell, ignores cursor-only changes, and reports missing visible hover feedback more severely for dense actions.",
+      "files": [],
+      "assertions": [
+        "Does not treat cursor:pointer as sufficient hover feedback.",
+        "Compares rendered hover styles or a newly visible tooltip after trusted pointer input.",
+        "Reports dense grouped or closely adjacent actions as Risk and standalone actions as Polish."
+      ]
+    },
+    {
       "id": "avoid-backend-only-trigger",
       "prompt": "Fix the JSON serialization bug in the API handler.",
       "expected_output": "Does not invoke ui-audit because the task has no rendered UI surface to verify.",

@@ -1,4 +1,4 @@
 interface:
   display_name: "UI Audit"
-  short_description: "Measure-don't-eyeball UI QA: audit rendered layout plus trusted keyboard focus behavior before completion."
-  default_prompt: "Use $ui-audit before calling frontend work complete: render the UI, run scripts/audit.js plus the trusted keyboard probe across supported viewports/themes/data and interaction states, then judge the subjective residue. Build/edit/finish requests authorize in-scope fixes; review-only requests authorize reporting only."
+  short_description: "Measure-don't-eyeball UI QA: audit rendered layout plus trusted keyboard and pointer behavior before completion."
+  default_prompt: "Use $ui-audit before calling frontend work complete: render the UI, run scripts/audit.js plus the trusted keyboard and pointer probes across supported viewports/themes/data and interaction states, then judge the subjective residue. Build/edit/finish requests authorize in-scope fixes; review-only requests authorize reporting only."

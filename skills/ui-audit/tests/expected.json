@@ -146,6 +146,25 @@
       ]
     },
     {
+      "file": "interaction-layout.html",
+      "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "controlGroupSpacing", "matches": "rowInsets", "severity": "Polish", "note": "Count/sort row is too close to the bordered group edge" },
+        { "rule": "orphanedControlRow", "matches": "sort-order", "severity": "Polish", "note": "Narrow sort selector is stranded on the secondary row" },
+        { "rule": "missingHoverFeedback", "matches": "search-action", "severity": "Risk", "note": "Dense search action has cursor-only hover" },
+        { "rule": "missingHoverFeedback", "matches": "sort-order", "severity": "Risk", "note": "Dense sort action has cursor-only hover" }
+      ]
+    },
+    {
+      "file": "hover-valid.html",
+      "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [],
+      "mustNotHit": ["missingHoverFeedback"],
+      "note": "Background, underline, child-icon, and tooltip hover treatments all count as visible feedback."
+    },
+    {
       "file": "clean.html",
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "dark",

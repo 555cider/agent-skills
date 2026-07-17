@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Control group defects</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px;background:#f4f6f8;color:#17202a;font:16px/1.5 system-ui,sans-serif}
+  .search-panel{width:760px;max-width:100%;border:1px solid #75808b;border-radius:14px;background:#fff;overflow:hidden}
+  .primary-row,.secondary-row{display:flex;width:100%;align-items:center}
+  .primary-row{gap:10px;padding:12px}
+  .secondary-row{justify-content:space-between;padding:0 2px 2px}
+  input,button{min-height:44px;border:1px solid #59636e;border-radius:9px;font:inherit;color:#17202a}
+  input{flex:1;padding:0 12px;background:#fff}
+  button{padding:0 16px;background:#e8edf2;cursor:pointer}
+  .sort-order{width:72px;padding:0}
+  .count{font-weight:600}
+</style></head>
+<body>
+  <form class="search-panel" role="search">
+    <div class="primary-row">
+      <input aria-label="Search pockets" placeholder="Search title, tag, or curator">
+      <button id="search-action" type="submit">Search</button>
+    </div>
+    <div class="secondary-row">
+      <span class="count">1-16 / 16</span>
+      <button id="sort-order" class="sort-order" type="button" aria-label="Choose sort order">...</button>
+    </div>
+  </form>
+</body></html>
