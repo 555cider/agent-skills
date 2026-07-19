@@ -2,69 +2,90 @@
   "skill_name": "plan-graph",
   "evals": [
     {
-      "id": "validate-before-trusting-existing-graph",
-      "prompt": "Add a new persistent plan that depends on .agents/plan/auth.md.",
-      "expected_output": "Runs the plan-graph check command first, reviews existing candidate plans, classifies the relationship, then adds a new node and dependency only if the work is truly dependent.",
-      "files": [".agents/plan/graph.yaml", ".agents/plan/auth.md"],
+      "id": "route-dirty-worktree-before-planning",
+      "prompt": "We already have persistent plans under .agents/plans. I changed apps/backend/simulation/engine.py and need to decide whether the grounding work belongs to an existing plan before I continue.",
+      "expected_output": "Runs the context router with default worktree paths, reviews selected prerequisites and affected plans, and chooses reuse, revision, or creation only after reading the routed source plans.",
+      "files": [".agents/plans/simulation-grounding.md", "apps/backend/simulation/engine.py"],
       "assertions": [
-        "Checks the existing graph before editing it.",
-        "Does not create a blank root without reviewing related plans.",
-        "Reports Reviewed, Decisions, Deps, Pruned, and Propagation."
+        "Uses the v2 context command before changing persistent plan metadata.",
+        "Reviews required and affected plans rather than only the direct path match.",
+        "Does not infer or add requires from keyword similarity."
       ]
     },
     {
-      "id": "reuse-existing-plan",
-      "prompt": "Extend the current checkout plan with another task; it has the same assumptions.",
-      "expected_output": "Classifies the existing checkout plan as base,reuse and edits it in place without allocating a new graph node.",
+      "id": "explicit-query-does-not-mix-dirty-worktree",
+      "prompt": "Find the persistent checkout recovery plan using the query 'checkout retry', but ignore my unrelated uncommitted analytics changes.",
+      "expected_output": "Runs context with --query and without --worktree, so explicit routing does not pull unrelated dirty paths into the decision pack.",
+      "files": [".agents/plans/checkout-recovery.md"],
+      "assertions": [
+        "Uses --query without --worktree.",
+        "Treats routing matches as context rather than dependency evidence."
+      ]
+    },
+    {
+      "id": "create-real-dependent-plan",
+      "prompt": "Create a persistent UI lifecycle plan that genuinely depends on the existing simulation-core outcome. Scope it to apps/frontend/simulation and keep the plan graph valid.",
+      "expected_output": "Routes and reads simulation-core, creates a kebab-case plan through the CLI with an explicit --require edge and scope, fills the decision sections, then runs doctor.",
+      "files": [".agents/plans/simulation-core.md"],
+      "assertions": [
+        "Creates the plan with the v2 create command rather than editing graph.yaml.",
+        "Adds requires only because the prompt states a real prerequisite.",
+        "Runs doctor after editing the Markdown body."
+      ]
+    },
+    {
+      "id": "revise-existing-plan-in-place",
+      "prompt": "The auth-session plan still has the right outcome, but its acceptance criteria and backend scope changed. Update the persistent plan without making a duplicate node.",
+      "expected_output": "Selects auth-session, updates scope through the CLI, edits its Markdown acceptance section in place, and validates the store.",
+      "files": [".agents/plans/auth-session.md"],
+      "assertions": [
+        "Revises the existing plan instead of creating a second plan.",
+        "Uses update for metadata while preserving the body.",
+        "Checks affected downstream plans for propagation."
+      ]
+    },
+    {
+      "id": "replace-stale-plan-safely",
+      "prompt": "The legacy import plan's conclusion is wrong. Replace it with streaming-import, but first make sure no active plan still depends on legacy-import.",
+      "expected_output": "Routes the old plan and dependents, uses replace only when active dependents are clear, creates fresh metadata without inheriting requirements, and records the old ID in replaces.",
+      "files": [".agents/plans/legacy-import.md"],
+      "assertions": [
+        "Does not model replacement as a requires edge.",
+        "Surfaces active dependents instead of force-rewiring them.",
+        "Records replacement lineage and validates the resulting store."
+      ]
+    },
+    {
+      "id": "close-and-prune-with-dry-run",
+      "prompt": "The final checkout-recovery plan is complete. Close it and remove the completed tree if no active plan needs it.",
+      "expected_output": "Runs close --dry-run, reviews every prune target, applies close, and reports deleted plan paths plus Git recovery guidance.",
+      "files": [".agents/plans/checkout-recovery.md"],
+      "assertions": [
+        "Uses dry-run before the destructive close.",
+        "Prunes only done plans outside active prerequisite closures.",
+        "Reports deleted paths and that committed files are recoverable from Git."
+      ]
+    },
+    {
+      "id": "reject-v1-store",
+      "prompt": "This repo still has .agents/plan/graph.yaml. Add a v2 plan without migrating anything.",
+      "expected_output": "Runs doctor, reports the unsupported legacy store, and stops rather than trusting, modifying, or automatically migrating the v1 graph.",
       "files": [".agents/plan/graph.yaml"],
       "assertions": [
-        "Does not create a duplicate node for same-area work.",
-        "Leaves deps unchanged when reusing the base plan.",
-        "Records the reuse decision with exact relationship and decision tokens."
+        "Treats graph.yaml as an incompatible-store error.",
+        "Does not create a nested or parallel v2 store silently.",
+        "Does not offer an automatic compatibility migration."
       ]
     },
     {
-      "id": "supersede-without-live-dep",
-      "prompt": "The old import plan is wrong; replace it with a new plan and drop the old one.",
-      "expected_output": "Creates a replacement node only when needed, marks or prunes the stale plan, and does not add a dependency from the new active node to a dropped base.",
-      "files": [".agents/plan/graph.yaml"],
-      "assertions": [
-        "Never wires active plans to dropped nodes.",
-        "Checks active dependents before changing or pruning the base.",
-        "Reports propagation or lack of propagation explicitly."
-      ]
-    },
-    {
-      "id": "complete-and-prune-closed-tree",
-      "prompt": "Complete the migration planning tree and remove it if nothing active depends on it.",
-      "expected_output": "Reverse-searches dependencies, prunes the closed tree only when no active outside plan depends on it, and runs check again after removal.",
-      "files": [".agents/plan/graph.yaml"],
-      "assertions": [
-        "Does not use x: done as a history archive for closed trees.",
-        "Keeps done nodes only when an active dependent still needs them.",
-        "Runs validation after graph/file removal."
-      ]
-    },
-    {
-      "id": "avoid-standalone-chat-plan",
-      "prompt": "Draft a one-off plan in this chat; do not save planning files.",
-      "expected_output": "Does not use plan-graph because no persistent plan file or graph lineage is involved.",
+      "id": "avoid-chat-only-plan",
+      "prompt": "Give me a quick implementation plan in this chat for renaming one helper. Do not save or change any repository files.",
+      "expected_output": "Does not invoke plan-graph or inspect .agents/plans because the requested plan is ephemeral and chat-only.",
       "files": [],
       "assertions": [
-        "Does not inspect or modify .agents/plan.",
-        "Produces the requested chat-only plan.",
-        "Does not emit the plan-graph report contract."
-      ]
-    },
-    {
-      "id": "suggest-deps-before-editing",
-      "prompt": "Before updating graph.yaml, check whether existing plan text already names missing dependencies.",
-      "expected_output": "Runs the read-only dependency suggestion mode, treats EXTRACTED/INFERRED edges as review input, and only edits deps after classifying the relationship.",
-      "files": [".agents/plan/graph.yaml"],
-      "assertions": [
-        "Uses --suggest-deps or equivalent read-only scan before mutating the graph.",
-        "Does not automatically apply suggested deps.",
-        "Classifies accepted suggestions with the normal relationship and decision tokens."
+        "Does not run the plan-graph CLI.",
+        "Does not create or modify persistent plan files.",
+        "Returns a concise chat-only plan."
       ]
     }
   ]

@@ -1,61 +1,82 @@
 [
   {
-    "query": "Add a persistent plan under .agents/plan for the auth migration and wire it into graph.yaml.",
+    "query": "Before I change apps/backend/services/checkout.py, check .agents/plans and tell me which persistent plan, prerequisites, and downstream work this touches.",
     "should_trigger": true
   },
   {
-    "query": "Mark the checkout recovery plan complete and prune any closed plan tree.",
+    "query": "Create a persistent auth-session rollout plan under the repository planning system and make it depend on the existing identity-contract plan.",
     "should_trigger": true
   },
   {
-    "query": "This new plan depends on the existing billing and error strategy plans; update the plan graph.",
+    "query": "The payment-retry plan is finished. Close it, preview which completed prerequisite plans will be removed, then prune the closed tree.",
     "should_trigger": true
   },
   {
-    "query": "Drop the stale import plan from .agents/plan and keep dependency lineage correct.",
+    "query": "Our old import design is wrong; replace the persistent legacy-import plan with streaming-import and preserve replacement lineage.",
     "should_trigger": true
   },
   {
-    "query": "Run the plan-graph checker and fix missing frontmatter in tracked plan files.",
+    "query": "I renamed the cache invalidation plan ID. Update every persistent plan that requires it and validate there is no cycle.",
     "should_trigger": true
   },
   {
-    "query": "Before writing a new persistent plan, inspect existing .agents/plan dependencies.",
+    "query": "Route my current staged and untracked frontend changes through the active implementation plans before deciding what to work on next.",
     "should_trigger": true
   },
   {
-    "query": "Scan the current persistent plans for missing dependency edges, but do not edit graph.yaml yet.",
+    "query": "The outcome of persona-matching is still right, but its scope and acceptance criteria changed. Revise that persistent plan in place and review affected dependents.",
     "should_trigger": true
   },
-  { "query": "Add the caching migration plan as a dependent of plan 4 and keep the persistent index consistent.", "should_trigger": true },
-  { "query": "Show the active .agents/plan roadmap and critical dependency chain.", "should_trigger": true },
-  { "query": "Restore a previously missing tracked plan file and synchronize its graph frontmatter.", "should_trigger": true },
   {
-    "query": "Write a quick implementation plan in chat for adding a retry helper.",
+    "query": "Show which repository plans are ready, which are waiting on active prerequisites, and the longest unresolved plan chain.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the persistent plan doctor: I suspect a dangling requires edge and someone may have created another .agents/plans inside apps/backend.",
+    "should_trigger": true
+  },
+  {
+    "query": "Find the relevant persistent plan for 'Korean grounding calibration' without mixing in my unrelated dirty checkout files.",
+    "should_trigger": true
+  },
+  {
+    "query": "Write a short implementation plan in this chat for adding a retry helper; do not save any files.",
     "should_trigger": false
   },
   {
-    "query": "Create a standalone checklist in docs/todo.md with no dependency graph.",
+    "query": "Draw a Mermaid dependency graph of the packages in package.json and explain circular npm dependencies.",
     "should_trigger": false
   },
   {
-    "query": "Explain what a directed acyclic graph is.",
+    "query": "Update the checklist in GitHub issue 184 after the release tasks were completed.",
     "should_trigger": false
   },
   {
-    "query": "Review this code diff and tell me if the algorithm is correct.",
+    "query": "Review docs/design.md for architectural quality. This repository does not use persistent agent plans.",
     "should_trigger": false
   },
   {
-    "query": "Delete an obsolete README section unrelated to planning files.",
+    "query": "Make a project roadmap slide for executives using the milestones in roadmap.xlsx.",
     "should_trigger": false
   },
   {
-    "query": "Brainstorm three possible architectures; do not write files yet.",
+    "query": "Explain directed acyclic graphs and topological sorting with a small Python example.",
     "should_trigger": false
   },
-  { "query": "Review an implementation plan stored in docs/plan.md; this repository has no plan graph.", "should_trigger": false },
-  { "query": "Draw a dependency diagram for npm packages without creating persistent agent plans.", "should_trigger": false },
-  { "query": "Update a GitHub issue checklist that is unrelated to .agents/plan.", "should_trigger": false },
-  { "query": "Give a peer second opinion on these planning options.", "should_trigger": false }
+  {
+    "query": "Use the repository's existing ADR index to record a new database decision; do not add another planning convention.",
+    "should_trigger": false
+  },
+  {
+    "query": "Run Terraform plan for the staging environment and summarize the resource changes.",
+    "should_trigger": false
+  },
+  {
+    "query": "Make a personal weekly to-do list from these notes and save it as notes/todo.md.",
+    "should_trigger": false
+  },
+  {
+    "query": "Compare these three design options and give me a peer-review recommendation, but don't edit the repo.",
+    "should_trigger": false
+  }
 ]

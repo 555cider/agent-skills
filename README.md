@@ -28,9 +28,9 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 - [`skills/agent-memory/`](skills/agent-memory/README.md) - authoritative,
   indexed local memory shared across Claude, Codex, OpenCode, and other agents;
   includes native-memory import and a documented shadow-to-primary rollout.
-- [`skills/plan-graph/`](skills/plan-graph/) - review existing planning
-  documents, then create, revise, or remove connected plans while tracking
-  dependencies, including read-only dependency suggestions with provenance.
+- [`skills/plan-graph/`](skills/plan-graph/) - route current tasks and changed
+  paths through persistent plan context, maintain explicit prerequisites and
+  replacement lineage, and prune closed plan trees through a transactional CLI.
 - [`skills/peer-review/`](skills/peer-review/) — second-opinion review of
   plans, specs, or design choices via one or more reviewer CLIs (`codex`,
   `claude`, `opencode`, `agy`). Multiple reviewers run in
