@@ -1,0 +1,52 @@
+[
+  {
+    "memory": "Prefer targeted verification for small changes.",
+    "query": "작은 수정은 필요한 검사만 실행해줘",
+    "expected": true
+  },
+  {
+    "memory": "Always inspect the rendered UI after changing layout code.",
+    "query": "레이아웃을 고친 뒤 화면 확인 방식은?",
+    "expected": true
+  },
+  {
+    "memory": "Use pnpm run test:quality after documentation path edits.",
+    "query": "Which chek catches documntation path problems?",
+    "expected": true
+  },
+  {
+    "memory": "Keep final summaries concise.",
+    "query": "결과 보고는 짧고 간결하게 해줘",
+    "expected": true
+  },
+  {
+    "memory": "Implement straightforward fixes directly when the scope is clear.",
+    "query": "명확한 작업이면 계획만 말하지 말고 바로 실행해",
+    "expected": true
+  },
+  {
+    "memory": "Use pytest -q for the narrow Python verification pass.",
+    "query": "파이썬 테스트 검증 명령이 뭐였지?",
+    "expected": true
+  },
+  {
+    "memory": "Review branch and diff state before creating a commit.",
+    "query": "커밋 전에 git 상태를 어떻게 확인해야 하지?",
+    "expected": true
+  },
+  {
+    "memory": "Record architecture decisions with their constraints.",
+    "query": "설계 결정을 남길 때 함께 보존할 것은?",
+    "expected": true
+  },
+  {
+    "memory": "A repeated build failure can indicate a missing generated file.",
+    "query": "빌드 오류가 계속 나면 어떤 caveat를 떠올려야 해?",
+    "expected": true
+  },
+  {
+    "memory": "Prefer local memory over an external service for private work context.",
+    "query": "개인 작업 기억은 원격 서비스와 로컬 중 어디를 선호하지?",
+    "expected": true
+  }
+]

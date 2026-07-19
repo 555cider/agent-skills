@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent Memory"
-  short_description: "Authoritative indexed memory shared by Codex, Claude, OpenCode, and other coding agents."
-  default_prompt: "Use $agent-memory when prior preferences, repo facts, decisions, handoffs, or remember/update requests may affect the task. Recall prompt-relevant project memory first; include global memory only for trusted repos. Capture durable non-sensitive learnings, preserve promoted bodies and evidence, and version changed facts instead of overwriting history."
+  short_description: "Evidence-aware durable memory shared across coding agents."
+  default_prompt: "Use $agent-memory when prior preferences, constraints, decisions, verified procedures, caveats, handoffs, or an explicit remember/forget request may affect the work. Recall only prompt-relevant active records, treat maintenance/conflict matches as non-actionable, verify stale facts, honor per-kind trust, never store sensitive or repo-derivable facts, and mention memory only when it materially changes the action or decision."

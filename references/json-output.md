@@ -1,59 +1,86 @@
-# JSON Output
+# JSON contracts
 
-`recall`, `index`, `migrate`, `import-existing`, `import-native`, `integrate`,
-`doctor`, `find`, `list`, `stats`, `propose`, `review`, `session list`, and `session resume`
-accept `--format json` for programmatic consumption:
+All public JSON objects use explicit v2 schema names. Additive fields may be
+introduced, but consumers must reject a different major schema.
 
-```bash
-python3 <skill-dir>/scripts/memory.py find --cwd "$PWD" --query "test" --format json
+## `memory.record.v2`
+
+```json
+{
+  "schema": "memory.record.v2",
+  "id": "mem_...",
+  "kind": "preference",
+  "scope": "project",
+  "repo_key": "repo-0123456789abcdef",
+  "path_globs": ["frontend/**"],
+  "statement": "Prefer rendered UI checks after layout edits.",
+  "conditions": ["harness=codex"],
+  "state": "active",
+  "authority": "explicit",
+  "confidence": 1.0,
+  "valid_from": "2026-07-19T00:00:00.000Z",
+  "valid_until": null,
+  "stale_after": null,
+  "revision": 1,
+  "last_verified_at": "2026-07-19T00:00:00.000Z",
+  "evidence": []
+}
 ```
 
-`find --format json` returns `results`, `truncated`, and a `total` count for
-pagination, preserving the text-mode read surface while returning normalized
-ranked result records:
+Kinds are `preference`, `constraint`, `decision`, `procedure`, `caveat`, and
+`handoff`. States are `active`, `provisional`, `disputed`, `retracted`, and
+`expired`. Authorities are `explicit`, `approved`, `verified`, `inferred`, and
+`assistant`.
 
-- `kind`: `canonical`, `explicit`, `auto`, or `topic`
-- `scope`: `global` or `project`
-- `path`: source file path
-- `text`: source text when the result comes from canonical memory or a topic
-- `score`: deterministic relevance score for ordering
-- `matched_fields`: fields that matched the query
-- `snippet`: compact matched context when available
+Only `state=active` can be actionable, and only after scope, trust, validity,
+path, and condition filtering.
 
-Inbox note results keep their note metadata (`summary`, `type`, `priority`,
-`source`, `confidence`, `created_at`, `agent_id`, `repo_key`, `tags`,
-`evidence`, and `body`). Canonical `MEMORY.md` bullet entries also expose parsed
-metadata when available, including `id`, `type`, `summary`, `confidence`,
-`source_note`, `last_verified`, and `tags`. Topic results expose OKF-compatible
-frontmatter when present, including `type`, `title`, `description`, `resource`,
-`tags`, `timestamp`, and any extra scalar or simple-list fields under
-`metadata`.
-
-## Recall
+## `agent-memory.packet.v2`
 
 `recall --format json` returns:
 
-- `results`: ranked active records. Each includes `kind`, `scope`, `repo_key`,
-  `memory_type`, `status`, provenance fields, `summary`, `aliases`, `tags`,
-  `body`, `evidence`, `path`, `id`, and backend score.
-- `context`: the bounded text injected into an agent prompt; empty when nothing
-  matches.
-- `truncated`, `total`, and `elapsed_ms`.
-- `trusted` and `global_included`, making the global-memory boundary explicit.
-- `index_status`: selected backend plus `path`, `exists`, `dirty`, and FTS5
-  availability.
+```json
+{
+  "schema": "agent-memory.packet.v2",
+  "query_id": "qry_...",
+  "mode": "recall",
+  "items": [],
+  "conflicts": [],
+  "freshness": {"stale_items": 0, "generated_at": "..."},
+  "visibility": {"material": false, "reason": "..."},
+  "context": "",
+  "trust": {"global_kinds": [], "blocked_global_candidates": 0},
+  "backend": {
+    "fts5": true,
+    "trigram": true,
+    "sqlite_vec": false,
+    "remote_semantic": false
+  },
+  "elapsed_ms": 0.5,
+  "token_estimate": 0
+}
+```
 
-## Maintenance and Integration
+`mode` is `recall` or `maintenance`. In maintenance mode, `items` is empty and
+matching old records appear under `conflicts` with `actionable=false`.
 
-- `index status` reports `backend`, `path`, `exists`, `dirty`, and `fts5`;
-  `index rebuild` reports `backend`, `records`, and `rebuilt`.
-- `migrate` reports `actions`, `total`, `applied`, and `backup`.
-- `import-existing` reports per-harness `imports`, their combined `total`, and
-  `applied`.
-- `import-native` reports `harness`, `source_dir`, `scope`, `include_history`,
-  `only_type`, `match`, staged `actions`, `skipped` entries with reasons,
-  `total`, and `applied`.
-- `integrate` reports `mode`, `harnesses`, planned/applied `changes`, detected
-  `conflicts`, `blocked`, `applied`, and `backup`.
-- `doctor` reports the store path, index status, trusted repo keys, per-harness
-  adapter status, and known conflicts.
+Each returned item includes record identity, statement, state, authority,
+confidence, revision, evidence, retrieval score, `stale`, and `actionable`.
+The rendered `context` is bounded to eight records and roughly 1,200 tokens by
+default.
+
+Every exposed item creates a feedback target keyed by `query_id` and memory id.
+Exposure does not set `used`; only `feedback --used` does.
+
+## Other command results
+
+- `remember`: one complete `memory.record.v2`.
+- `forget`: `removed`, `total`, and `tombstone_days`.
+- `review list`: an array of records; `show` also includes immutable revisions
+  and relations.
+- `policy trust list`: `repo_key`, `memory_kind`, `granted_at` rows.
+- `session`: `session_id`, `harness`, `repo_key`, `paused`.
+- `worker --once`: `acquired` and per-job `processed` results.
+- `doctor`: DB integrity/version/WAL, retrieval backends, provider, queue,
+  memory states, trust, integrations, conflicts, and v1 artifact detection.
+- `export`: `agent-memory.export.v2`; raw event payloads are excluded.
