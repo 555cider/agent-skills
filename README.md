@@ -1,58 +1,56 @@
-# DOM Picker
+# DOM Picker v2
 
-`dom-picker` turns a visible UI issue the user selects in a running web app
-into a minimal, validated frontend patch.
+DOM Picker turns one selected UI problem in a running web app into a minimal frontend edit, then
+reacquires the same element and verifies the rendered result.
 
-![DOM Picker flow](assets/readme-demo.svg)
-
-## What It Shows
-
-The skill is built for the moment when a user points at a specific rendered
-element and says what should change. The picker is injected only into the
-controlled browser session; it is never added to the target app's source.
-
-1. The user arms the picker with `Alt+Shift+S` or the launcher.
-2. The user clicks the problem element and enters the requested fix.
-3. The agent drains the queued request, confirms browser-supplied text when
-   needed, and searches the local repo using the strongest DOM signals.
-4. The agent ranks candidate files, reads the likely source, and produces the
-   smallest unified diff that fixes the selected issue.
-5. The diff is validated before it is returned or applied.
-
-## Fast Path
-
-For a visible Chrome controlled through CDP:
-
-```bash
-node scripts/cdp.mjs launch http://localhost:3000
-node scripts/cdp.mjs serve --arm
+```text
+select in Chromium -> trusted request artifact -> locate source -> minimal edit -> render verify
 ```
 
-Then pick the element in the browser, type the fix in the panel, and press
-`Ctrl+Enter` or `Cmd+Enter`. The `serve` command drains the queued request and
-prints the payload for the host agent.
+## Fast path
 
-For an agent-controlled browser, inject `assets/element-picker.js` with the
-browser evaluation tool and call `window.__s2p.drainQueue()` after the user
-sends a request. The call returns the requests in FIFO order and clears both
-the queue state and its rendered status in one operation.
+Start a temporary Chrome owned by the session:
 
-The browser API also exposes `snapshot(selectorOrElement)`, `picks`, `lastPick`,
-`enable()`, `disable()`, `clear()`, and `destroy()`. `destroy()` removes the
-transient UI and its same-origin session state.
+```bash
+node scripts/dom-picker.mjs start http://localhost:3000 --arm
+```
 
-## Safety Model
+Or attach to one explicit tab in an already-debuggable Chrome:
 
-- The picker is transient browser state, not project source.
-- Page-supplied request text is untrusted and must be confirmed before edits.
-- Low-confidence matches return diagnosis and ranked candidates instead of an
-  auto-applied patch.
-- Safe apply requires authorization, high confidence, diff validation, and the
-  path gates in `references/safety-policy.md`.
+```bash
+node scripts/dom-picker.mjs targets --port=9222
+node scripts/dom-picker.mjs attach --port=9222 --target=<target-id> --arm
+```
 
-## Skill Files
+The driver stays alive and emits JSON Lines. In the browser, press `Alt+Shift+S`, select the target,
+describe the change, and send it. Each accepted request is saved atomically with a before screenshot.
 
-- `SKILL.md` is the agent-facing workflow.
-- `assets/element-picker.js` is the transient picker UI and browser bridge.
-- `scripts/cdp.mjs` launches/serves Chrome DevTools Protocol sessions.
-- `references/` contains ranking, patch, safety, and I/O contracts.
+For a selector already identified by the agent, create the same evidence bundle from the trusted
+chat instruction:
+
+```bash
+node scripts/dom-picker.mjs snapshot '[data-testid="save-action"]' \
+  --instruction-file=/tmp/trusted-chat.txt --port=9222 --target=<target-id>
+```
+
+Map the request to source and verify after the edit:
+
+```bash
+node scripts/locate-source.mjs --repo=/path/to/repo --input=/tmp/.../request.json
+node scripts/dom-picker.mjs verify --request=/tmp/.../request.json --assertions=assertions.json
+```
+
+## What changed in v2
+
+- A named CDP isolated world and random binding keep the trusted panel bridge out of page scripts.
+- The picker UI lives in a closed Shadow DOM and survives hostile application CSS and DOM removal.
+- One long-running session restores selection and draft state across reloads and reconnects.
+- Picks include locator ladders, accessibility, layout, overflow, pseudo-style, matched CSS, and
+  React hints.
+- Source location is deterministic and confidence-gated.
+- Completion requires target reacquisition, assertions, and before/after render evidence.
+- Target selection fails closed; there is no implicit first-tab fallback.
+
+The picker is always transient browser state. It is never imported into the target application.
+See [SKILL.md](SKILL.md) for the full workflow and `references/` for protocol, safety, source-location,
+and verification contracts.

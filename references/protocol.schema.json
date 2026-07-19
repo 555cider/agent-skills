@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DOM Picker v2 event",
+  "type": "object",
+  "required": ["protocolVersion", "event", "payload"],
+  "properties": {
+    "protocolVersion": { "const": 2 },
+    "event": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "runtime_ready",
+        "targets",
+        "navigation",
+        "pick",
+        "request",
+        "snapshot",
+        "verification",
+        "disconnected",
+        "reconnected",
+        "reloaded",
+        "rejected",
+        "destroyed",
+        "stopped",
+        "error"
+      ]
+    },
+    "sessionId": { "type": "string" },
+    "target": { "$ref": "#/definitions/target" },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "target": {
+      "type": "object",
+      "properties": {
+        "targetId": { "type": "string" },
+        "title": { "type": "string" },
+        "url": { "type": "string" },
+        "allowedOrigin": { "type": "string" },
+        "debugPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      },
+      "additionalProperties": true
+    },
+    "locator": {
+      "type": "object",
+      "required": ["strategy", "value", "unique", "strength"],
+      "properties": {
+        "strategy": { "type": "string" },
+        "value": { "type": "string" },
+        "selector": { "type": ["string", "null"] },
+        "unique": { "type": "boolean" },
+        "strength": { "enum": ["high", "medium", "low"] }
+      }
+    },
+    "pick": {
+      "type": "object",
+      "required": ["pickId", "locators", "tagName", "rect", "computedStyle", "metrics"],
+      "properties": {
+        "pickId": { "type": "string" },
+        "selector": { "type": ["string", "null"] },
+        "locators": { "type": "array", "items": { "$ref": "#/definitions/locator" } },
+        "tagName": { "type": "string" },
+        "role": { "type": ["string", "null"] },
+        "accessibleName": { "type": "string" },
+        "attributes": { "type": "object" },
+        "text": { "type": "string" },
+        "rect": { "type": "object" },
+        "computedStyle": { "type": "object" },
+        "metrics": { "type": "object" },
+        "sourceHints": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "requestPayload": {
+      "type": "object",
+      "required": ["requestId", "instruction", "picks", "provenance"],
+      "properties": {
+        "requestId": { "type": "string" },
+        "instruction": { "type": "string", "minLength": 1 },
+        "picks": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/pick" } },
+        "provenance": {
+          "type": "object",
+          "required": ["channel", "trustedUserEvent"],
+          "properties": {
+            "channel": { "enum": ["isolated-picker", "trusted-chat", "fallback-page"] },
+            "trustedUserEvent": { "type": "boolean" },
+            "trusted": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "artifacts": { "type": "object" }
+      },
+      "additionalProperties": true
+    }
+  }
+}
