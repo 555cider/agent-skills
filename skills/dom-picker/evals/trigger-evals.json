@@ -1,58 +1,22 @@
 [
-  {
-    "query": "I selected this button on the running app — fix the spacing so they aren't jammed together.",
-    "should_trigger": true
-  },
-  {
-    "query": "This element I picked looks wrong, generate a patch for the source.",
-    "should_trigger": true
-  },
-  {
-    "query": "The badge on this element should be green, not gray — patch the frontend code.",
-    "should_trigger": true
-  },
-  {
-    "query": "Open localhost:3000, let me pick the element that overflows on mobile, and produce a diff.",
-    "should_trigger": true
-  },
-  {
-    "query": "This card row I highlighted breaks the layout on my phone — give me a minimal frontend fix.",
-    "should_trigger": true
-  },
-  {
-    "query": "Let me click the broken element in my own Chrome and type the fix there, then patch the source.",
-    "should_trigger": true
-  },
-  { "query": "I picked the Save button in the running settings page; make only that button wider and verify the diff.", "should_trigger": true },
-  { "query": "이 화면에서 방금 찍은 카드 하나의 padding만 소스에서 고쳐줘.", "should_trigger": true },
-  { "query": "Use the DOM picker on this highlighted nav item and map it back to the React component.", "should_trigger": true },
-  { "query": "The selected input label is misaligned; fix that exact element without redesigning the page.", "should_trigger": true },
-  {
-    "query": "Refactor this backend service to use async database calls.",
-    "should_trigger": false
-  },
-  {
-    "query": "Review my implementation plan and give a second opinion.",
-    "should_trigger": false
-  },
-  {
-    "query": "Run the unit tests and fix any failures.",
-    "should_trigger": false
-  },
-  {
-    "query": "Write documentation for the payment module.",
-    "should_trigger": false
-  },
-  {
-    "query": "The whole site feels slow, profile it.",
-    "should_trigger": false
-  },
-  {
-    "query": "Explain how flexbox gap works.",
-    "should_trigger": false
-  },
-  { "query": "Audit the entire dashboard across light and dark themes and tell me every visual issue.", "should_trigger": false },
-  { "query": "The whole checkout screen looks unfinished; run a responsive visual readiness check.", "should_trigger": false },
-  { "query": "Fix the validation logic behind this form field; its appearance is fine.", "should_trigger": false },
-  { "query": "Generate a screenshot diff for all routes without selecting a particular element.", "should_trigger": false }
+  {"query":"I selected this button in the running app; fix its spacing and verify it.","should_trigger":true},
+  {"query":"Let me pick the overflowing card in my Chrome and map it back to React source.","should_trigger":true},
+  {"query":"Use the DOM picker on localhost:3000 so I can point at the broken toolbar.","should_trigger":true},
+  {"query":"The exact nav item I highlighted is clipped on mobile. Make a minimal frontend fix.","should_trigger":true},
+  {"query":"I picked three chips with Shift-click; fix their shared row and confirm the render.","should_trigger":true},
+  {"query":"Snapshot #save-button in the live page, change only its height, then verify it.","should_trigger":true},
+  {"query":"방금 실행 중인 화면에서 찍은 카드의 패딩만 소스에서 고치고 렌더링으로 확인해줘.","should_trigger":true},
+  {"query":"내 크롬에서 이 버튼을 선택해서 어느 컴포넌트인지 찾고 간격을 수정해줘.","should_trigger":true},
+  {"query":"This selected input label is misaligned; trace that element to the stylesheet and fix it.","should_trigger":true},
+  {"query":"I pointed at the modal close button in the live app. Its focus ring is clipped—fix that element.","should_trigger":true},
+  {"query":"Refactor the payment backend to use async database calls.","should_trigger":false},
+  {"query":"Audit the entire dashboard in every viewport and list all visual defects.","should_trigger":false},
+  {"query":"The whole website feels ugly; redesign it from scratch.","should_trigger":false},
+  {"query":"Explain how CSS grid minmax works.","should_trigger":false},
+  {"query":"Run all unit tests and fix whatever fails.","should_trigger":false},
+  {"query":"Fix the validation logic behind this form; the rendered field is fine.","should_trigger":false},
+  {"query":"Review my frontend architecture plan and give a second opinion.","should_trigger":false},
+  {"query":"Generate screenshot diffs for every route without selecting an element.","should_trigger":false},
+  {"query":"The game canvas sprite looks wrong; identify the object from pixels only.","should_trigger":false},
+  {"query":"Write documentation for our component library.","should_trigger":false}
 ]

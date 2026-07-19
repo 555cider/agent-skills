@@ -48,14 +48,14 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
   use real Tab/Shift+Tab and pointer input plus structured interaction-state setup. Defect fixtures
   live under `tests/`.
 - [`skills/dom-picker/`](skills/dom-picker/) — turn a UI issue the user
-  points at in a **running** web app into a **minimal, validated frontend patch**.
-  A transiently-injected DOM picker (`assets/element-picker.js`) captures the
-  selected element's DOM, computed style, screenshot, and page metadata; the skill
-  ranks local source-file candidates by signal (text, `data-testid`/`aria`/`id`,
-  unique class sequences, route), reads the best, and emits a **unified diff** —
-  validated with an apply-check and never auto-applied at low confidence. Browser
-  control via Playwright/CDP/MCP; self-contained, no dependency on other skills.
-  See the [DOM Picker demo](skills/dom-picker/README.md).
+  points at in a **running** web app into a minimal source edit whose rendered
+  result is verified on the same element. Its zero-dependency Chromium driver
+  runs the transient picker in a named isolated world and closed Shadow DOM,
+  persists trusted user requests with screenshots, and survives reloads. Rich DOM,
+  accessibility, layout, matched-CSS, and React evidence feeds a deterministic
+  source locator; only high-confidence safe edits are applied, and completion
+  requires target reacquisition plus observable assertions. See the
+  [DOM Picker v2 guide](skills/dom-picker/README.md).
 
 ## Install
 
