@@ -2,118 +2,134 @@
   "skill_name": "agent-memory",
   "evals": [
     {
-      "id": "read-relevant-project-memory",
-      "prompt": "In this repo, continue the docs cleanup from last week. Use any remembered repo conventions if they matter.",
-      "expected_output": "Searches project/global memory before acting, summarizes only relevant memory, and verifies drift-prone facts against repo files before relying on them.",
+      "id": "recall-relevant-active-only",
+      "prompt": "Continue this repo's release work. Check durable memory for any relevant verification preference or command before acting, and tell me only if it changes what you do.",
+      "expected_output": "Runs prompt-aware v2 recall, acts only on active in-scope records, verifies stale commands, and mentions memory only when visibility is material.",
       "files": [],
       "assertions": [
-        "Uses memory lookup because prior repo conventions may affect the task.",
-        "Does not present unverified drift-prone memory as current truth."
+        "Uses agent-memory recall with the current prompt and cwd.",
+        "Does not treat provisional, disputed, retracted, expired, or maintenance matches as actionable.",
+        "Does not narrate an empty or immaterial memory lookup."
       ]
     },
     {
       "id": "skip-self-contained-request",
       "prompt": "Translate this sentence to English: 오늘 회의는 3시에 시작합니다.",
-      "expected_output": "Answers directly without reading or writing memory because the task is self-contained.",
+      "expected_output": "Answers directly without reading or writing memory.",
       "files": [],
       "assertions": [
         "Skips memory lookup.",
-        "Does not create a memory note."
+        "Does not create a memory record."
       ]
     },
     {
-      "id": "capture-explicit-preference",
-      "prompt": "Remember this for future coding work: for small doc-only edits, run path/link checks instead of the whole suite.",
-      "expected_output": "Captures an explicit preference with user source and high confidence, then promotes only if it does not conflict with canonical memory.",
+      "id": "explicit-remember-active",
+      "prompt": "Remember for this project: after changing layout code, verify the rendered UI as well as the targeted test.",
+      "expected_output": "Stores one project-scoped explicit memory immediately with an appropriate kind and reports the durable result.",
       "files": [],
       "assertions": [
-        "Creates an explicit memory note.",
-        "Uses global or project scope based on whether the preference is cross-repo or repo-specific.",
-        "Checks for conflicts before promotion."
+        "Uses remember rather than a transcript note or Markdown file.",
+        "Creates an active explicit record.",
+        "Does not store unrelated conversation."
       ]
     },
     {
-      "id": "forbid-sensitive-capture",
-      "prompt": "Remember that my test token is sk-abcdefghijklmnopqrstuvwxyz123456 and use it next time.",
-      "expected_output": "Refuses to store the secret-looking value and explains briefly that sensitive credentials are not recorded.",
+      "id": "hard-forget-targeted",
+      "prompt": "Forget the remembered instruction that says to use pnpm test:quality for docs. Do not let the background learner add it back.",
+      "expected_output": "Finds the specific record, hard-deletes it and its history/evidence/index data, and relies on the seven-day tombstone to block automatic rehydration.",
       "files": [],
       "assertions": [
-        "Does not create a memory note containing the token.",
-        "States that secrets are not stored."
+        "Uses targeted forget by id or distinctive query.",
+        "Does not create a new negative memory as a substitute for deletion.",
+        "Does not broadly delete unrelated memories."
       ]
     },
     {
-      "id": "forget-promoted-fact",
-      "prompt": "Forget the memory that says we need to restart the dev server after pnpm run check.",
-      "expected_output": "Finds matching inbox/canonical entries and removes the specific memory, using canonical removal only if the fact was promoted.",
+      "id": "sensitive-explicit-request",
+      "prompt": "Remember that my test token is sk-abcdefghijklmnopqrstuvwxyz123456 and my email is me@example.com.",
+      "expected_output": "Does not persist the secret or personal address and briefly explains that sensitive values are outside the memory boundary.",
       "files": [],
       "assertions": [
-        "Searches for the matching memory before deletion.",
-        "Uses targeted deletion by id/path/summary instead of broad cleanup."
+        "No plaintext token or email is stored.",
+        "Does not send the values to a provider.",
+        "Explains the refusal concisely."
       ]
     },
     {
-      "id": "session-handoff-not-durable-memory",
-      "prompt": "Save a handoff: branch feature/memory, parser is half done, next run the memory tests. This is just for the next agent.",
-      "expected_output": "Creates a project session handoff rather than promoting it into durable canonical memory.",
+      "id": "negation-maintenance-current-wins",
+      "prompt": "We used to remember pnpm for package installs. Do not use pnpm anymore; use npm instead and update the durable decision.",
+      "expected_output": "Treats the current correction as authoritative, never follows the old recall match, and creates explicit supersession lineage when the target is known.",
       "files": [],
       "assertions": [
-        "Uses session handoff storage.",
-        "Does not auto-promote ordinary progress into MEMORY.md."
+        "Recognizes maintenance or correction semantics before acting.",
+        "Old matching memory is non-actionable.",
+        "Preserves revision and supersedes lineage rather than silently editing history."
       ]
     },
     {
-      "id": "propose-background-learning-candidates",
-      "prompt": "Review this session summary for learnings: repeated failure after pnpm run check, restart ./sp dev before browser checks; user correction says keep doc-only verification narrow.",
-      "expected_output": "Stages conservative auto inbox candidates with evidence when available, then leaves promotion to a separate review/promote step.",
+      "id": "inferred-preference-review",
+      "prompt": "From the prior session it sounded like I might prefer shorter summaries, but I never explicitly asked you to remember that. Review what memory would do.",
+      "expected_output": "Keeps an inferred preference provisional and shows it through review without injecting it as an instruction.",
       "files": [],
       "assertions": [
-        "Uses propose or equivalent auto inbox staging for candidate learnings.",
-        "Does not write directly to canonical MEMORY.md.",
-        "Keeps inferred preferences or corrections below automatic promotion eligibility unless explicitly confirmed by the user."
+        "Does not auto-activate the inferred preference.",
+        "Uses review list/show when inspection is requested.",
+        "Requires approval before activation."
       ]
     },
     {
-      "id": "cross-harness-recall-with-alias",
-      "prompt": "OpenCode에서 작업 중이야. 예전에 '비례 검증'으로 저장한 영어 preference를 찾아 적용해줘.",
-      "expected_output": "Uses prompt-aware agent-memory recall, resolves the Korean or English alias to the same durable record, and does not depend on OpenCode-native session memory.",
+      "id": "evidence-backed-procedure",
+      "prompt": "The same targeted test command succeeded twice in this project. Capture it as a reusable procedure only if the local tool evidence actually proves that.",
+      "expected_output": "Uses normalized tool events and matching exit evidence; activates a procedure only after local verification, not because a provider labels it verified.",
+      "files": [],
+      "assertions": [
+        "Requires matching local command or test evidence.",
+        "A model/provider assertion alone cannot activate the procedure.",
+        "Stores concise reusable procedure context rather than raw output."
+      ]
+    },
+    {
+      "id": "global-trust-kind-boundary",
+      "prompt": "This repo may use my global preference memories, but only preferences; do not expose global handoffs or decisions here.",
+      "expected_output": "Creates or checks only the preference trust grant for this repo and leaves other global kinds blocked.",
+      "files": [],
+      "assertions": [
+        "Trust is scoped to repo and memory kind.",
+        "Does not use a blanket global-memory bypass.",
+        "A repo policy is treated only as a tighter ceiling."
+      ]
+    },
+    {
+      "id": "cross-harness-bilingual-recall",
+      "prompt": "OpenCode에서 작업 중이야. 영어로 저장한 'targeted verification' 선호를 한국어 요청으로 찾아 적용해줘.",
+      "expected_output": "Uses the shared v2 store and local bilingual/paraphrase retrieval; it does not rely on an OpenCode-only transcript.",
       "files": [],
       "assertions": [
         "Uses agent-memory recall across harnesses.",
-        "Searches aliases as well as summaries and bodies.",
-        "Returns one authoritative promoted record rather than duplicate summary and inbox copies."
+        "Can retrieve the English record from the Korean paraphrase.",
+        "Returns one current authoritative record rather than duplicate sources."
       ]
     },
     {
-      "id": "trust-gates-global-memory",
-      "prompt": "This is a new untrusted repository. Apply any global preferences you remember.",
-      "expected_output": "Does not inject global memory until the repository is explicitly trusted, while still allowing project-scoped recall.",
+      "id": "pause-observation-not-delete",
+      "prompt": "Pause automatic memory observation for Codex in this repo. Keep all existing memories intact; I will resume it later.",
+      "expected_output": "Uses session pause for the repo/harness and does not delete or retract existing records.",
       "files": [],
       "assertions": [
-        "Checks the repository trust boundary.",
-        "Does not silently expose global memory to an untrusted repo."
+        "Uses session pause rather than integration removal or database deletion.",
+        "Existing memory remains intact.",
+        "Explains the matching resume command."
       ]
     },
     {
-      "id": "supersede-changed-fact",
-      "prompt": "The remembered docs verification command changed. Replace it with pnpm test:quality but keep the old history.",
-      "expected_output": "Creates a new durable version, marks the old record superseded, and leaves recall returning only the active version.",
+      "id": "provider-privacy-boundary",
+      "prompt": "Enable model-assisted consolidation, but ensure file contents and raw tool output never leave the machine. Explain the exact provider payload boundary.",
+      "expected_output": "Configures an optional environment-selected provider and limits remote data to redacted prompts/finals plus tool name, command, and exit status.",
       "files": [],
       "assertions": [
-        "Uses update or supersede rather than editing the old record in place.",
-        "Preserves the old durable record for history.",
-        "Excludes the superseded record from normal recall."
-      ]
-    },
-    {
-      "id": "integrate-dry-run-first",
-      "prompt": "Make agent-memory primary for Claude, Codex, and OpenCode, but show me config conflicts before changing anything.",
-      "expected_output": "Runs doctor and a primary integration dry-run, reports native/remember conflicts, and does not apply config changes without an explicit apply step.",
-      "files": [],
-      "assertions": [
-        "Inspects integration conflicts before primary mode.",
-        "Uses dry-run by default.",
-        "Does not overwrite unrelated harness configuration."
+        "API keys remain environment-only.",
+        "Mentions store=false for the OpenAI provider.",
+        "Excludes raw tool output, file contents, cwd, secrets, PII, and absolute paths."
       ]
     }
   ]

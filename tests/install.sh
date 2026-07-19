@@ -532,6 +532,41 @@ test_agent_memory_mode_requires_selection() {
   [ ! -e "$home/.agents" ] || fail "expected invalid setup not to mutate HOME"
 }
 
+test_agent_memory_v1_requires_explicit_discard() {
+  local home="$WORK/v1-discard-home"
+  local store="$home/.agents/memory"
+
+  mkdir -p "$store/.index" "$store/global" "$home/.codex"
+  printf 'legacy sqlite\n' >"$store/.index/memory.sqlite3"
+  printf '# legacy memory\n' >"$store/global/MEMORY.md"
+
+  if HOME="$home" "$INSTALL" --local agent-memory >"$WORK/v1-block.out" 2>"$WORK/v1-block.err"; then
+    fail "expected incompatible v1 data to block Agent Memory v2 install"
+  fi
+  grep -F "v2 has no migration path" "$WORK/v1-block.err" >/dev/null ||
+    fail "expected v1 refusal to explain the breaking upgrade"
+  [ ! -e "$home/.agents/skills/agent-memory" ] ||
+    fail "expected v1 preflight to run before installing skill files"
+
+  HOME="$home" "$INSTALL" --local agent-memory --discard-v1 >"$WORK/v1-discard.out" 2>"$WORK/v1-discard.err"
+  [ ! -e "$store/.index" ] && [ ! -e "$store/global" ] ||
+    fail "expected --discard-v1 to delete recognized legacy data"
+  [ -f "$home/.agents/skills/agent-memory/SKILL.md" ] ||
+    fail "expected install to continue after explicit v1 discard"
+  grep -F "no backup was created" "$WORK/v1-discard.out" >/dev/null ||
+    fail "expected destructive v1 discard output to state backup semantics"
+
+  HOME="$home" "$home/.local/bin/agent-memory" doctor --format json >/dev/null
+  mkdir -p "$store/global"
+  printf '# stray legacy marker\n' >"$store/global/MEMORY.md"
+  if HOME="$home" "$INSTALL" --local agent-memory --discard-v1 >"$WORK/v1-v2-protect.out" 2>"$WORK/v1-v2-protect.err"; then
+    fail "expected --discard-v1 to refuse when a v2 DB exists"
+  fi
+  [ -f "$store/agent-memory.sqlite3" ] || fail "expected existing v2 DB to be preserved"
+  grep -F "v2 database already exists" "$WORK/v1-v2-protect.err" >/dev/null ||
+    fail "expected v2 protection refusal"
+}
+
 test_list_includes_agent_memory
 test_uninstall_list_includes_agent_memory
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
@@ -551,5 +586,6 @@ test_uninstall_all_removes_recognized_ui_splint_legacy
 test_agent_memory_shadow_one_command_setup
 test_agent_memory_primary_one_command_setup
 test_agent_memory_mode_requires_selection
+test_agent_memory_v1_requires_explicit_discard
 
 echo "install tests passed"

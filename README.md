@@ -25,9 +25,10 @@ The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 
 ## Skills
 
-- [`skills/agent-memory/`](skills/agent-memory/README.md) - authoritative,
-  indexed local memory shared across Claude, Codex, OpenCode, and other agents;
-  includes native-memory import and a documented shadow-to-primary rollout.
+- [`skills/agent-memory/`](skills/agent-memory/README.md) - evidence-aware,
+  SQLite-authoritative durable memory shared across Claude, Codex, OpenCode,
+  and other agents, with redacted observation, lifecycle review, and a
+  documented shadow-to-primary rollout.
 - [`skills/plan-graph/`](skills/plan-graph/) - route current tasks and changed
   paths through persistent plan context, maintain explicit prerequisites and
   replacement lineage, and prune closed plan trees through a transactional CLI.
@@ -71,6 +72,7 @@ cd agent-skills
 ./install.sh --local peer-review   # apply this checkout's local skill files
 ./install.sh --local agent-memory --shadow   # install + shared recall, keep native memory
 ./install.sh --local agent-memory --primary  # install + make Agent Memory primary
+./install.sh --local agent-memory --shadow --discard-v1  # explicit breaking v1 replacement
 ./install.sh --list                # print available skill names
 ```
 
@@ -134,22 +136,16 @@ clone. Claude/Codex harness links still point at `~/.agents/skills/<skill-name>/
 For `agent-memory`, `--shadow` or `--primary` also performs the requested
 Claude/Codex/OpenCode integration after installation. It installs the managed
 `agent-memory` launcher under `~/.local/bin`, backs up changed harness configs,
-and prints only the remaining hook-review/restart actions. These mode flags are
-rejected unless `agent-memory` is among the selected skills.
+creates a private Python venv for its pinned optional provider/vector
+dependencies, and prints only the remaining hook-review/restart actions. These
+mode flags are rejected unless `agent-memory` is among the selected skills.
 
-Existing memory is imported separately so installation cannot silently ingest
-large histories. Preview first, then apply only the sources you want:
-
-```bash
-agent-memory import-existing --cwd "$PWD" --format json  # preview
-agent-memory import-existing --cwd "$PWD" --apply        # import all selected candidates
-```
-
-The combined command selects current-project Claude and `.remember` memory plus
-conservatively matched Codex global preferences. Imports create reviewable
-medium-confidence candidates, do not alter the originals, and never promote
-automatically. See [`skills/agent-memory/README.md`](skills/agent-memory/README.md)
-for lower-level source and history filters.
+Agent Memory v2 has no v1 data migration. A recognized v1 Markdown/index store
+blocks installation before skill files change. Re-run with `--discard-v1` only
+when you explicitly want that store deleted without backup; an existing v2 DB
+is protected from this path. See
+[`skills/agent-memory/README.md`](skills/agent-memory/README.md) for the storage,
+trust, provider, and lifecycle contracts.
 
 The `split/<skill-name>` branches are produced by
 [`.github/workflows/split.yml`](.github/workflows/split.yml) on every push

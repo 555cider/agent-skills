@@ -9,6 +9,7 @@
 #   ./install.sh --local [<name>...]   # copy local skills into ~/.agents/skills
 #   ./install.sh --local agent-memory --shadow   # install + enable shared recall
 #   ./install.sh --local agent-memory --primary  # install + make it primary memory
+#   ./install.sh --local agent-memory --shadow --discard-v1  # delete an incompatible v1 store
 #   ./install.sh --list                # print available skill names and exit
 #   ./install.sh -h | --help           # this help
 # --- END USAGE ---
@@ -76,6 +77,7 @@ fi
 # Parse args: --help / flags / positional skill names.
 LOCAL_MODE=0
 INTEGRATION_MODE=""
+DISCARD_AGENT_MEMORY_V1=0
 SELECTED=()
 for arg in "$@"; do
   case "$arg" in
@@ -96,6 +98,9 @@ for arg in "$@"; do
         exit 2
       fi
       INTEGRATION_MODE="$requested_mode"
+      ;;
+    --discard-v1)
+      DISCARD_AGENT_MEMORY_V1=1
       ;;
     --*)
       echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
@@ -163,6 +168,76 @@ if [ -n "$INTEGRATION_MODE" ] && [ ${#SELECTED[@]} -gt 0 ]; then
     echo "error: --$INTEGRATION_MODE requires agent-memory to be selected" >&2
     exit 2
   }
+fi
+
+agent_memory_requested=0
+if [ ${#SELECTED[@]} -eq 0 ]; then
+  agent_memory_requested=1
+else
+  for name in "${SELECTED[@]}"; do
+    [ "$name" = "agent-memory" ] && agent_memory_requested=1
+  done
+fi
+if [ "$DISCARD_AGENT_MEMORY_V1" = "1" ] && [ "$agent_memory_requested" != "1" ]; then
+  echo "error: --discard-v1 requires agent-memory to be selected" >&2
+  exit 2
+fi
+
+# Agent Memory v2 deliberately has no data migration. Detect the known v1
+# layout before replacing skill files, then require an explicit destructive
+# flag. The root v2 DB is never removed by this path.
+agent_memory_store="${AGENT_MEMORY_HOME:-$HOME/.agents/memory}"
+case "$agent_memory_store" in
+  /*) : ;;
+  *) agent_memory_store="$PWD/$agent_memory_store" ;;
+esac
+agent_memory_store_parent="$(dirname "$agent_memory_store")"
+agent_memory_store_base="$(basename "$agent_memory_store")"
+if [ -d "$agent_memory_store_parent" ]; then
+  agent_memory_store_parent="$(cd "$agent_memory_store_parent" && pwd -P)"
+fi
+agent_memory_store="$agent_memory_store_parent/$agent_memory_store_base"
+
+agent_memory_v1_present() {
+  [ -e "$agent_memory_store/.index/memory.sqlite3" ] \
+    || [ -e "$agent_memory_store/global/MEMORY.md" ] \
+    || [ -d "$agent_memory_store/projects" ]
+}
+
+discard_agent_memory_v1() {
+  case "$agent_memory_store" in
+    ""|/|"$HOME"|"$HOME/.agents")
+      printf 'error: refusing unsafe Agent Memory v1 target: %s\n' "$agent_memory_store" >&2
+      return 1
+      ;;
+  esac
+  if [ -L "$agent_memory_store" ]; then
+    printf 'error: refusing to discard a symlinked Agent Memory store: %s\n' "$agent_memory_store" >&2
+    return 1
+  fi
+  if [ -e "$agent_memory_store/agent-memory.sqlite3" ]; then
+    printf 'error: refusing --discard-v1 because a v2 database already exists: %s\n' \
+      "$agent_memory_store/agent-memory.sqlite3" >&2
+    return 1
+  fi
+  rm -rf -- \
+    "$agent_memory_store/.index" \
+    "$agent_memory_store/global" \
+    "$agent_memory_store/projects" \
+    "$agent_memory_store/config" \
+    "$agent_memory_store/backups"
+  printf 'removed incompatible Agent Memory v1 data from %s (no backup was created)\n' \
+    "$agent_memory_store"
+}
+
+if [ "$agent_memory_requested" = "1" ] && agent_memory_v1_present; then
+  if [ "$DISCARD_AGENT_MEMORY_V1" = "1" ]; then
+    discard_agent_memory_v1 || exit 1
+  else
+    printf 'error: incompatible Agent Memory v1 data exists under %s\n' "$agent_memory_store" >&2
+    printf '       v2 has no migration path. Re-run with --discard-v1 to delete it without backup.\n' >&2
+    exit 1
+  fi
 fi
 
 if [ "$LOCAL_MODE" = "0" ]; then
@@ -551,6 +626,38 @@ install_agent_memory_launcher() {
   esac
 }
 
+install_agent_memory_venv() {
+  local skill_root="$AGENTS_DIR/agent-memory"
+  local requirements="$skill_root/requirements.txt"
+  local venv="$skill_root/.venv"
+  local python_bin
+
+  if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+    printf '  WARN Agent Memory v2 requires Python 3.11 or newer\n' >&2
+    return 1
+  fi
+  [ -f "$requirements" ] || {
+    printf '  WARN Agent Memory requirements are missing: %s\n' "$requirements" >&2
+    return 1
+  }
+  if [ ! -x "$venv/bin/python" ] && [ ! -x "$venv/Scripts/python.exe" ]; then
+    if ! python3 -m venv "$venv"; then
+      printf '  WARN could not create Agent Memory private venv: %s\n' "$venv" >&2
+      return 1
+    fi
+  fi
+  if [ -x "$venv/bin/python" ]; then
+    python_bin="$venv/bin/python"
+  else
+    python_bin="$venv/Scripts/python.exe"
+  fi
+  if ! "$python_bin" -m pip install --disable-pip-version-check --quiet --requirement "$requirements"; then
+    printf '  WARN optional OpenAI/sqlite-vec dependencies failed to install; local FTS fallback remains usable\n' >&2
+    return 1
+  fi
+  printf '  ok   Agent Memory private venv (%s)\n' "$python_bin"
+}
+
 warnings=0
 migration_failed=0
 ui_audit_migration_needed=0
@@ -612,6 +719,7 @@ for skill_dir in "$SKILLS_SRC"/*/; do
   done
   if [ "$name" = "agent-memory" ]; then
     agent_memory_installed=1
+    install_agent_memory_venv || warnings=$((warnings + 1))
     install_agent_memory_launcher || warnings=$((warnings + 1))
   fi
   if [ "$name" = "$UI_AUDIT_NAME" ] && [ "$ui_audit_migration_needed" = "1" ]; then
@@ -633,6 +741,12 @@ if [ -n "$INTEGRATION_MODE" ]; then
     integration_failed=1
   else
     printf '\nagent-memory integration: %s\n' "$INTEGRATION_MODE"
+    agent_memory_python="python3"
+    if [ -x "$AGENTS_DIR/agent-memory/.venv/bin/python" ]; then
+      agent_memory_python="$AGENTS_DIR/agent-memory/.venv/bin/python"
+    elif [ -x "$AGENTS_DIR/agent-memory/.venv/Scripts/python.exe" ]; then
+      agent_memory_python="$AGENTS_DIR/agent-memory/.venv/Scripts/python.exe"
+    fi
     integration_args=(
       "$AGENTS_DIR/agent-memory/scripts/memory.py"
       integrate --mode "$INTEGRATION_MODE" --harness all --apply
@@ -640,9 +754,9 @@ if [ -n "$INTEGRATION_MODE" ]; then
     if [ "$INTEGRATION_MODE" = "primary" ]; then
       integration_args+=(--disable-known-conflicts)
     fi
-    if python3 "${integration_args[@]}" \
-       && python3 "$AGENTS_DIR/agent-memory/scripts/memory.py" index rebuild --format json >/dev/null \
-       && python3 "$AGENTS_DIR/agent-memory/scripts/memory.py" doctor --format json >/dev/null; then
+    if "$agent_memory_python" "${integration_args[@]}" \
+       && "$agent_memory_python" "$AGENTS_DIR/agent-memory/scripts/memory.py" reindex --format json >/dev/null \
+       && "$agent_memory_python" "$AGENTS_DIR/agent-memory/scripts/memory.py" doctor --format json >/dev/null; then
       printf '  ok   integration applied and self-check passed\n'
       printf '  next Codex: review the Agent Memory hook in /hooks if prompted\n'
       printf '  next OpenCode: restart to load the global plugin\n'

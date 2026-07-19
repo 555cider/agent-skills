@@ -1,216 +1,170 @@
-# Agent Memory
+# Agent Memory v2
 
-Agent Memory is a local, agent-neutral memory store shared by Claude Code,
-Codex, OpenCode, and any other harness that can run Python. Markdown files are
-the source of truth; SQLite FTS5 is a disposable search index.
+Agent Memory is a local, evidence-aware memory layer shared by Codex, Claude,
+OpenCode, and other coding agents. It remembers durable preferences,
+constraints, decisions, verified procedures, caveats, and handoffs. It is not a
+project RAG index and does not archive full transcripts.
 
-It is designed to be the primary memory layer instead of relying on each
-harness's smaller, isolated native memory.
+SQLite is authoritative. FTS5 and trigram search always work locally;
+sqlite-vec and a model provider are optional enhancements. Harness hooks fail
+open, so memory cannot block a prompt or tool run.
 
-## Install
+## Breaking install
 
-For a cautious rollout that keeps native memory enabled:
-
-```bash
-./install.sh --local agent-memory --shadow
-```
-
-To install Agent Memory directly as the primary memory layer:
+v2 has no v1 migration or compatibility layer. If the installer finds the v1
+Markdown/index layout, it stops before changing anything:
 
 ```bash
-./install.sh --local agent-memory --primary
+./install.sh --local agent-memory --shadow --discard-v1
 ```
 
-Both commands install the skill, configure Claude/Codex/OpenCode, create
-backups, install a short launcher under `~/.local/bin`, and print the remaining
-Codex hook-review and OpenCode restart actions. Installation without integration
-is still available as `./install.sh --local agent-memory`.
+`--discard-v1` explicitly deletes the recognized v1 store without a backup. It
+refuses to run when a v2 DB already exists or the resolved target is unsafe.
 
-After installation, use the short launcher:
-
-```bash
-agent-memory --help
-```
-
-Memory data is stored under `~/.agents/memory/`. Set `AGENT_MEMORY_HOME` to use
-a different location.
-
-## Recommended rollout
-
-Start in `shadow` mode. Agent Memory supplies prompt-time recall while Claude
-and Codex native memory remain enabled:
+For a new installation, start in shadow mode:
 
 ```bash
 ./install.sh --local agent-memory --shadow
 agent-memory doctor --format json
 ```
 
-After installation:
-
-- In Codex, open `/hooks` and trust the exact Agent Memory hook.
-- Restart OpenCode so it loads the global plugin.
-- Claude Code reads the merged user hook from `~/.claude/settings.json`.
-
-Run in shadow mode long enough to compare recall quality. Once Agent Memory is
-working reliably, switch with the same installation command:
+Shadow mode installs semantic hooks while leaving native memory enabled. After
+validation, make v2 primary:
 
 ```bash
 ./install.sh --local agent-memory --primary
 ```
 
-Passing `--primary` is the explicit authorization to disable recognized native
-and competing memory integrations. The installer:
+Primary mode disables recognized Claude/Codex native memory and known competing
+Codex memory plugins while preserving unrelated config. Every changed config
+is backed up. OpenCode loads its global plugin after restart.
 
-- disables Claude auto memory and Codex native memories;
-- disables recognized Codex `remember` plugin tables;
-- preserves unrelated plugin and hook state;
-- keeps the shared prompt adapters installed; and
-- backs up every changed configuration file.
+The installer creates a private Python 3.11+ venv in the installed skill and
+pins `openai` and `sqlite-vec`. If optional dependency installation fails, the
+deterministic SQLite/FTS core remains available.
 
-To remove only Agent Memory-owned adapters:
+## Storage
+
+```text
+~/.agents/memory/
+  agent-memory.sqlite3        # authoritative DB, WAL enabled
+  .worker.lock                # one-shot worker process lock
+  backups/integrations/...    # changed harness config only
+```
+
+The DB separates:
+
+- redacted, compressed event journal entries;
+- current memory records and immutable revisions;
+- evidence and relation graph edges;
+- leased/retryable jobs and dead letters;
+- retrieval exposure/use feedback;
+- per-repo, per-kind global trust grants;
+- contentless seven-day forget tombstones;
+- FTS5, trigram, and optional sqlite-vec indexes.
+
+Raw prompt/final events expire after seven days; session-end handoff events
+expire after fourteen. Procedures and caveats become stale after ninety days
+without verification and are downranked, not deleted.
+
+## Everyday commands
+
+```bash
+agent-memory recall --cwd "$PWD" --prompt "current request" --format json
+
+agent-memory remember --cwd "$PWD" --kind preference \
+  --statement "Prefer targeted verification for small changes"
+
+agent-memory forget --cwd "$PWD" --id mem_...
+
+agent-memory review list --cwd "$PWD" --format json
+agent-memory review approve mem_...
+
+agent-memory policy trust grant --cwd "$PWD" --kind preference
+agent-memory session pause --cwd "$PWD" --harness codex
+agent-memory session resume --cwd "$PWD" --harness codex
+
+agent-memory doctor --format json
+agent-memory gc --format json
+```
+
+Normal recall injects only active, in-scope, trusted, condition-matching
+records. Negation/change/forget prompts switch to maintenance mode: old matches
+are explicitly non-actionable and the current prompt wins. Provisional,
+disputed, retracted, and expired records are never actionable.
+
+## Optional provider
+
+The deterministic core is the default:
+
+```bash
+unset AGENT_MEMORY_PROVIDER
+```
+
+Enable the built-in OpenAI provider explicitly:
+
+```bash
+export AGENT_MEMORY_PROVIDER=openai
+export OPENAI_API_KEY='...'
+# Optional overrides:
+export AGENT_MEMORY_OPENAI_MODEL=gpt-5.6-luna
+export AGENT_MEMORY_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+API keys are read only from the environment. Requests use `store=false` and
+send only redacted user prompts, final assistant responses, plus tool
+name/command/exit status. Raw tool output and file contents never cross the
+provider boundary.
+
+To use a local or custom model executable:
+
+```bash
+export AGENT_MEMORY_PROVIDER=command
+export AGENT_MEMORY_PROVIDER_COMMAND='/absolute/path/to/provider'
+```
+
+The JSON stdin/stdout protocol is documented in
+[references/providers.md](references/providers.md). Set
+`AGENT_MEMORY_SEMANTIC_RECALL=1` only when online/query-time embeddings are an
+acceptable latency and privacy tradeoff. Without it, stored embeddings remain
+an optional consolidation aid and recall stays local.
+
+## Repository policy
+
+Global memory is denied until the user grants individual kinds. A repository
+may only tighten those grants with `.agent-memory.json`:
+
+```json
+{
+  "global_memory": {
+    "allow": ["preference", "constraint"],
+    "deny": ["handoff"]
+  }
+}
+```
+
+Setting `"global_memory": false` blocks all global recall for that repo. This
+file cannot create or widen user trust.
+
+## Uninstall or disable
+
+Remove adapters while retaining the DB:
 
 ```bash
 agent-memory integrate --mode off --harness all --apply
 ```
 
-`off` does not silently re-enable native memory settings disabled in primary
-mode.
-
-## Import existing native memory
-
-Imports are preview-first and create reviewable, medium-confidence candidates;
-they never promote automatically or modify the source files. By default Codex
-imports only its summary and curated `ad_hoc/notes`, while `.remember` imports
-active `now.md`/`today-*.md` entries instead of duplicate archives:
-
-```bash
-# Recommended: handle the useful default subset from every store at once.
-agent-memory import-existing --cwd "$PWD" --format json
-agent-memory import-existing --cwd "$PWD" --apply
-```
-
-Use the lower-level command only when selecting one source or custom filters:
-
-```bash
-agent-memory import-native --harness claude --cwd "$PWD" --format json
-agent-memory import-native --harness claude --cwd "$PWD" --apply
-
-agent-memory import-native --harness remember --cwd "$PWD" --format json
-agent-memory import-native --harness remember --cwd "$PWD" --apply
-
-# Narrow mixed Codex notes before placing personal preferences in global scope.
-agent-memory import-native --harness codex --scope global --only-type preference --match "user preference" --cwd "$PWD" --format json
-agent-memory import-native --harness codex --scope global --only-type preference --match "user preference" --cwd "$PWD" --apply
-
-# Import only Codex notes that mention the current project into project scope.
-agent-memory import-native --harness codex --match "$(basename "$PWD")" --cwd "$PWD" --format json
-```
-
-Inspect the JSON preview before adding `--apply`. Add `--include-history` only
-when you deliberately want Codex raw/rollout history or `.remember`
-recent/archive files considered. Re-running the same import is idempotent;
-duplicate content and secret-looking entries are reported under `skipped`.
-Use repeatable `--match TERM` filters when a preview still mixes unrelated
-projects or topics; repeated terms use OR matching.
-
-Upgrade an older Agent Memory store from summary-only entries to durable topic
-records with the same preview/apply flow:
-
-```bash
-agent-memory migrate --cwd "$PWD" --format json
-agent-memory migrate --cwd "$PWD" --apply
-```
-
-Both operations are idempotent. Applied store-format migrations create backups.
-
-## Everyday use
-
-Recall memory relevant to the current prompt:
-
-```bash
-agent-memory recall --cwd "$PWD" --prompt "current task" --format json
-```
-
-Global memory is excluded from a repository until that repo is trusted:
-
-```bash
-agent-memory trust add --cwd "$PWD"
-agent-memory trust list
-```
-
-Capture and promote an explicit memory:
-
-```bash
-NOTE="$(
-  agent-memory note \
-    --cwd "$PWD" \
-    --scope project \
-    --priority explicit \
-    --type preference \
-    --source user \
-    --confidence high \
-    --summary "Prefer targeted verification" \
-    --alias "비례 검증" \
-    --body "Run the narrowest useful checks for small scoped changes." |
-  sed -n 's/^NOTE=//p'
-)"
-agent-memory promote --cwd "$PWD" --note "$NOTE"
-```
-
-When a promoted fact changes, preserve history instead of overwriting it:
-
-```bash
-agent-memory update \
-  --id mem_20260715_ab12cd34 \
-  --summary "Use the new verification command" \
-  --body "Replacement details"
-```
-
-Useful maintenance commands:
-
-```bash
-agent-memory review --cwd "$PWD" --format json
-agent-memory index status --format json
-agent-memory index rebuild
-agent-memory check --cwd "$PWD"
-```
-
-## Storage model
-
-```text
-~/.agents/memory/
-  .index/memory.sqlite3       # rebuildable FTS5 index
-  config/trust.json           # repos allowed global recall
-  global/
-    MEMORY.md                 # bounded summary view
-    topics/memory/<id>.md     # authoritative promoted records
-    inbox/{explicit,auto}/
-  projects/<repo-key>/
-    MEMORY.md
-    topics/memory/<id>.md
-    sessions/
-    inbox/{explicit,auto}/
-```
-
-Promoted topic records retain the full body, evidence, aliases, verification
-dates, and supersession history. `MEMORY.md` is only a compact pointer surface,
-so reaching its line budget does not discard memory.
-
-The index rebuilds automatically when dirty. If FTS5 is unavailable, the index
-is corrupt, or the store is read-only, recall falls back to Markdown search.
-Prompt adapters fail open and never block the host agent.
+`uninstall.sh agent-memory` removes the managed launcher and skill links. It
+does not delete `~/.agents/memory/agent-memory.sqlite3`.
 
 ## Verification
 
 ```bash
 bash skills/agent-memory/tests/run.sh
 python3 skills/agent-memory/tests/benchmark.py
-python3 skills/agent-memory/scripts/memory.py check --cwd "$PWD"
 ```
 
-The benchmark uses the production FTS schema with 50,000 synthetic records and
-gates 200 selective queries at a 25 ms p95 default.
-
-For retention policy, promotion eligibility, forgetting, session handoffs, and
-the complete command contract, see [SKILL.md](SKILL.md). JSON response fields
-are documented in [references/json-output.md](references/json-output.md).
+The suite covers lifecycle, hard forget, redaction, trust, hook parity,
+provider failure, bilingual/paraphrase retrieval, and adapter safety. The full
+benchmark gates 50,000-record recall at 100 ms p95 and prompt-hook latency at
+150 ms p95.

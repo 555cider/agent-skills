@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# agent-memory-managed-launcher
+# agent-memory-managed-launcher-v2
 set -euo pipefail
 
-exec python3 "$HOME/.agents/skills/agent-memory/scripts/memory.py" "$@"
+skill_root="$HOME/.agents/skills/agent-memory"
+if [ -x "$skill_root/.venv/bin/python" ]; then
+  python_bin="$skill_root/.venv/bin/python"
+elif [ -x "$skill_root/.venv/Scripts/python.exe" ]; then
+  python_bin="$skill_root/.venv/Scripts/python.exe"
+else
+  python_bin="python3"
+fi
+exec "$python_bin" "$skill_root/scripts/memory.py" "$@"

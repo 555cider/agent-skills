@@ -1,42 +1,42 @@
 [
   {
-    "query": "Before you touch this repo, check whether we have any remembered conventions about test commands or doc paths. I think we hit a stale-link issue here before.",
+    "query": "Before you touch this repo, check whether we remember any test-command preferences or recurring caveats.",
     "should_trigger": true
   },
   {
-    "query": "remember for future sessions: in this project, pnpm run test:quality catches stale docs references after path moves",
+    "query": "Remember for future sessions: in this project pnpm run test:quality catches stale docs references.",
     "should_trigger": true
   },
   {
-    "query": "continue the handoff from the previous agent in this repo; they should have left branch and next-step context somewhere",
+    "query": "기억해줘. 작은 수정은 전체 테스트보다 필요한 검증부터 실행하는 걸 선호해.",
     "should_trigger": true
   },
   {
-    "query": "forget the old memory that says the API route is /v1/jobs. It changed to /api/jobs and I do not want agents using the old one.",
+    "query": "Forget the old memory that says the endpoint is /v1/jobs; it must not be recalled again.",
     "should_trigger": true
   },
   {
-    "query": "Use memory if relevant, then review this failing CI check. Last time there was a weird cache problem after the build command.",
+    "query": "예전 메모리에서 pnpm을 쓰라는 결정은 잊어버리고 npm으로 고쳐줘.",
     "should_trigger": true
   },
   {
-    "query": "Can you update memory? From now on I prefer narrow verification for small scoped edits unless the touched module is shared.",
+    "query": "Continue the previous agent handoff and use any durable repo decisions that still apply.",
     "should_trigger": true
   },
   {
-    "query": "Search prior project notes for the migration decision before changing the database adapter.",
+    "query": "Review provisional and disputed agent memories before approving anything.",
     "should_trigger": true
   },
   {
-    "query": "Where were we on the long-running refactor? Resume from the last saved session state if there is one.",
+    "query": "Let this repository receive only my global preference memory, not handoffs.",
     "should_trigger": true
   },
   {
-    "query": "Run a memory health review and tell me which entries are stale or duplicates before you clean anything up.",
+    "query": "Pause automatic memory observation for this Codex session without deleting existing records.",
     "should_trigger": true
   },
   {
-    "query": "We discovered that this repo's renderer test is stale only after re-running it. Save that caveat with command evidence.",
+    "query": "What verified command did we repeatedly use for this project's narrow test pass?",
     "should_trigger": true
   },
   {
@@ -60,7 +60,7 @@
     "should_trigger": false
   },
   {
-    "query": "Explain what a memory leak is in Python, but do not inspect this repository.",
+    "query": "Explain what a memory leak is in Python without inspecting this repository.",
     "should_trigger": false
   },
   {
@@ -68,11 +68,11 @@
     "should_trigger": false
   },
   {
-    "query": "Summarize the last command output I pasted in this message only.",
+    "query": "Summarize only the command output pasted in this message.",
     "should_trigger": false
   },
   {
-    "query": "Create a new markdown note in docs/ideas.md with these three bullets. This is a project document, not agent memory.",
+    "query": "Create docs/ideas.md with these bullets; this is project documentation, not agent memory.",
     "should_trigger": false
   },
   {
