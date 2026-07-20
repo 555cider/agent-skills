@@ -1,5 +1,5 @@
 {
-  "_comment": "Regression contract for audit.js. Each fixture lists rules that MUST fire (mustHit) and, for the clean baseline, that NOTHING fires. Render at the given viewport and run top/bottom scroll positions; for kitchensink install CLS before the late banner. These were validated live in Chromium during the redesign.",
+  "_comment": "Regression contract for ui-audit v2. mustHit targets high-confidence findings; mustAdvise targets required/optional review signals; mustNotHit and mustNotAdvise are precision gates.",
   "fixtures": [
     {
       "file": "login.html",
@@ -10,9 +10,11 @@
         { "rule": "effectiveContrast", "matches": "Google", "confidence": "auto-measured", "note": "G2 white button pale text" },
         { "rule": "effectiveContrast", "matches": "카카오", "confidence": "auto-measured", "note": "G3 yellow button pale text" },
         { "rule": "effectiveContrast", "matches": "네이버", "confidence": "auto-measured", "note": "G4 green button pale text" },
-        { "rule": "placeholderContrast", "note": "G6 low-contrast input placeholders" },
-        { "rule": "selectedStateAmbiguity", "matches": "회원가입", "confidence": "visual-judgment", "note": "G1 selected-state inversion" },
-        { "rule": "authModeNavConflict", "note": "G7 authenticated bottom nav on auth screen" }
+        { "rule": "placeholderContrast", "note": "G6 low-contrast input placeholders" }
+      ],
+      "mustAdvise": [
+        { "rule": "selectedStateAmbiguity", "matches": "회원가입", "confidence": "visual-judgment", "review": "required", "note": "G1 selected-state inversion" },
+        { "rule": "authModeNavConflict", "review": "required", "note": "G7 authenticated bottom nav on auth screen" }
       ]
     },
     {
@@ -32,19 +34,21 @@
         { "rule": "horizontalOverflow", "severity": "Fail", "note": "D1" },
         { "rule": "ancestorCollapse", "severity": "Fail", "note": "D2 collapsed scroll region" },
         { "rule": "textClip", "note": "D3 escape + D4 clamp" },
-        { "rule": "tapTarget", "note": "D5 tiny crowded targets" },
+        { "rule": "targetSizeMinimum", "note": "D5 tiny crowded targets" },
         { "rule": "offViewport", "severity": "Risk", "note": "D6 element off-screen" },
         { "rule": "stickyOverlapContent", "severity": "Fail", "note": "D7 content under fixed bar" },
-        { "rule": "invisibleContent", "note": "D8 opacity:0 content" },
         { "rule": "brokenOrDistortedMedia", "note": "D9 broken image" },
         { "rule": "layoutShiftCLS", "note": "D10 late banner CLS>0.1" }
+      ],
+      "mustAdvise": [
+        { "rule": "invisibleContent", "review": "required", "note": "D8 opacity:0 content" }
       ]
     },
     {
       "file": "layout.html",
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "light",
-      "mustHit": [
+      "mustAdvise": [
         { "rule": "loneNarrowElement", "matches": "Filter", "note": "L1 narrow control stranded on its own row" },
         { "rule": "excessiveButtonsInRow", "matches": "5 buttons", "note": "L2 too many peer actions in one row" }
       ]
@@ -108,7 +112,7 @@
       "file": "paleprimary.html",
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "light",
-      "mustHit": [
+      "mustAdvise": [
         { "rule": "disabledLookingPrimary", "matches": "Create account", "note": "P1 enabled submit with pale near-white fill reads as disabled" }
       ]
     },
@@ -116,7 +120,7 @@
       "file": "drift.html",
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "light",
-      "mustHit": [
+      "mustAdvise": [
         { "rule": "designSystemDrift", "matches": "border-radius", "note": "S1 five one-off corner radii" }
       ]
     },
@@ -126,30 +130,32 @@
       "theme": "light",
       "mustHit": [
         { "rule": "tinyText", "matches": "tiny", "note": "tinyText Risk" },
-        { "rule": "tinyText", "matches": "small", "note": "tinyText Polish" },
         { "rule": "unlabeledInput", "matches": "unlabeled-text-input", "note": "unlabeledInput on input" },
         { "rule": "unlabeledInput", "matches": "unlabeled-textarea", "note": "unlabeledInput on textarea" },
         { "rule": "unlabeledInput", "matches": "unlabeled-select", "note": "unlabeledInput on select" },
-        { "rule": "lineLength", "matches": "long-paragraph", "note": "lineLength Polish" },
-        { "rule": "inconsistentSiblingsSpacing", "note": "inconsistentSiblingsSpacing Polish" },
         { "rule": "textLineHeightOverlap", "note": "textLineHeightOverlap Risk" },
         { "rule": "emptyInteractiveTarget", "note": "emptyInteractiveTarget Fail" },
+        { "rule": "nonScrollableOverflow", "note": "nonScrollableOverflow Risk" },
+        { "rule": "stretchedIconDistortion", "note": "stretchedIconDistortion Risk" },
+        { "rule": "missingModalBackdrop", "note": "missingModalBackdrop Risk" }
+      ],
+      "mustAdvise": [
+        { "rule": "tinyText", "matches": "small", "review": "optional", "note": "tinyText Polish" },
+        { "rule": "lineLength", "matches": "long-paragraph", "note": "lineLength Polish" },
+        { "rule": "inconsistentSiblingsSpacing", "note": "inconsistentSiblingsSpacing Polish" },
         { "rule": "misalignedRowItems", "note": "misalignedRowItems Polish" },
         { "rule": "accidentalFlexWrap", "note": "accidentalFlexWrap Polish" },
-        { "rule": "nonScrollableOverflow", "note": "nonScrollableOverflow Risk" },
         { "rule": "inconsistentBorderRadius", "note": "inconsistentBorderRadius Polish" },
         { "rule": "excessiveFirstViewportSpacing", "note": "excessiveFirstViewportSpacing Polish" },
         { "rule": "buttonSelfHeightMismatch", "note": "buttonSelfHeightMismatch Polish" },
-        { "rule": "stretchedIconDistortion", "note": "stretchedIconDistortion Risk" },
-        { "rule": "missingClickableCursor", "note": "missingClickableCursor Polish" },
-        { "rule": "missingModalBackdrop", "note": "missingModalBackdrop Risk" }
+        { "rule": "missingClickableCursor", "note": "missingClickableCursor Polish" }
       ]
     },
     {
       "file": "interaction-layout.html",
       "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
       "theme": "light",
-      "mustHit": [
+      "mustAdvise": [
         { "rule": "controlGroupSpacing", "matches": "rowInsets", "severity": "Polish", "note": "Count/sort row is too close to the bordered group edge" },
         { "rule": "orphanedControlRow", "matches": "sort-order", "severity": "Polish", "note": "Narrow sort selector is stranded on the secondary row" },
         { "rule": "missingHoverFeedback", "matches": "search-action", "severity": "Risk", "note": "Dense search action has cursor-only hover" },
@@ -161,8 +167,74 @@
       "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
       "theme": "light",
       "mustHit": [],
-      "mustNotHit": ["missingHoverFeedback"],
+      "mustNotAdvise": ["missingHoverFeedback"],
       "note": "Background, underline, child-icon, and tooltip hover treatments all count as visible feedback."
+    },
+    {
+      "file": "target-size.html",
+      "viewport": { "width": 800, "height": 700, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "targetSizeMinimum", "matches": "fail-a", "severity": "Fail", "note": "20px controls with only 2px gap fail the spacing exception" }
+      ],
+      "mustNotHit": [
+        { "rule": "targetSizeMinimum", "matches": "pass-a" },
+        { "rule": "targetSizeMinimum", "matches": "inline-link" },
+        { "rule": "targetSizeMinimum", "matches": "explicit-exempt" }
+      ]
+    },
+    {
+      "file": "focus-indicator.html",
+      "viewport": { "width": 800, "height": 700, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "focusIndicatorMissing", "matches": "bad-focus", "severity": "Fail" },
+        { "rule": "focusIndicatorContrast", "matches": "low-focus", "severity": "Fail" }
+      ],
+      "mustAdvise": [
+        { "rule": "focusIndicatorReview", "matches": "complex-focus", "review": "required" }
+      ],
+      "mustNotHit": [{ "rule": "focusIndicatorMissing", "matches": "good-focus" }]
+    },
+    {
+      "file": "target-size.html",
+      "viewport": { "width": 390, "height": 700, "isMobile": true, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [{ "rule": "targetSizeMinimum", "matches": "fail-a", "severity": "Fail" }],
+      "mustAdvise": [{ "rule": "targetSizeMinimum", "matches": "safe-target", "severity": "Polish", "review": "optional" }],
+      "note": "24px targets pass WCAG minimum but remain optional mobile comfort advisories below 44px."
+    },
+    {
+      "file": "adaptations.html",
+      "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "adaptations": ["zoom-200", "reflow-320"],
+      "mustHit": [
+        { "rule": "horizontalOverflow", "matches": "zoom-200", "severity": "Fail" },
+        { "rule": "horizontalOverflow", "matches": "reflow-320", "severity": "Fail" }
+      ],
+      "mustNotHit": [
+        { "rule": "horizontalOverflow", "matches": "essential-surface" },
+        { "rule": "horizontalOverflow", "matches": "table-scroll" }
+      ]
+    },
+    {
+      "file": "state-mock.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true, "dpr": 1 },
+      "theme": "light",
+      "states": ["empty", "error", "loading"],
+      "mustHit": [],
+      "expectZeroFindings": true,
+      "expectZeroAdvisories": true,
+      "note": "Node/CDP fallback mocks prove empty, error, and held-loading data states."
+    },
+    {
+      "file": "realistic-clean.html",
+      "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustAdvise": [{ "rule": "loneNarrowElement", "matches": "Sort", "review": "optional" }],
+      "mustNotAdvise": ["selectedStateAmbiguity", "excessiveButtonsInRow"],
+      "note": "Anonymized regression for CTA pairs, text descendants, skip links, and valid status tabs."
     },
     {
       "file": "clean.html",
@@ -170,6 +242,7 @@
       "theme": "dark",
       "mustHit": [],
       "expectZeroFindings": true,
+      "expectZeroAdvisories": true,
       "note": "Precision gate: a well-built page must produce no findings (no cry-wolf)."
     }
   ]

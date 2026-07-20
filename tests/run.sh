@@ -3,7 +3,7 @@
 #
 # Run: bash skills/ui-audit/tests/run.sh
 set -u
-export UI_SPLINT_SETTLE_MS=350
+export UI_SPLINT_SETTLE_MS=0
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$HERE/../scripts/audit-chrome.mjs"
@@ -126,6 +126,7 @@ if grep -qF "theme init failed: theme boom" "$WORK/theme-error/coverage.json"; t
 set +e
 python3 - "$HERE" "$RUNNER" "$PORT" "$WORK" >"$WORK/contract.out" 2>"$WORK/contract.err" <<'PY'
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -153,65 +154,83 @@ for fixture in expected:
         }],
         "themes": [fixture.get("theme", "light")],
         "states": fixture.get("states", ["default"]),
+        "adaptations": fixture.get("adaptations", []),
+        "workers": 2,
         "scrollPositions": ["top", "bottom"],
     }
     if fixture.get("stateSetups"):
         config["stateSetups"] = fixture["stateSetups"]
     cfg_path = work / (file_name + ".json")
     cfg_path.write_text(json.dumps(config), encoding="utf-8")
+    run_env = os.environ.copy()
+    run_env["UI_SPLINT_SETTLE_MS"] = "350" if file_name == "kitchensink.html" else "0"
     result = subprocess.run(
         ["node", str(runner), base, "--config", str(cfg_path), "--out-dir", str(out_dir), "--no-screenshots"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=run_env,
     )
     if result.returncode not in (0, 1):
         errors.append(f"{file_name}: runner exited {result.returncode}\n{result.stderr or result.stdout}")
         continue
 
     findings_path = out_dir / "findings.json"
+    advisories_path = out_dir / "advisories.json"
     coverage_path = out_dir / "coverage.json"
-    if not findings_path.exists() or not coverage_path.exists():
-        errors.append(f"{file_name}: missing findings/coverage output")
+    if not findings_path.exists() or not advisories_path.exists() or not coverage_path.exists():
+        errors.append(f"{file_name}: missing findings/advisories/coverage output")
         continue
 
-    findings = json.loads(findings_path.read_text(encoding="utf-8"))
+    findings_doc = json.loads(findings_path.read_text(encoding="utf-8"))
+    advisories_doc = json.loads(advisories_path.read_text(encoding="utf-8"))
+    findings = findings_doc["findings"]
+    advisories = advisories_doc["advisories"]
     coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    if findings_doc.get("schemaVersion") != 2 or advisories_doc.get("schemaVersion") != 2 or coverage.get("schemaVersion") != 2:
+        errors.append(f"{file_name}: outputs are not schema v2")
     bad_cells = [c for c in coverage.get("matrix", []) if c.get("status") != "checked"]
     if bad_cells:
         errors.append(f"{file_name}: unverified coverage cells {bad_cells!r}")
 
-    # The exit code is a contract, not a free choice: an un-baselined Fail (or any unverified cell)
-    # must gate with exit 1; a page whose worst finding is Risk/Polish must exit 0.
+    # An un-baselined Fail, an unverified cell, or unresolved required review gates completion.
     has_fail = any(f.get("severity") == "Fail" for f in findings)
-    expected_exit = 1 if (has_fail or bad_cells) else 0
+    has_required = any(a.get("review") == "required" for a in advisories)
+    expected_exit = 1 if (has_fail or has_required or bad_cells) else 0
     if result.returncode != expected_exit:
-        worst = "Fail" if has_fail else ("unverified" if bad_cells else "Risk/Polish/none")
+        worst = "Fail" if has_fail else ("required-review" if has_required else ("unverified" if bad_cells else "optional/none"))
         errors.append(f"{file_name}: exit {result.returncode} but expected {expected_exit} (worst signal: {worst})")
 
     if fixture.get("expectZeroFindings") and findings:
         rules = ", ".join(sorted({f.get("rule", "?") for f in findings}))
         errors.append(f"{file_name}: expected zero findings, got {len(findings)} ({rules})")
+    if fixture.get("expectZeroAdvisories") and advisories:
+        rules = ", ".join(sorted({f.get("rule", "?") for f in advisories}))
+        errors.append(f"{file_name}: expected zero advisories, got {len(advisories)} ({rules})")
 
-    for must in fixture.get("mustHit", []):
+    def assert_present(contract, signals, channel):
+      for must in contract:
         rule = must["rule"]
         needle = must.get("matches")
         want_sev = must.get("severity")
         want_conf = must.get("confidence")
+        want_review = must.get("review")
         matched = False
         sev_mismatch = None
-        for finding in findings:
-            if finding.get("rule") != rule:
+        for signal in signals:
+            if signal.get("rule") != rule:
                 continue
-            blob = json.dumps(finding, ensure_ascii=False)
+            blob = json.dumps(signal, ensure_ascii=False)
             if needle and needle not in blob:
                 continue
-            # Rule + text match; now pin severity/confidence when the contract asks.
-            if want_sev and finding.get("severity") != want_sev:
-                sev_mismatch = f"severity {finding.get('severity')!r} != {want_sev!r}"
+            if want_sev and signal.get("severity") != want_sev:
+                sev_mismatch = f"severity {signal.get('severity')!r} != {want_sev!r}"
                 continue
-            if want_conf and finding.get("confidence") != want_conf:
-                sev_mismatch = f"confidence {finding.get('confidence')!r} != {want_conf!r}"
+            if want_conf and signal.get("confidence") != want_conf:
+                sev_mismatch = f"confidence {signal.get('confidence')!r} != {want_conf!r}"
+                continue
+            if want_review and signal.get("review") != want_review:
+                sev_mismatch = f"review {signal.get('review')!r} != {want_review!r}"
                 continue
             matched = True
             break
@@ -219,12 +238,27 @@ for fixture in expected:
             detail = f" matching {needle!r}" if needle else ""
             if sev_mismatch:
                 detail += f" [{sev_mismatch}]"
-            rules = ", ".join(sorted({f.get("rule", "?") for f in findings}))
-            errors.append(f"{file_name}: missing {rule}{detail}; saw [{rules}]")
+            rules = ", ".join(sorted({f.get("rule", "?") for f in signals}))
+            errors.append(f"{file_name}: missing {channel} {rule}{detail}; saw [{rules}]")
 
-    for forbidden in fixture.get("mustNotHit", []):
-        if any(f.get("rule") == forbidden for f in findings):
-            errors.append(f"{file_name}: forbidden rule {forbidden} fired")
+    def assert_absent(contract, signals, channel):
+      for forbidden in contract:
+        if isinstance(forbidden, str):
+            forbidden = {"rule": forbidden}
+        rule = forbidden["rule"]
+        needle = forbidden.get("matches")
+        for signal in signals:
+            if signal.get("rule") != rule:
+                continue
+            if needle and needle not in json.dumps(signal, ensure_ascii=False):
+                continue
+            errors.append(f"{file_name}: forbidden {channel} {rule}{' matching ' + repr(needle) if needle else ''} fired")
+            break
+
+    assert_present(fixture.get("mustHit", []), findings, "finding")
+    assert_present(fixture.get("mustAdvise", []), advisories, "advisory")
+    assert_absent(fixture.get("mustNotHit", []), findings, "finding")
+    assert_absent(fixture.get("mustNotAdvise", []), advisories, "advisory")
 
 if errors:
     print("\n".join(errors), file=sys.stderr)
@@ -250,6 +284,7 @@ cat >"$WORK/wl.json" <<'EOF'
   "viewports": [{ "name": "desktop", "width": 1280, "height": 900, "isMobile": false, "dpr": 1 }],
   "themes": ["light"],
   "states": ["default"],
+  "adaptations": [],
   "scrollPositions": ["top"],
   "auditConfig": { "whitelist": [".wl"] }
 }
@@ -257,7 +292,7 @@ EOF
 node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/wl.json" --out-dir "$WORK/wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/wl/findings.json" <<'PY'
 import json, sys
-findings = json.load(open(sys.argv[1], encoding="utf-8"))
+findings = json.load(open(sys.argv[1], encoding="utf-8"))["findings"]
 contrast = [f for f in findings if f["rule"] == "effectiveContrast"]
 # every remaining contrast finding must be on the un-whitelisted .other control
 assert contrast, "expected the un-whitelisted control to still be flagged"
@@ -276,13 +311,13 @@ fi
 # ---- whitelist suppresses ALL matching instances (safeMatch regression) ----
 # adbanners.html has two low-contrast `.ad-banner` slots. The buggy safeMatch only compared the
 # first match of each selector, so it leaked every finding past the first whitelisted instance.
-node "$RUNNER" "http://127.0.0.1:$PORT" --routes "/adbanners.html" --out-dir "$WORK/wl-off" --no-screenshots >/dev/null 2>&1
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"auditConfig":{"whitelist":[".ad-banner"]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/adbanners.html"],"adaptations":[]}') --out-dir "$WORK/wl-off" --no-screenshots >/dev/null 2>&1
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/adbanners.html"],"adaptations":[],"auditConfig":{"whitelist":[".ad-banner"]}}') \
   --routes "/adbanners.html" --out-dir "$WORK/wl-on" --no-screenshots >/dev/null 2>&1
 if python3 - "$WORK/wl-off/findings.json" "$WORK/wl-on/findings.json" <<'PY'
 import json, sys
-off = json.load(open(sys.argv[1]))
-on = json.load(open(sys.argv[2]))
+off = json.load(open(sys.argv[1]))["findings"]
+on = json.load(open(sys.argv[2]))["findings"]
 # Baseline must actually surface both banners, or the test proves nothing.
 banners_off = [f for f in off if f.get("rule") == "effectiveContrast"]
 assert len(banners_off) >= 2, f"expected >=2 findings without whitelist, got {len(banners_off)}"
@@ -296,12 +331,25 @@ else
   fail "whitelist suppresses all matching instances" "off=$(cat "$WORK/wl-off/findings.json" 2>/dev/null | head -c 200) on=$(cat "$WORK/wl-on/findings.json" 2>/dev/null | head -c 200)"
 fi
 
+# ---- optional advisory cap is fair across rules and records suppression ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/newcases.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":800,"height":600,"isMobile":false,"dpr":1}],"auditConfig":{"maxPolish":2}}') \
+  --out-dir "$WORK/advisory-cap" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/advisory-cap/advisories.json" "$WORK/advisory-cap/coverage.json" <<'PY'
+import json, sys
+advisories = json.load(open(sys.argv[1]))["advisories"]
+optional = [item for item in advisories if item.get("review") == "optional"]
+cell = json.load(open(sys.argv[2]))["matrix"][0]
+assert len(optional) == 2 and len({item["rule"] for item in optional}) == 2, optional
+assert cell["suppressed"]["advisoryCap"] > 0 and cell["suppressed"]["byRule"], cell
+PY
+then pass "optional advisory cap is fair and observable"; else fail "optional advisory cap is fair and observable" "cap contract failed"; fi
+
 # ---- runner-generated keyboard findings honor whitelist and baseline ----
 node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"auditConfig":{"whitelist":["#covered-action"]}}') \
   --out-dir "$WORK/keyboard-wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/keyboard-wl/findings.json" <<'PY'
 import json, sys
-findings = json.load(open(sys.argv[1]))
+findings = json.load(open(sys.argv[1]))["findings"]
 assert not any(f.get("rule") == "focusObscured" for f in findings), findings
 PY
 then pass "keyboard findings honor whitelist"; else fail "keyboard findings honor whitelist" "focusObscured leaked"; fi
@@ -310,27 +358,27 @@ node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-ob
   --out-dir "$WORK/keyboard-base" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/keyboard-base/findings.json" <<'PY'
 import json, sys
-findings = json.load(open(sys.argv[1]))
+findings = json.load(open(sys.argv[1]))["findings"]
 assert not any(f.get("rule") == "focusObscured" for f in findings), findings
 PY
 then pass "keyboard findings honor baseline"; else fail "keyboard findings honor baseline" "focusObscured leaked"; fi
 
 # ---- runner-generated pointer findings honor whitelist and baseline ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/interaction-layout.html"],"themes":["light"],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"auditConfig":{"whitelist":["#search-action","#sort-order"]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/interaction-layout.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"auditConfig":{"whitelist":["#search-action","#sort-order"]}}') \
   --out-dir "$WORK/pointer-wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
-if python3 - "$WORK/pointer-wl/findings.json" <<'PY'
+if python3 - "$WORK/pointer-wl/advisories.json" <<'PY'
 import json, sys
-findings = json.load(open(sys.argv[1]))
-assert not any(f.get("rule") == "missingHoverFeedback" for f in findings), findings
+advisories = json.load(open(sys.argv[1]))["advisories"]
+assert not any(f.get("rule") == "missingHoverFeedback" for f in advisories), advisories
 PY
 then pass "pointer findings honor whitelist"; else fail "pointer findings honor whitelist" "missingHoverFeedback leaked"; fi
 
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/interaction-layout.html"],"themes":["light"],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"baseline":[{"rule":"missingHoverFeedback","selector":"#search-action"},{"rule":"missingHoverFeedback","selector":"#sort-order"}]}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/interaction-layout.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"baseline":[{"rule":"missingHoverFeedback","selector":"#search-action"},{"rule":"missingHoverFeedback","selector":"#sort-order"}]}') \
   --out-dir "$WORK/pointer-base" --no-screenshots >"$WORK/out" 2>"$WORK/err"
-if python3 - "$WORK/pointer-base/findings.json" <<'PY'
+if python3 - "$WORK/pointer-base/advisories.json" <<'PY'
 import json, sys
-findings = json.load(open(sys.argv[1]))
-assert not any(f.get("rule") == "missingHoverFeedback" for f in findings), findings
+advisories = json.load(open(sys.argv[1]))["advisories"]
+assert not any(f.get("rule") == "missingHoverFeedback" for f in advisories), advisories
 PY
 then pass "pointer findings honor baseline"; else fail "pointer findings honor baseline" "missingHoverFeedback leaked"; fi
 
@@ -346,7 +394,7 @@ assert cell["status"] == "error" and cell["keyboardProbe"]["status"] == "incompl
 PY
 then pass "keyboard cap is recorded in coverage"; else fail "keyboard cap is recorded in coverage" "missing incomplete proof"; fi
 
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/hover-valid.html"],"themes":["light"],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"hoverProbe":{"maxTargets":1,"settleMs":0,"maxWaitMs":0,"denseGapPx":12}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/hover-valid.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"hoverProbe":{"maxTargets":1,"settleMs":0,"maxWaitMs":0,"denseGapPx":12}}') \
   --out-dir "$WORK/pointer-cap" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "pointer target cap blocks completion" 1
@@ -379,6 +427,23 @@ assert len(cells) == 2 and all(c["status"] == "checked" for c in cells), cells
 PY
 then pass "browser storage is isolated per matrix cell"; else fail "browser storage is isolated per matrix cell" "storage leaked"; fi
 
+# ---- worker concurrency preserves deterministic ordering and results ----
+printf '%s' '{"routes":["/clean.html"],"themes":["light","dark"],"states":["default"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"workers":1}' >"$WORK/workers-1.json"
+printf '%s' '{"routes":["/clean.html"],"themes":["light","dark"],"states":["default"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"workers":2}' >"$WORK/workers-2.json"
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/workers-1.json" --out-dir "$WORK/workers-1" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/workers-2.json" --out-dir "$WORK/workers-2" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/workers-1" "$WORK/workers-2" <<'PY'
+import json, pathlib, sys
+left, right = map(pathlib.Path, sys.argv[1:])
+for name in ("findings.json", "advisories.json"):
+    assert json.loads((left / name).read_text()) == json.loads((right / name).read_text()), name
+def cells(path):
+    data = json.loads((path / "coverage.json").read_text())
+    return [(c["index"], c["route"], c["viewport"], c["theme"], c["state"], c["adaptation"], c["status"]) for c in data["matrix"]]
+assert cells(left) == cells(right), (cells(left), cells(right))
+PY
+then pass "workers=1 and workers=2 produce deterministic outputs"; else fail "workers=1 and workers=2 produce deterministic outputs" "output mismatch"; fi
+
 # ---- non-default data states are recorded as not-forced, not silently 'checked' ----
 node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"states":["default","empty"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":3}]}') \
   --routes "/clean.html" --out-dir "$WORK/nf" --no-screenshots >"$WORK/nf.out" 2>&1
@@ -397,6 +462,17 @@ else
 fi
 # clean.html has no Fail, but the not-forced cell is still unverified and must block completion.
 assert_exit "not-forced cell blocks completion" 1
+
+# ---- explicit CDP Fetch state mock records configured interception proof ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-mock.html"],"states":["stale"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"stale":[{"pattern":"**/api/items","status":200,"contentType":"application/json","body":[]}]}}') \
+  --out-dir "$WORK/configured-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/configured-mock/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+assert cell["status"] == "checked", cell
+assert cell["stateDriver"] == "configured-mock" and cell["interceptions"] == 1, cell
+PY
+then pass "configured CDP state mock is proven by interception"; else fail "configured CDP state mock is proven by interception" "missing configured proof"; fi
 
 # ---- rulesSkipped is unverified coverage, not a green audit ----
 node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"auditConfig":{"polish":null},"themes":["dark"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"states":["default"],"scrollPositions":["top"]}') \
@@ -417,69 +493,27 @@ fi
 assert_exit "rulesSkipped blocks completion" 1
 
 # ---- main-document response matching uses the navigated frame, not just any Document ----
-if grep -q "p.frameId === nav.frameId" "$RUNNER"; then
+if grep -q "item.frameId === nav.frameId" "$RUNNER"; then
   pass "CDP response filter matches navigated main frame"
 else
   fail "CDP response filter matches navigated main frame" "Network.responseReceived must be filtered by Page.navigate frameId"
 fi
 
-# ---- Python helpers: aggregation parity + state interception proof ----
+# ---- Python entrypoint is a thin compatibility shim to the Node implementation ----
 if python3 - "$HERE/../scripts/run-ui-audit.py" <<'PY'
-import importlib.util, json, pathlib, sys
+import importlib.util, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("ui_splint_runner", path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-
-def finding(route, viewport, severity):
-    return {
-        "rule": "tapTarget", "selector": "button.target", "severity": severity,
-        "message": severity, "cell": {"route": route, "viewport": viewport, "theme": "light", "state": "default"},
-    }
-
-aggregated = mod.dedupe_global([
-    finding("/one", "risk", "Risk"),
-    finding("/one", "fail", "Fail"),
-    finding("/two", "risk", "Risk"),
-])
-assert len(aggregated) == 2, aggregated
-one = next(f for f in aggregated if f["cell"]["route"] == "/one")
-assert one["severity"] == "Fail" and one["cell"]["viewport"] == "fail", one
-assert {c["viewport"] for c in one["cells"]} == {"risk", "fail"}, one
-
-class FakePage:
-    def __init__(self): self.handler = None
-    def unroute(self, pattern): self.handler = None
-    def route(self, pattern, handler): self.handler = handler
-
-class FakeRoute:
-    def fulfill(self, **kwargs): self.fulfilled = kwargs
-
-page = FakePage()
-tracker = mod.apply_state_route(page, "empty", "**/api/**")
-assert mod.state_coverage("empty", tracker, "**/api/**")[0] == "not-forced"
-route = FakeRoute()
-page.handler(route)
-assert tracker["interceptions"] == 1 and route.fulfilled["body"] == "[]"
-assert mod.state_coverage("empty", tracker, "**/api/**") == ("checked", None)
-
-page = FakePage()
-tracker = mod.apply_state_route(page, "stale", "**/api/**", {
-    "stale": [{"pattern": "**/items", "status": 200, "contentType": "application/json", "body": {"stale": True}}]
-})
-route = FakeRoute()
-page.handler(route)
-assert tracker["driver"] == "configured-mock" and tracker["interceptions"] == 1
-assert json.loads(route.fulfilled["body"])["stale"] is True
-
-pointer_findings, pointer_proof = mod.run_pointer_probe(object(), True, {"maxTargets": 5})
-assert pointer_findings == [] and pointer_proof["status"] == "not-applicable", pointer_proof
-assert "pointer-probe.js" in str(mod.POINTER_PROBE_JS), mod.POINTER_PROBE_JS
+assert mod.NODE_RUNNER.name == "audit-chrome.mjs"
+assert "playwright" not in path.read_text(encoding="utf-8").lower()
+assert callable(mod.main)
 PY
 then
-  pass "Python aggregation and state interception helpers"
+  pass "Python compatibility shim delegates to Node"
 else
-  fail "Python aggregation and state interception helpers" "helper contract failed"
+  fail "Python compatibility shim delegates to Node" "shim contract failed"
 fi
 
 PROFILES_AFTER="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"

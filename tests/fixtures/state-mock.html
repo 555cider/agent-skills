@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>state mock proof</title><style>body{font:16px system-ui;padding:32px}button{min-width:120px;min-height:44px;background:#111;color:#fff;cursor:pointer}button:hover{background:#333}</style></head>
+<body><main id="result">Loading…</main><button>Retry</button>
+<script>
+fetch('/api/items').then(async response => {
+  if (!response.ok) throw new Error('request failed');
+  const items = await response.json();
+  document.querySelector('#result').textContent = items.length ? 'Items' : 'Empty';
+  document.body.dataset.state = items.length ? 'data' : 'empty';
+}).catch(() => {
+  document.querySelector('#result').textContent = 'Error';
+  document.body.dataset.state = 'error';
+});
+</script></body></html>

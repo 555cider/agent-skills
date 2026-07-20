@@ -37,11 +37,11 @@
     {
       "id": "separate-measurement-from-judgment",
       "prompt": "Audit this settings screen for visual quality.",
-      "expected_output": "Groups auto-measured failures separately from visual-judgment risks and caps subjective issues at Risk unless measured.",
+      "expected_output": "Reads schema-v2 findings and advisories separately, resolves required visual review, and does not present optional heuristics as confirmed defects.",
       "files": [],
       "assertions": [
         "Uses computed severity for auto findings.",
-        "Labels subjective issues as visual-judgment.",
+        "Reports visual-judgment and needs-visual signals from advisories.json.",
         "Keeps findings grouped by failure mode."
       ]
     },
@@ -81,12 +81,12 @@
     {
       "id": "prove-visible-hover-feedback",
       "prompt": "These toolbar links only change the cursor on hover. Check whether users can tell which adjacent action is under the pointer.",
-      "expected_output": "Uses trusted pointer movement on a desktop fine-pointer cell, ignores cursor-only changes, and reports missing visible hover feedback more severely for dense actions.",
+      "expected_output": "Uses trusted pointer movement on a desktop fine-pointer cell, ignores cursor-only changes, and emits one review advisory for the affected semantic action group.",
       "files": [],
       "assertions": [
         "Does not treat cursor:pointer as sufficient hover feedback.",
         "Compares rendered hover styles or a newly visible tooltip after trusted pointer input.",
-        "Reports dense grouped or closely adjacent actions as Risk and standalone actions as Polish."
+        "Groups repeated missing-hover targets into one semantic-group advisory and avoids standalone noise."
       ]
     },
     {
@@ -98,6 +98,50 @@
         "Uses backend tests or static checks instead.",
         "Does not start a browser or run visual audit tooling.",
         "Does not mention visual coverage."
+      ]
+    },
+    {
+      "id": "force-data-states-with-node",
+      "prompt": "Audit the product list in default, empty, 500-error, and loading states. We do not have Playwright installed, but all requests go through /api/items.",
+      "expected_output": "Uses the canonical Node/CDP runner with stateMocks, proves interceptions, and treats unmatched mocks as not-forced.",
+      "files": [],
+      "assertions": [
+        "Does not claim that Node cannot mock network state.",
+        "Configures body/status/hold behavior through stateMocks.",
+        "Requires a positive interception count for non-default data-state coverage."
+      ]
+    },
+    {
+      "id": "audit-focus-indicator",
+      "prompt": "The controls are keyboard reachable, but I am not sure the focus ring is visible. Check default outlines, our custom ring, and the text field caret.",
+      "expected_output": "Uses trusted Tab input, accepts UA outlines and carets, measures simple author indicator contrast, and sends complex treatments to required visual review.",
+      "files": [],
+      "assertions": [
+        "Does not infer focus visibility from source CSS alone.",
+        "Accepts the browser default outline and text caret as visible indicators.",
+        "Treats complex gradient/shadow evidence as required review rather than inventing a contrast ratio."
+      ]
+    },
+    {
+      "id": "audit-zoom-and-reflow",
+      "prompt": "The desktop page looks fine at 100%. Verify it at 200% browser zoom and at the WCAG 320px reflow width, including the wide data table.",
+      "expected_output": "Adds zoom-200 and reflow-320 cells, reruns layout and keyboard checks, and accepts a wide table only when it scrolls internally or has a documented exemption.",
+      "files": [],
+      "assertions": [
+        "Records each adaptation as a distinct coverage cell.",
+        "Checks page-level horizontal overflow at 320 CSS pixels.",
+        "Does not exempt every wide surface merely because it is a table."
+      ]
+    },
+    {
+      "id": "interpret-schema-v2-advisories",
+      "prompt": "The audit has no Fail findings, three required advisories, and twenty optional Polish advisories. Can I mark the screen complete?",
+      "expected_output": "Blocks completion on the required advisories, explains how to resolve or baseline them, and treats optional advisory volume as non-blocking heuristic review.",
+      "files": [],
+      "assertions": [
+        "Does not claim completion while required advisories remain.",
+        "Does not treat all optional advisories as confirmed defects.",
+        "Keeps findings.json and advisories.json roles distinct."
       ]
     }
   ]

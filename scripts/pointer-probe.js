@@ -194,12 +194,18 @@
     if (!el || !candidate(el)) return { ok: false, reason: 'target is no longer actionable' };
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     var bounds = el.getBoundingClientRect();
+    var style = getComputedStyle(el);
+    var transitionMs = String(style.transitionDuration || '').split(',').reduce(function (max, part) {
+      var value = parseFloat(part) || 0;
+      return Math.max(max, /ms\s*$/.test(part) ? value : value * 1000);
+    }, 0);
     return {
       ok: true,
       point: { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 },
       before: fingerprint(el),
       tooltipsBefore: visibleTooltipSelectors(el),
-      rect: rect(el)
+      rect: rect(el),
+      delayed: transitionMs > 0 || !!el.getAttribute('aria-describedby') || !!document.querySelector('[role=tooltip]')
     };
   }
 

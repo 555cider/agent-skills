@@ -5,14 +5,16 @@
  * No pip, no npm install. Use this when Playwright isn't set up (the common case).
  *
  * It injects scripts/audit.js (the deterministic detector) into every render state across a
- * route x viewport x theme x state matrix, measures defects, and writes findings.json +
- * coverage.json. Screenshots are viewport-clipped evidence, never the source of truth.
+ * route x viewport x theme x state x adaptation matrix, measures defects, and writes
+ * schema-v2 findings.json + advisories.json + coverage.json. Screenshots are
+ * viewport-clipped evidence, never the source of truth.
  *
  *   node audit-chrome.mjs http://localhost:3000 \
  *       [--config audit-config.json] [--out-dir .ui-audit] [--routes /,/login] [--no-screenshots]
  *
  * Chrome binary: $CHROME, else google-chrome / chromium / chrome / Edge are auto-detected.
- * Exit code: non-zero if any un-baselined Fail is found (so it can gate completion).
+ * Exit code: non-zero if a cell is unverified, an un-baselined Fail exists, or a
+ * required-review advisory remains unresolved.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -22,7 +24,7 @@ import { tmpdir } from 'node:os';
 
 if (typeof WebSocket === 'undefined') {
   console.error('ui-audit audit-chrome.mjs requires Node >= 22 (built-in WebSocket). Detected ' + process.version +
-    '. Upgrade Node, or use the Playwright runner: python3 run-ui-audit.py');
+    '. Upgrade Node; the Python compatibility shim delegates to this same Node runner.');
   process.exit(2);
 }
 
@@ -40,6 +42,21 @@ if (!argv[0] || argv[0].startsWith('-')) {
   process.exit(2);
 }
 const baseUrl = argv[0].replace(/\/$/, '');
+const valueOptions = new Set(['--config', '--out-dir', '--routes']);
+const flagOptions = new Set(['--no-screenshots', '--allow-no-sandbox']);
+for (let index = 1; index < argv.length; index++) {
+  const argument = argv[index];
+  if (valueOptions.has(argument)) {
+    if (index + 1 >= argv.length || argv[index + 1].startsWith('--')) {
+      console.error(`${argument} requires a value`);
+      process.exit(2);
+    }
+    index++;
+  } else if (!flagOptions.has(argument)) {
+    console.error(`unknown option: ${argument}`);
+    process.exit(2);
+  }
+}
 const opt = (name, def) => { const i = argv.indexOf(name); return (i >= 0 && i + 1 < argv.length) ? argv[i + 1] : def; };
 const DEFAULT_CONFIG = join(HERE, 'audit-config.default.json');
 const configPath = opt('--config', DEFAULT_CONFIG);
@@ -69,13 +86,29 @@ const viewports = cfg.viewports || [{ name: 'mobile', width: 390, height: 844, i
 const themes = cfg.themes || ['light', 'dark'];
 const states = cfg.states || ['default'];
 const scrollPositions = cfg.scrollPositions || ['top', 'bottom'];
+const adaptations = cfg.adaptations || [];
 const auditCfg = cfg.auditConfig || {};
 const baseline = cfg.baseline || [];
 const themeInitScripts = cfg.themeInitScripts || {};
+const stateMocks = cfg.stateMocks || {};
+const apiMockPattern = cfg.apiMockPattern || '**/api/**';
 const stateSetups = cfg.stateSetups || {};
 const keyboardCfg = cfg.keyboardProbe || {};
 const hoverCfg = cfg.hoverProbe || {};
-const settleMs = Number(process.env.UI_SPLINT_SETTLE_MS || cfg.settleMs || 1200);
+const waitForSelector = cfg.waitForSelector || null;
+const workers = Number(cfg.workers ?? 2);
+const settleMs = Number(process.env.UI_SPLINT_SETTLE_MS ?? cfg.settleMs ?? 1200);
+
+if (!Number.isInteger(workers) || workers < 1 || workers > 8) {
+  console.error('workers must be an integer between 1 and 8');
+  process.exit(2);
+}
+for (const adaptation of adaptations) {
+  if (!['zoom-200', 'reflow-320'].includes(adaptation)) {
+    console.error(`unsupported adaptation: ${JSON.stringify(adaptation)}`);
+    process.exit(2);
+  }
+}
 
 mkdirSync(join(outDir, 'screens'), { recursive: true });
 
@@ -192,7 +225,7 @@ function countSev(fs) { const c = { Fail: 0, Risk: 0, Polish: 0 }; for (const f 
 function slug(r) { return r.replace(/^\//, '').replace(/\//g, '_') || 'root'; }
 const severityRank = { Polish: 1, Risk: 2, Fail: 3 };
 function sameCell(a, b) {
-  return ['route', 'viewport', 'theme', 'state'].every(field => a && b && a[field] === b[field]);
+  return ['route', 'viewport', 'theme', 'state', 'adaptation'].every(field => a && b && a[field] === b[field]);
 }
 function aggregateFindings(source) {
   const by = new Map();
@@ -224,9 +257,19 @@ async function waitFor(fn, timeout = 20000, interval = 50) {
   throw new Error('timed out waiting for condition');
 }
 
+async function nextPaint(cdp, sessionId) {
+  await runtimeJson(cdp, sessionId,
+    'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve({ok:true}))))');
+}
+
+async function nextFrame(cdp, sessionId) {
+  await runtimeJson(cdp, sessionId,
+    'new Promise(resolve=>requestAnimationFrame(()=>resolve({ok:true})))');
+}
+
 async function runtimeJson(cdp, sessionId, expression) {
   const response = await cdp.send('Runtime.evaluate', {
-    expression: `JSON.stringify(${expression})`, returnByValue: true, awaitPromise: true
+    expression: `(async()=>JSON.stringify(await (${expression})))()`, returnByValue: true, awaitPromise: true
   }, sessionId);
   if (response.exceptionDetails) {
     throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'page evaluation failed');
@@ -312,7 +355,7 @@ async function applyStateSetup(cdp, sessionId, state, setups, timeoutMs = 5000) 
       const checked = await runtimeJson(cdp, sessionId, `({checked:!!document.querySelector(${encoded}).checked})`);
       if (!checked.checked) throw new Error(`stateSetups.${state}.actions[${index}] did not check the target`);
     }
-    await sleep(50);
+    await nextPaint(cdp, sessionId);
   }
 
   for (let index = 0; index < expects.length; index++) {
@@ -334,19 +377,112 @@ async function applyStateSetup(cdp, sessionId, state, setups, timeoutMs = 5000) 
   return { configured: true, driver: 'structured-actions', status: 'checked', actions: actions.length, assertions: expects.length };
 }
 
-function keyboardFinding(rule, selector, message, measured, rect, suggestedFix) {
-  return { rule, severity: 'Fail', confidence: 'auto-measured', selector, message,
-    measured, threshold: {}, rect: rect || null, suggestedFix };
+function globRegex(pattern) {
+  const escaped = String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*').replace(/\?/g, '.');
+  return new RegExp('^' + escaped + '$');
+}
+
+function normalizedStateRules(state, mocks, fallbackPattern) {
+  const explicit = Object.prototype.hasOwnProperty.call(mocks, state);
+  let rules = explicit ? mocks[state] : null;
+  let fallback = false;
+  if (!explicit && ['empty', 'error', 'loading'].includes(state)) {
+    fallback = true;
+    if (state === 'empty') rules = [{ pattern: fallbackPattern, status: 200, contentType: 'application/json', body: [] }];
+    if (state === 'error') rules = [{ pattern: fallbackPattern, status: 500, contentType: 'application/json', body: { error: 'ui-audit forced error' } }];
+    if (state === 'loading') rules = [{ pattern: fallbackPattern, hold: true }];
+  }
+  if (rules == null) return { explicit: false, fallback: false, rules: [] };
+  if (!Array.isArray(rules)) throw new Error(`stateMocks.${state} must be an array`);
+  const normalized = rules.map((rule, index) => {
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) throw new Error(`stateMocks.${state}[${index}] must be an object`);
+    if (typeof rule.pattern !== 'string' || !rule.pattern) throw new Error(`stateMocks.${state}[${index}] requires pattern`);
+    const hasBody = Object.prototype.hasOwnProperty.call(rule, 'body');
+    const holds = rule.hold === true;
+    if (hasBody === holds) throw new Error(`stateMocks.${state}[${index}] requires exactly one of body or hold:true`);
+    const body = typeof rule.body === 'string' ? rule.body : JSON.stringify(rule.body);
+    return {
+      pattern: rule.pattern,
+      matcher: globRegex(rule.pattern),
+      status: Number(rule.status ?? 200),
+      contentType: String(rule.contentType || 'application/json'),
+      body,
+      hold: holds
+    };
+  });
+  return { explicit, fallback, rules: normalized };
+}
+
+async function installStateMock(cdp, sessionId, state, mocks, fallbackPattern) {
+  const spec = normalizedStateRules(state, mocks, fallbackPattern);
+  const proof = {
+    configured: spec.rules.length > 0,
+    explicit: spec.explicit,
+    fallback: spec.fallback,
+    driver: spec.explicit ? 'configured-mock' : (spec.fallback ? 'fallback-mock' : (state === 'default' ? 'page-default' : 'none')),
+    interceptions: 0,
+    held: 0,
+    error: null
+  };
+  if (!spec.rules.length) return { proof, cleanup: async () => {} };
+
+  const held = new Set();
+  const pending = new Set();
+  await cdp.send('Fetch.enable', {
+    patterns: spec.rules.map(rule => ({ urlPattern: rule.pattern, requestStage: 'Request' }))
+  }, sessionId);
+  const stop = cdp.listen('Fetch.requestPaused', sessionId, params => {
+    const task = (async () => {
+      const rule = spec.rules.find(candidate => candidate.matcher.test(params.request.url));
+      if (!rule) {
+        await cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sessionId);
+        return;
+      }
+      proof.interceptions++;
+      if (rule.hold) {
+        proof.held++;
+        held.add(params.requestId);
+        return;
+      }
+      await cdp.send('Fetch.fulfillRequest', {
+        requestId: params.requestId,
+        responseCode: rule.status,
+        responseHeaders: [{ name: 'Content-Type', value: rule.contentType }],
+        body: Buffer.from(rule.body ?? '', 'utf8').toString('base64')
+      }, sessionId);
+    })().catch(error => { proof.error = String(error && error.message || error); });
+    pending.add(task);
+    task.finally(() => pending.delete(task));
+  });
+  return {
+    proof,
+    cleanup: async () => {
+      stop();
+      for (const requestId of held) {
+        try { await cdp.send('Fetch.failRequest', { requestId, errorReason: 'Aborted' }, sessionId); } catch {}
+      }
+      await Promise.allSettled([...pending]);
+      try { await cdp.send('Fetch.disable', {}, sessionId); } catch {}
+    }
+  };
+}
+
+function keyboardFinding(rule, selector, message, measured, rect, suggestedFix, options = {}) {
+  return { rule, severity: options.severity || 'Fail', confidence: options.confidence || 'auto-measured',
+    category: 'keyboard', standard: options.standard || null, selector, message,
+    measured, threshold: options.threshold || {}, rect: rect || null, suggestedFix };
 }
 
 async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], baselineEntries = []) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('keyboardProbe must be an object');
   const maxSteps = Number(config.maxSteps ?? 120);
-  const settle = Number(config.settleMs ?? 50);
+  const settle = Number(config.settleMs ?? 0);
   if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 1000) throw new Error('keyboardProbe.maxSteps must be an integer between 1 and 1000');
   if (!Number.isInteger(settle) || settle < 0 || settle > 5000) throw new Error('keyboardProbe.settleMs must be an integer between 0 and 5000');
   const findings = [];
   const whitelistJson = JSON.stringify(whitelist || []);
+  await runtimeJson(cdp, sessionId, 'window.__uiAuditKeyboardProbe.captureFocusBaselines()');
   const modal = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.modalPlan(${whitelistJson})`);
   const violations = [];
   if (modal.present) {
@@ -355,7 +491,7 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
       const focused = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.focusModalBoundary(${JSON.stringify(boundary)})`);
       if (!focused.ok) { violations.push({ type: 'boundary-focus-failed', direction, focused: focused.active }); continue; }
       await dispatchKey(cdp, sessionId, chord);
-      if (settle) await sleep(settle);
+      if (settle) await sleep(settle); else await nextFrame(cdp, sessionId);
       const active = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.inspectActive(${whitelistJson})`);
       const expectedSelector = direction === 'forward' ? modal.firstSelector : modal.lastSelector;
       if (!active.inModal) violations.push({ type: 'focus-escaped', direction, focused: active.selector });
@@ -371,11 +507,13 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
   const expected = Number(traversal.expected || 0);
   const visited = [];
   const obscured = new Set();
+  const focusSignals = new Set();
   if (expected) {
     const started = await runtimeJson(cdp, sessionId, 'window.__uiAuditKeyboardProbe.focusTraversalStart()');
     if (!started.ok) return { findings, proof: { status: 'error', reason: 'could not focus first tab stop', expected, visited: 0, dialogs: modal.visibleModalCount || 0, modalSelector: modal.selector || null, maxSteps } };
     for (let step = 0; step < maxSteps; step++) {
-      const active = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.inspectActive(${whitelistJson})`);
+      const trusted = step > 0;
+      const active = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.inspectActive(${whitelistJson},${trusted})`);
       if (!active.documentFocus || visited.includes(active.selector)) break;
       visited.push(active.selector);
       if (active.fullyObscured && !active.whitelisted && !obscured.has(active.selector)) {
@@ -385,9 +523,32 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
           { reason: active.reason, coveringSelector: active.coveringSelector }, active.rect,
           'Reflow the surface or add scroll padding so every focused control remains at least partially visible.'));
       }
+      const indicator = active.focusIndicator || {};
+      if (trusted && !active.whitelisted && !focusSignals.has(active.selector)) {
+        focusSignals.add(active.selector);
+        if (indicator.status === 'missing') {
+          findings.push(keyboardFinding('focusIndicatorMissing', active.selector,
+            'Trusted keyboard focus has no visible user-agent or author-provided indicator.',
+            { indicator }, active.rect,
+            'Preserve the browser outline or add a visible :focus-visible treatment.',
+            { standard: 'WCAG 2.4.7' }));
+        } else if (indicator.status === 'low-contrast') {
+          findings.push(keyboardFinding('focusIndicatorContrast', active.selector,
+            `Keyboard focus indicator contrast ${indicator.contrast}:1 is below 3:1.`,
+            { indicator }, active.rect,
+            'Use an outline or border color with at least 3:1 contrast against adjacent colors.',
+            { standard: 'WCAG 1.4.11', threshold: { minContrast: 3 } }));
+        } else if (indicator.status === 'review') {
+          findings.push(keyboardFinding('focusIndicatorReview', active.selector,
+            'Keyboard focus is styled with a complex treatment whose visibility or contrast needs pixel review.',
+            { indicator }, active.rect,
+            'Pixel-check the focused screenshot; prefer a simple high-contrast outline when possible.',
+            { severity: 'Risk', confidence: 'needs-visual', standard: 'WCAG 2.4.7 / 1.4.11' }));
+        }
+      }
       if (visited.length >= expected) break;
       await dispatchKey(cdp, sessionId, 'Tab');
-      if (settle) await sleep(settle);
+      if (settle) await sleep(settle); else await nextFrame(cdp, sessionId);
     }
   }
   let status = modal.present || expected ? 'checked' : 'not-applicable';
@@ -403,25 +564,25 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
   return { findings: findings.filter(finding => !baselineKeys.has(`${finding.rule}|${finding.selector}`)), proof };
 }
 
-function pointerFinding(target) {
+function pointerFinding(group) {
   return {
     rule: 'missingHoverFeedback',
-    severity: target.dense ? 'Risk' : 'Polish',
-    confidence: 'auto-measured',
-    selector: target.selector,
-    message: target.dense
-      ? 'A pointer-hovered control in a dense action group has no visible feedback beyond cursor state.'
-      : 'A pointer-hovered control has no visible feedback beyond cursor state.',
+    severity: 'Risk',
+    confidence: 'visual-judgment',
+    category: 'heuristic',
+    selector: group.groupSelector,
+    message: `${group.targets.length} pointer-hovered controls in the same dense semantic group have no visible feedback beyond cursor state.`,
     measured: {
       visualStyleChanged: false,
       cursorChangeIgnored: true,
-      dense: !!target.dense,
-      sameSemanticGroup: !!target.sameSemanticGroup,
-      nearestInteractiveGapPx: target.nearestInteractiveGapPx,
-      groupSelector: target.groupSelector || null
+      dense: true,
+      sameSemanticGroup: true,
+      targetSelectors: group.targets.map(target => target.selector),
+      nearestInteractiveGapPx: Math.min(...group.targets.map(target => target.nearestInteractiveGapPx ?? Infinity)),
+      groupSelector: group.groupSelector
     },
-    threshold: { denseGapPx: target.denseGapPx },
-    rect: target.rect || null,
+    threshold: { denseGapPx: group.denseGapPx },
+    rect: group.rect || null,
     suggestedFix: 'Add a visible :hover treatment such as a background, border, underline, shadow, icon, or tooltip change; keep keyboard focus styling distinct too.'
   };
 }
@@ -429,7 +590,7 @@ function pointerFinding(target) {
 async function runPointerProbe(cdp, sessionId, isMobile, config = {}, whitelist = [], baselineEntries = []) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('hoverProbe must be an object');
   const maxTargets = Number(config.maxTargets ?? 80);
-  const settle = Number(config.settleMs ?? 50);
+  const settle = Number(config.settleMs ?? 0);
   const maxWait = Number(config.maxWaitMs ?? 250);
   const denseGapPx = Number(config.denseGapPx ?? 12);
   if (!Number.isInteger(maxTargets) || maxTargets < 1 || maxTargets > 1000) throw new Error('hoverProbe.maxTargets must be an integer between 1 and 1000');
@@ -446,7 +607,7 @@ async function runPointerProbe(cdp, sessionId, isMobile, config = {}, whitelist 
   }
   if (!plan.expected) return { findings: [], proof: { status: 'not-applicable', expected: 0, checked: 0, missing: 0, maxTargets } };
 
-  const findings = [];
+  const missingTargets = [];
   const initialScroll = await runtimeJson(cdp, sessionId, '({x:window.scrollX,y:window.scrollY})');
   let checked = 0;
   try {
@@ -459,19 +620,21 @@ async function runPointerProbe(cdp, sessionId, isMobile, config = {}, whitelist 
       if (!prepared.ok) throw new Error(`hover target ${target.selector}: ${prepared.reason}`);
       await cdp.send('Input.dispatchMouseEvent',
         { type: 'mouseMoved', x: prepared.point.x, y: prepared.point.y }, sessionId);
-      if (settle) await sleep(settle);
+      if (settle) await sleep(settle); else await nextFrame(cdp, sessionId);
       const inspectExpression = `window.__uiAuditPointerProbe.inspect(${JSON.stringify(target.selector)},${JSON.stringify(prepared.before)},${JSON.stringify(prepared.tooltipsBefore)})`;
       let result = await runtimeJson(cdp, sessionId, inspectExpression);
       if (!result.ok) throw new Error(`hover target ${target.selector}: ${result.reason}`);
       if (!result.hovered) throw new Error(`hover target ${target.selector}: trusted pointer did not reach the target`);
-      if (!result.changed && maxWait > settle) {
+      if (!result.changed && prepared.delayed && maxWait > settle) {
         await sleep(maxWait - settle);
         result = await runtimeJson(cdp, sessionId, inspectExpression);
         if (!result.ok) throw new Error(`hover target ${target.selector}: ${result.reason}`);
         if (!result.hovered) throw new Error(`hover target ${target.selector}: trusted pointer left the target`);
       }
       checked++;
-      if (!result.changed) findings.push(pointerFinding({ ...target, denseGapPx, rect: prepared.rect }));
+      if (!result.changed && target.sameSemanticGroup && target.groupSelector) {
+        missingTargets.push({ ...target, denseGapPx, rect: prepared.rect });
+      }
     }
   } finally {
     try {
@@ -482,7 +645,18 @@ async function runPointerProbe(cdp, sessionId, isMobile, config = {}, whitelist 
   }
   const baselineKeys = new Set((baselineEntries || []).filter(item => item && typeof item === 'object')
     .map(item => `${item.rule}|${item.selector}`));
-  const clean = findings.filter(finding => !baselineKeys.has(`${finding.rule}|${finding.selector}`));
+  const unbaselined = missingTargets.filter(target => !baselineKeys.has(`missingHoverFeedback|${target.selector}`));
+  const grouped = new Map();
+  for (const target of unbaselined) {
+    if (!grouped.has(target.groupSelector)) grouped.set(target.groupSelector, []);
+    grouped.get(target.groupSelector).push(target);
+  }
+  const clean = [...grouped.entries()].map(([groupSelector, targets]) => pointerFinding({
+    groupSelector,
+    targets,
+    denseGapPx,
+    rect: targets[0]?.rect || null
+  })).filter(finding => !baselineKeys.has(`${finding.rule}|${finding.selector}`));
   const proof = {
     status: plan.truncated ? 'incomplete' : 'checked',
     expected: plan.expected,
@@ -494,163 +668,280 @@ async function runPointerProbe(cdp, sessionId, isMobile, config = {}, whitelist 
   return { findings: clean, proof };
 }
 
-const allFindings = [];
-const matrix = [];
+function signalChannel(signal) {
+  return signal.severity === 'Polish' || signal.confidence === 'visual-judgment' || signal.confidence === 'needs-visual'
+    ? 'advisory' : 'finding';
+}
 
-const { proc, wsUrl, profile } = await launchChrome();
-const cdp = await CDP.connect(wsUrl);
-try {
-  for (const route of routes) {
-    const url = baseUrl + route;
-    for (const vp of viewports) {
-      const isMobile = !!vp.isMobile;
-      for (const theme of themes) {
-        for (const state of states) {
-          const cell = { route, viewport: vp.name, theme, state };
-          cell.themeDriver = themeInitScripts[theme] ? 'init-script' : 'media';
-          cell.stateDriver = state === 'default' ? 'page-default' : 'none';
-          cell.interceptions = 0;
-          let targetId = null;
-          let browserContextId = null;
-          let stopDocumentResponses = null;
-          try {
-            const isolated = await cdp.send('Target.createBrowserContext');
-            browserContextId = isolated.browserContextId;
-            const created = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId });
-            targetId = created.targetId;
-            const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-            await cdp.send('Page.enable', {}, sessionId);
-            await cdp.send('Network.enable', {}, sessionId);
-            await cdp.send('Runtime.enable', {}, sessionId);
-            // NB: mobile:false on purpose — CDP mobile + dpr can distort innerHeight; pass isMobile to the audit instead.
-            await cdp.send('Emulation.setDeviceMetricsOverride',
-              { width: vp.width, height: vp.height, deviceScaleFactor: vp.dpr || 1, mobile: false }, sessionId);
-            await cdp.send('Emulation.setEmulatedMedia',
-              { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
-            if (themeInitScripts[theme]) {
-              const themeSource = `(()=>{const run=()=>{try{${String(themeInitScripts[theme])}\n;window.__uiAuditThemeInit={ok:true};}catch(e){window.__uiAuditThemeInit={ok:false,error:String(e&&e.message||e)};}};if(document.documentElement)run();else{const o=new MutationObserver(()=>{if(document.documentElement){o.disconnect();run();}});o.observe(document,{childList:true});}})();`;
-              await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: themeSource }, sessionId);
-            }
-            await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INIT }, sessionId);
-            const loaded = cdp.once('Page.loadEventFired', sessionId, 20000).catch(() => null);
-            // Match the navigated main document response, not a redirect, prefetch,
-            // or fast subresource from another frame.
-            const documentResponses = [];
-            stopDocumentResponses = cdp.listen('Network.responseReceived', sessionId, p => {
-              if (p.type === 'Document') documentResponses.push(p);
-            });
-            const nav = await cdp.send('Page.navigate', { url }, sessionId);
-            if (nav.errorText) throw new Error(`navigation failed for ${url}: ${nav.errorText}`);
-            await loaded;
-            if (themeInitScripts[theme]) {
-              const themeResult = await cdp.send('Runtime.evaluate',
-                { expression: 'JSON.stringify(window.__uiAuditThemeInit||{ok:false,error:"theme init did not run"})', returnByValue: true }, sessionId);
-              const themeProof = JSON.parse(themeResult.result.value);
-              if (!themeProof.ok) throw new Error('theme init failed: ' + themeProof.error);
-            }
-            const response = await waitFor(
-              () => documentResponses.find(p => p.frameId === nav.frameId),
-              20000
-            ).catch(() => null);
-            const status = response && response.response && response.response.status;
-            if (status >= 400) throw new Error(`HTTP ${status} loading ${url}`);
-            await sleep(settleMs); // settle fonts + load-triggered late content (CLS)
-            const setupProof = await applyStateSetup(cdp, sessionId, state, stateSetups);
-            cell.setupDriver = setupProof.driver;
-            cell.stateSetup = { status: setupProof.status, actions: setupProof.actions, assertions: setupProof.assertions };
-            if (setupProof.configured) await sleep(100);
+function addSignal(signal, findings, advisories) {
+  if (signalChannel(signal) === 'advisory') {
+    signal.review = signal.severity === 'Polish' ? 'optional' : 'required';
+    advisories.push(signal);
+  } else findings.push(signal);
+}
 
-            const cellFindings = [];
-            const cellRulesSkipped = [];
-            for (const sp of scrollPositions) {
-              const expr = sp === 'bottom' ? 'window.scrollTo(0, document.body.scrollHeight)'
-                : sp === 'mid' ? 'window.scrollTo(0, document.body.scrollHeight/2)' : 'window.scrollTo(0,0)';
-              await cdp.send('Runtime.evaluate', { expression: expr }, sessionId);
-              await sleep(150);
-              const acfg = JSON.stringify({ ...auditCfg, route, theme, state, isMobile, baseline });
-              const r = await cdp.send('Runtime.evaluate',
-                { expression: `JSON.stringify(window.__uiAudit(${acfg}))`, returnByValue: true }, sessionId);
-              const report = JSON.parse(r.result.value);
-              for (const skipped of (report.coverage && report.coverage.rulesSkipped) || []) {
-                if (!cellRulesSkipped.includes(skipped)) cellRulesSkipped.push(skipped);
-              }
-              for (const f of report.findings) { f.scroll = sp; f.cell = cell; }
-              cellFindings.push(...report.findings);
-              if (!noShots && (sp === 'top' || sp === 'bottom')) {
-                const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId);
-                writeFileSync(join(outDir, 'screens', `${slug(route)}_${vp.name}_${theme}_${state}_${sp}.png`),
-                  Buffer.from(shot.data, 'base64'));
-              }
-            }
-            let pointer;
-            try {
-              pointer = await runPointerProbe(cdp, sessionId, isMobile, hoverCfg, auditCfg.whitelist || [], baseline);
-            } catch (error) {
-              pointer = { findings: [], proof: { status: 'error', reason: String(error && error.message || error), expected: 0, checked: 0, missing: 0 } };
-            }
-            cell.hoverProbe = pointer.proof;
-            for (const finding of pointer.findings) {
-              finding.scroll = 'pointer';
-              finding.cell = cell;
-              cellFindings.push(finding);
-            }
-            const keyboard = await runKeyboardProbe(cdp, sessionId, keyboardCfg, auditCfg.whitelist || [], baseline);
-            cell.keyboardProbe = keyboard.proof;
-            if (['checked', 'not-applicable'].includes(keyboard.proof.status)) {
-              for (let index = cellFindings.length - 1; index >= 0; index--) {
-                const finding = cellFindings[index];
-                if (finding.rule === 'focusTrapLeak' && finding.selector === keyboard.proof.modalSelector &&
-                    finding.measured && finding.measured.keyboardProbeRequired) {
-                  cellFindings.splice(index, 1);
-                }
-              }
-            }
-            for (const finding of keyboard.findings) {
-              finding.scroll = 'keyboard';
-              finding.cell = cell;
-              cellFindings.push(finding);
-            }
-            // dedupe within cell
-            const seen = new Set(), deduped = [];
-            for (const f of cellFindings) { const k = f.rule + '|' + f.selector + '|' + f.message; if (!seen.has(k)) { seen.add(k); deduped.push(f); } }
-            allFindings.push(...deduped);
-            cell.counts = countSev(deduped);
-            if (cellRulesSkipped.length) {
-              cell.rulesSkipped = cellRulesSkipped;
-              cell.status = 'error';
-              cell.error = 'audit rule(s) skipped: ' + cellRulesSkipped.join('; ');
-            } else if (!['checked', 'not-applicable'].includes(keyboard.proof.status)) {
-              cell.status = 'error';
-              cell.error = 'keyboard probe incomplete: ' + (keyboard.proof.reason || keyboard.proof.status);
-            } else if (!['checked', 'not-applicable'].includes(pointer.proof.status)) {
-              cell.status = 'error';
-              cell.error = 'hover probe incomplete: ' + (pointer.proof.reason || pointer.proof.status);
-            // This runner cannot mock network data, but a structured state setup with
-            // explicit expectations can independently prove an interaction state.
-            } else if (state === 'default' || setupProof.configured) {
-              cell.status = 'checked';
-            } else {
-              cell.status = 'not-forced';
-              cell.reason = 'data state not forced (audit-chrome.mjs has no network mocking); use run-ui-audit.py (Playwright) to mock empty/error/loading';
-            }
-          } catch (e) {
-            cell.status = 'error'; cell.error = String(e && e.message || e);
-            console.error(`  ! ${JSON.stringify(cell)}: ${cell.error}`);
-          } finally {
-            if (stopDocumentResponses) stopDocumentResponses();
-            if (targetId) {
-              try { await cdp.send('Target.closeTarget', { targetId }); } catch {}
-            }
-            if (browserContextId) {
-              try { await cdp.send('Target.disposeBrowserContext', { browserContextId }); } catch {}
-            }
-          }
-          matrix.push(cell);
-          console.log(`  audited ${cell.status}: ${route} ${vp.name} ${theme} ${state} -> ${JSON.stringify(cell.counts || {})}`);
-        }
+function dedupeSignals(signals) {
+  const seen = new Set();
+  return signals.filter(signal => {
+    const key = `${signal.rule}|${signal.selector}|${signal.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function countAdvisories(items) {
+  const counts = { required: 0, optional: 0 };
+  for (const item of items) if (counts[item.review] != null) counts[item.review]++;
+  return counts;
+}
+
+function mergeSuppression(target, source) {
+  if (!source) return;
+  for (const key of ['whitelist', 'baseline', 'perRuleCap', 'advisoryCap']) target[key] += Number(source[key] || 0);
+  for (const [rule, count] of Object.entries(source.byRule || {})) target.byRule[rule] = (target.byRule[rule] || 0) + Number(count || 0);
+}
+
+function capOptionalAdvisories(items, max, suppression) {
+  const required = items.filter(item => item.review === 'required');
+  const optional = items.filter(item => item.review === 'optional');
+  if (!Number.isFinite(max) || max < 0 || optional.length <= max) return required.concat(optional);
+  const buckets = new Map();
+  for (const item of optional) {
+    if (!buckets.has(item.rule)) buckets.set(item.rule, []);
+    buckets.get(item.rule).push(item);
+  }
+  const rules = [...buckets.keys()];
+  const kept = [];
+  let cursor = 0;
+  while (kept.length < max && rules.length) {
+    const ruleIndex = cursor % rules.length;
+    const rule = rules[ruleIndex];
+    kept.push(buckets.get(rule).shift());
+    if (!buckets.get(rule).length) rules.splice(ruleIndex, 1);
+    else cursor++;
+  }
+  const keptSignals = new Set(kept);
+  for (const item of optional) {
+    if (keptSignals.has(item)) continue;
+    suppression.advisoryCap++;
+    suppression.byRule[item.rule] = (suppression.byRule[item.rule] || 0) + 1;
+  }
+  return required.concat(kept);
+}
+
+function deviceMetrics(vp, adaptation) {
+  if (adaptation === 'zoom-200') {
+    return { width: Math.max(1, Math.floor(vp.width / 2)), height: Math.max(1, Math.floor(vp.height / 2)), deviceScaleFactor: (vp.dpr || 1) * 2, mobile: false };
+  }
+  if (adaptation === 'reflow-320') {
+    return { width: 320, height: vp.height, deviceScaleFactor: vp.dpr || 1, mobile: false };
+  }
+  return { width: vp.width, height: vp.height, deviceScaleFactor: vp.dpr || 1, mobile: false };
+}
+
+const specs = [];
+for (const route of routes) {
+  for (const vp of viewports) {
+    const cellAdaptations = ['none'].concat(vp.isMobile ? [] : adaptations);
+    for (const theme of themes) {
+      for (const state of states) {
+        for (const adaptation of cellAdaptations) specs.push({ index: specs.length, route, vp, theme, state, adaptation });
       }
     }
   }
+}
+
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+const startedAt = Date.now();
+const { proc, wsUrl, profile } = await launchChrome();
+const cdp = await CDP.connect(wsUrl);
+let results;
+try {
+  results = await mapLimit(specs, workers, async spec => {
+    const { route, vp, theme, state, adaptation } = spec;
+    const url = baseUrl + route;
+    const identity = { route, viewport: vp.name, theme, state, adaptation };
+    const cell = { ...identity, index: spec.index };
+    const timings = { navigationMs: 0, stateSetupMs: 0, detectMs: 0, keyboardMs: 0, pointerMs: 0, screenshotMs: 0, totalMs: 0 };
+    const cellStarted = Date.now();
+    const cellFindings = [];
+    const cellAdvisories = [];
+    const cellRulesSkipped = [];
+    const cellRulesRun = [];
+    const suppression = { whitelist: 0, baseline: 0, perRuleCap: 0, advisoryCap: 0, byRule: {} };
+    let targetId = null;
+    let browserContextId = null;
+    let stopDocumentResponses = null;
+    let mock = null;
+    try {
+      const isolated = await cdp.send('Target.createBrowserContext');
+      browserContextId = isolated.browserContextId;
+      const created = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId });
+      targetId = created.targetId;
+      const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+      await cdp.send('Page.enable', {}, sessionId);
+      await cdp.send('Network.enable', {}, sessionId);
+      await cdp.send('Runtime.enable', {}, sessionId);
+      await cdp.send('Emulation.setDeviceMetricsOverride', deviceMetrics(vp, adaptation), sessionId);
+      await cdp.send('Emulation.setEmulatedMedia',
+        { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
+      cell.themeDriver = themeInitScripts[theme] ? 'init-script' : 'media';
+      if (themeInitScripts[theme]) {
+        const themeSource = `(()=>{const run=()=>{try{${String(themeInitScripts[theme])}\n;window.__uiAuditThemeInit={ok:true};}catch(e){window.__uiAuditThemeInit={ok:false,error:String(e&&e.message||e)};}};if(document.documentElement)run();else{const o=new MutationObserver(()=>{if(document.documentElement){o.disconnect();run();}});o.observe(document,{childList:true});}})();`;
+        await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: themeSource }, sessionId);
+      }
+      await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INIT }, sessionId);
+      mock = await installStateMock(cdp, sessionId, state, stateMocks, apiMockPattern);
+      cell.stateDriver = mock.proof.driver;
+
+      const navigationStarted = Date.now();
+      const loaded = cdp.once('Page.loadEventFired', sessionId, 20000).catch(() => null);
+      const documentResponses = [];
+      stopDocumentResponses = cdp.listen('Network.responseReceived', sessionId, params => {
+        if (params.type === 'Document') documentResponses.push(params);
+      });
+      const nav = await cdp.send('Page.navigate', { url }, sessionId);
+      if (nav.errorText) throw new Error(`navigation failed for ${url}: ${nav.errorText}`);
+      await loaded;
+      const response = await waitFor(() => documentResponses.find(item => item.frameId === nav.frameId), 20000).catch(() => null);
+      const httpStatus = response && response.response && response.response.status;
+      if (httpStatus >= 400) throw new Error(`HTTP ${httpStatus} loading ${url}`);
+      if (themeInitScripts[theme]) {
+        const themeProof = await runtimeJson(cdp, sessionId, 'window.__uiAuditThemeInit||{ok:false,error:"theme init did not run"}');
+        if (!themeProof.ok) throw new Error('theme init failed: ' + themeProof.error);
+      }
+      if (waitForSelector) {
+        const encoded = JSON.stringify(waitForSelector);
+        await waitFor(() => runtimeJson(cdp, sessionId, `(()=>{const el=document.querySelector(${encoded});if(!el)return false;const r=el.getBoundingClientRect(),s=getComputedStyle(el);return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;})()`), 15000);
+      }
+      if (settleMs) await sleep(settleMs); else await nextPaint(cdp, sessionId);
+      try { await runtimeJson(cdp, sessionId, 'document.fonts?document.fonts.ready.then(()=>({ok:true})):({ok:true})'); } catch {}
+      timings.navigationMs = Date.now() - navigationStarted;
+
+      const setupStarted = Date.now();
+      const setupProof = await applyStateSetup(cdp, sessionId, state, stateSetups);
+      cell.setupDriver = setupProof.driver;
+      cell.stateSetup = { status: setupProof.status, actions: setupProof.actions, assertions: setupProof.assertions };
+      if (setupProof.configured) await nextPaint(cdp, sessionId);
+      timings.stateSetupMs = Date.now() - setupStarted;
+
+      const detectStarted = Date.now();
+      for (let positionIndex = 0; positionIndex < scrollPositions.length; positionIndex++) {
+        const sp = scrollPositions[positionIndex];
+        const expr = sp === 'bottom' ? 'window.scrollTo(0, document.body.scrollHeight)'
+          : sp === 'mid' ? 'window.scrollTo(0, document.body.scrollHeight/2)' : 'window.scrollTo(0,0)';
+        await cdp.send('Runtime.evaluate', { expression: expr }, sessionId);
+        await nextPaint(cdp, sessionId);
+        const rulePhase = positionIndex === 0 ? 'all' : 'viewport';
+        const acfg = JSON.stringify({ ...auditCfg, route, theme, state, adaptation, isMobile: !!vp.isMobile, baseline, rulePhase });
+        const report = await runtimeJson(cdp, sessionId, `window.__uiAudit(${acfg})`);
+        for (const skipped of report.coverage?.rulesSkipped || []) if (!cellRulesSkipped.includes(skipped)) cellRulesSkipped.push(skipped);
+        for (const rule of report.coverage?.rulesRun || []) if (!cellRulesRun.includes(rule)) cellRulesRun.push(rule);
+        mergeSuppression(suppression, report.coverage?.suppressed);
+        for (const signal of report.findings || []) { signal.scroll = sp; signal.cell = identity; cellFindings.push(signal); }
+        for (const signal of report.advisories || []) { signal.scroll = sp; signal.cell = identity; cellAdvisories.push(signal); }
+        if (!noShots && (sp === 'top' || sp === 'bottom')) {
+          const shotStarted = Date.now();
+          const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId);
+          writeFileSync(join(outDir, 'screens', `${slug(route)}_${vp.name}_${theme}_${state}_${adaptation}_${sp}.png`), Buffer.from(shot.data, 'base64'));
+          timings.screenshotMs += Date.now() - shotStarted;
+        }
+      }
+      timings.detectMs = Date.now() - detectStarted - timings.screenshotMs;
+
+      const pointerStarted = Date.now();
+      let pointer;
+      try {
+        pointer = adaptation === 'none'
+          ? await runPointerProbe(cdp, sessionId, !!vp.isMobile, hoverCfg, auditCfg.whitelist || [], baseline)
+          : { findings: [], proof: { status: 'not-applicable', reason: 'hover is not part of adaptation coverage', expected: 0, checked: 0, missing: 0 } };
+      } catch (error) {
+        pointer = { findings: [], proof: { status: 'error', reason: String(error && error.message || error), expected: 0, checked: 0, missing: 0 } };
+      }
+      timings.pointerMs = Date.now() - pointerStarted;
+      cell.hoverProbe = pointer.proof;
+      for (const signal of pointer.findings) {
+        signal.scroll = 'pointer'; signal.cell = identity;
+        addSignal(signal, cellFindings, cellAdvisories);
+      }
+
+      const keyboardStarted = Date.now();
+      const keyboard = await runKeyboardProbe(cdp, sessionId, keyboardCfg, auditCfg.whitelist || [], baseline);
+      timings.keyboardMs = Date.now() - keyboardStarted;
+      cell.keyboardProbe = keyboard.proof;
+      if (['checked', 'not-applicable'].includes(keyboard.proof.status)) {
+        for (let index = cellAdvisories.length - 1; index >= 0; index--) {
+          const signal = cellAdvisories[index];
+          if (signal.rule === 'focusTrapLeak' && signal.selector === keyboard.proof.modalSelector && signal.measured?.keyboardProbeRequired) cellAdvisories.splice(index, 1);
+        }
+      }
+      for (const signal of keyboard.findings) {
+        signal.scroll = 'keyboard'; signal.cell = identity;
+        addSignal(signal, cellFindings, cellAdvisories);
+      }
+
+      const dedupedFindings = dedupeSignals(cellFindings);
+      const dedupedAdvisories = capOptionalAdvisories(
+        dedupeSignals(cellAdvisories),
+        Number(auditCfg.maxPolish ?? defCfg.auditConfig?.maxPolish ?? 15),
+        suppression
+      );
+      cell.counts = countSev(dedupedFindings);
+      cell.advisoryTotals = countAdvisories(dedupedAdvisories);
+      cell.rulesRun = cellRulesRun;
+      cell.suppressed = suppression;
+      cell.interceptions = mock.proof.interceptions;
+
+      if (mock.proof.error) {
+        cell.status = 'error'; cell.error = 'state mock failed: ' + mock.proof.error;
+      } else if (cellRulesSkipped.length) {
+        cell.rulesSkipped = cellRulesSkipped; cell.status = 'error'; cell.error = 'audit rule(s) skipped: ' + cellRulesSkipped.join('; ');
+      } else if (!['checked', 'not-applicable'].includes(keyboard.proof.status)) {
+        cell.status = 'error'; cell.error = 'keyboard probe incomplete: ' + (keyboard.proof.reason || keyboard.proof.status);
+      } else if (!['checked', 'not-applicable'].includes(pointer.proof.status)) {
+        cell.status = 'error'; cell.error = 'hover probe incomplete: ' + (pointer.proof.reason || pointer.proof.status);
+      } else {
+        const networkProved = mock.proof.interceptions > 0;
+        const stateChecked = state === 'default' ||
+          (mock.proof.explicit ? networkProved : (networkProved || setupProof.configured));
+        if (stateChecked) cell.status = 'checked';
+        else {
+          cell.status = 'not-forced';
+          cell.reason = mock.proof.configured
+            ? `state mock installed but intercepted 0 requests (${mock.proof.driver})`
+            : 'non-default state has neither a matching stateMocks rule nor a verified structured setup';
+        }
+      }
+      timings.totalMs = Date.now() - cellStarted;
+      cell.timings = timings;
+      console.log(`  audited ${cell.status}: ${route} ${vp.name} ${theme} ${state} ${adaptation} -> ${JSON.stringify(cell.counts)}`);
+      return { cell, findings: dedupedFindings, advisories: dedupedAdvisories };
+    } catch (error) {
+      cell.status = 'error'; cell.error = String(error && error.message || error);
+      timings.totalMs = Date.now() - cellStarted; cell.timings = timings;
+      console.error(`  ! ${JSON.stringify(identity)}: ${cell.error}`);
+      return { cell, findings: [], advisories: [] };
+    } finally {
+      if (stopDocumentResponses) stopDocumentResponses();
+      if (mock) await mock.cleanup();
+      if (targetId) { try { await cdp.send('Target.closeTarget', { targetId }); } catch {} }
+      if (browserContextId) { try { await cdp.send('Target.disposeBrowserContext', { browserContextId }); } catch {} }
+    }
+  });
 } finally {
   try { cdp.ws.close(); } catch {}
   // On Windows a bare kill can orphan the --headless child processes; kill the
@@ -670,20 +961,30 @@ try {
   }
 }
 
-// Aggregate across cells while preserving routes and the worst severity evidence.
-const findings = aggregateFindings(allFindings);
-writeFileSync(join(outDir, 'findings.json'), JSON.stringify(findings, null, 2));
-writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({ base_url: baseUrl, generated_at: new Date().toISOString(), matrix, totals: countSev(findings) }, null, 2));
-
+// Aggregate across cells while preserving routes and the worst-severity evidence.
+const matrix = results.map(result => result.cell).sort((a, b) => a.index - b.index);
+const findings = aggregateFindings(results.flatMap(result => result.findings));
+const advisories = aggregateFindings(results.flatMap(result => result.advisories));
 const totals = countSev(findings);
-console.log(`\nUI Audit: ${JSON.stringify(totals)} across ${matrix.length} cells -> ${outDir}/findings.json`);
-const notForced = matrix.filter(c => c.status === 'not-forced');
-if (notForced.length) {
-  console.log(`NOTE: ${notForced.length} non-default data-state cell(s) were NOT forced by this runner (no network mocking). ` +
-    `They are recorded as "not-forced" in coverage.json — use run-ui-audit.py to actually exercise empty/error/loading.`);
-}
-const errors = matrix.filter(c => c.status !== 'checked');
+const advisoryTotals = countAdvisories(advisories);
+const durationMs = Date.now() - startedAt;
+writeFileSync(join(outDir, 'findings.json'), JSON.stringify({ schemaVersion: 2, findings, totals }, null, 2));
+writeFileSync(join(outDir, 'advisories.json'), JSON.stringify({ schemaVersion: 2, advisories, totals: advisoryTotals }, null, 2));
+writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({
+  schemaVersion: 2,
+  base_url: baseUrl,
+  generated_at: new Date().toISOString(),
+  runner: { name: 'audit-chrome', version: 2, workers, durationMs },
+  matrix,
+  totals,
+  advisoryTotals
+}, null, 2));
+
+console.log(`\nUI Audit v2: findings ${JSON.stringify(totals)}, advisories ${JSON.stringify(advisoryTotals)} across ${matrix.length} cells -> ${outDir}`);
+const errors = matrix.filter(cell => cell.status !== 'checked');
 if (errors.length) { console.log(`BLOCKED: ${errors.length} matrix cell(s) were not verified. Review coverage.json before claiming the work complete.`); process.exit(1); }
 const fails = findings.filter(f => f.severity === 'Fail');
 if (fails.length) { console.log(`BLOCKED: ${fails.length} un-baselined Fail finding(s). Review before claiming the work complete.`); process.exit(1); }
+const required = advisories.filter(advisory => advisory.review === 'required');
+if (required.length) { console.log(`BLOCKED: ${required.length} required-review advisory item(s) remain unresolved.`); process.exit(1); }
 process.exit(0);

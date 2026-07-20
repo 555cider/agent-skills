@@ -1,174 +1,160 @@
-# UI Audit — findings & coverage JSON contract
+# UI Audit v2 — configuration and output contract
 
-`window.__uiAudit(config)` returns one **report** object per render state.
-Either batch runner — `run-ui-audit.py` (Playwright) or `audit-chrome.mjs` (CDP) —
-aggregates per-cell reports into `findings.json` (a flat array of findings) and
-`coverage.json` (the matrix that was actually exercised).
+`audit-chrome.mjs` is the canonical runner. It aggregates one `window.__uiAudit()` report per rendered matrix cell into three JSON documents. Schema v2 is intentionally not compatible with the former flat `findings.json` array.
 
-## `config` (input, all optional)
+## Runner configuration
 
 ```jsonc
 {
-  "route": "/login",        // label only, for the report
-  "theme": "dark",          // label; falls back to prefers-color-scheme
-  "state": "default",       // label, e.g. default|empty|error|loading
-  "isMobile": true,         // run tap-target rules; default = innerWidth <= 600
-  "contrast": { "normal": 4.5, "large": 3.0, "washedOut": 1.3, "placeholderFail": 3.0 },
-  "tap": { "fail": 24, "risk": 44, "crowdGap": 8 },
-  "cls": { "risk": 0.1, "fail": 0.25 },
-  "layout": { "loneNarrowWidth": 180, "maxButtonsInRow": 4 },
-  "overflowTolerancePx": 1,
-  "collapsePx": 3,
-  "mediaAspectTolerance": 0.05,
-  "authedNavWords": ["my", "account", "마이", "..."],
-  "whitelist": ["#known-ok", ".third-party-widget"], // suppress findings on elements matching these OR inside their subtree
-  "baseline": [{ "rule": "effectiveContrast", "selector": "..." }], // approved findings to suppress
-  "maxFindingsPerRule": 60,
-  "maxPolish": 15
-}
-```
-
-Batch-runner configuration also accepts deterministic state, keyboard proof, and pointer-hover proof:
-
-```jsonc
-{
+  "routes": ["/"],
+  "viewports": [{ "name": "desktop", "width": 1280, "height": 900, "isMobile": false, "dpr": 1 }],
+  "themes": ["light", "dark"],
+  "states": ["default", "empty", "error", "loading"],
+  "adaptations": ["zoom-200", "reflow-320"],
+  "workers": 2,
+  "scrollPositions": ["top", "bottom"],
+  "settleMs": 400,
+  "waitForSelector": null,
+  "themeInitScripts": { "app-dark": "document.documentElement.dataset.theme='dark'" },
+  "apiMockPattern": "**/api/**",
+  "stateMocks": {
+    "empty": [{ "pattern": "**/api/items", "status": 200, "contentType": "application/json", "body": [] }],
+    "loading": [{ "pattern": "**/api/items", "hold": true }]
+  },
   "stateSetups": {
     "dialog-open": {
-      "actions": [{ "type": "click", "selector": "#open-dialog" }],
-      "expect": [{ "selector": "[role=dialog][aria-modal=true]", "state": "visible" }]
+      "actions": [{ "type": "click", "selector": "#open" }],
+      "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
     }
   },
-  "keyboardProbe": { "maxSteps": 120, "settleMs": 50 },
-  "hoverProbe": { "maxTargets": 80, "settleMs": 50, "maxWaitMs": 250, "denseGapPx": 12 }
+  "keyboardProbe": { "maxSteps": 120, "settleMs": 0 },
+  "hoverProbe": { "maxTargets": 80, "settleMs": 0, "maxWaitMs": 250, "denseGapPx": 12 },
+  "baseline": [{ "rule": "effectiveContrast", "selector": "#known" }],
+  "auditConfig": {
+    "whitelist": [".third-party"],
+    "maxFindingsPerRule": 60,
+    "maxPolish": 15
+  }
 }
 ```
 
-Actions require a selector that matches exactly one element. Supported types are `click`,
-`fill` (`value` string), `press` (`key` string), `hover`, `check`, and `selectOption`
-(`value` string). Expectations require a non-empty array; `visible`/`attached` pass when any
-match qualifies, while `hidden` means no match is visible and `detached` means zero matches.
-There is no arbitrary JavaScript action.
+`stateMocks.<state>` must be an array. Every item has a `pattern` and exactly one of `body` or `hold: true`; `status` defaults to 200 and `contentType` to `application/json`. Non-string bodies are JSON encoded. Empty/error/loading fallback mocks use `apiMockPattern` when no explicit rule exists.
 
-## report (output of `__uiAudit`)
+The state is verified only after at least one request is intercepted. A successful structured setup may independently prove a custom interaction state; if an explicit mock is also configured, its interception is still required.
+
+## In-page report
 
 ```jsonc
 {
   "meta": {
-    "url": "http://localhost:3000/login",
-    "route": "/login", "theme": "dark", "state": "default",
+    "url": "http://localhost:3000/",
+    "route": "/", "theme": "dark", "state": "default",
     "viewport": { "w": 390, "h": 844, "dpr": 3 },
-    "isMobile": true, "scrollY": 0, "ts": null   // per-report meta; Date is deliberately not read in-page.
-    // Runners discard report meta and stamp coverage.generated_at once in coverage.json.
+    "isMobile": true, "scrollY": 0, "ts": null
   },
   "coverage": {
-    "rulesRun": ["effectiveContrast", "..."],
-    "rulesSkipped": ["ruleName: error message"],  // a rule that threw; investigate, do not ignore
+    "rulesRun": ["effectiveContrast", "targetSizeMinimum"],
+    "rulesSkipped": [],
     "elementsScanned": 142,
-    "counts": { "Fail": 3, "Risk": 2, "Polish": 0 }
+    "counts": { "Fail": 1, "Risk": 0, "Polish": 0 },
+    "advisoryCounts": { "required": 0, "optional": 2 },
+    "suppressed": {
+      "whitelist": 0, "baseline": 1, "perRuleCap": 0, "advisoryCap": 4,
+      "byRule": { "designSystemDrift": 4 }
+    }
   },
-  "findings": [ /* finding objects, see below */ ]
+  "findings": [],
+  "advisories": []
 }
 ```
 
-## finding object
+The first scroll position runs all rules. Later positions run only `phase: viewport` rules, currently the scroll-dependent sticky/occlusion checks. Whitelist and baseline suppression happen before per-rule and advisory caps.
+
+## Signal shape
 
 ```jsonc
 {
-  "rule": "effectiveContrast",          // which detector fired (see audit-rules.md)
-  "severity": "Fail",                    // Fail | Risk | Polish — COMPUTED, do not downgrade by taste
-  "confidence": "auto-measured",         // auto-measured | needs-visual | visual-judgment
-  "selector": "html > body > button.kakao",  // CSS path to the element
-  "message": "Text \"카카오 로그인\" contrast 1.02:1 is below 4.5:1.",
-  "measured": { "ratio": 1.02, "fg": "rgb(...)", "bg": "rgb(...)", "fontPx": 17 },
-  "threshold": { "min": 4.5 },
-  "rect": { "x": 16, "y": 320, "w": 358, "h": 56 },  // viewport coords for an evidence crop; may be null
-  "suggestedFix": "Kakao spec: #191919 text on #FEE500.",
-  "scroll": "bottom",      // added by the runner: which scroll position surfaced it
-  "cell": { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default" },  // runner adds; points to the highest-severity evidence
-  "cells": [               // runner adds: distinct matrix cells that surfaced this aggregate
-    { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default" }
-  ],
-  "instances": 1           // runner adds: how many cell/scroll findings were aggregated
+  "rule": "targetSizeMinimum",
+  "severity": "Fail",
+  "confidence": "auto-measured",
+  "category": "accessibility",
+  "standard": "WCAG 2.5.8",
+  "selector": "button#compact",
+  "message": "Pointer target 20×20px is below 24px and its spacing exception fails.",
+  "measured": { "w": 20, "h": 20, "nearestGapPx": -2, "nearestSelector": "button#peer" },
+  "threshold": { "min": 24, "spacingCircleDiameter": 24 },
+  "rect": { "x": 16, "y": 120, "w": 20, "h": 20 },
+  "suggestedFix": "Increase the hit area or provide enough separation.",
+  "scroll": "top",
+  "cell": { "route": "/", "viewport": "desktop", "theme": "light", "state": "default", "adaptation": "none" },
+  "cells": [],
+  "instances": 1
 }
 ```
 
-Batch runners aggregate matching `rule+selector` findings only within the same route.
-When several cells on that route produce the same aggregate, the representative finding
-and backward-compatible `cell` field come from the worst severity (`Fail` > `Risk` >
-`Polish`), while `cells` retains every affected matrix cell.
+Advisories use the same evidence shape and add `review`:
 
-### `confidence` — how to treat each tier
+- `required`: uncertain Risk that must be visually resolved or baselined.
+- `optional`: Polish heuristic that does not affect the exit code.
 
-| confidence | meaning | how to report |
-|------------|---------|---------------|
-| `auto-measured` | a number past a threshold backs it | report at its computed severity, including `Fail` |
-| `needs-visual` | candidate found, but the measurement is uncertain (text over a gradient/image; CLS observer not installed) | **must resolve** — pixel-sample a screenshot crop or install the observer; never assert a number you didn't measure |
-| `visual-judgment` | a heuristic/structural signal, not a hard number (auth-mode conflict, disabled-looking primary, selected-state inversion, design drift) | cap at `Risk` until visually confirmed; pair with a measured `Fail` to escalate |
+`confidence` values are `auto-measured`, `needs-visual`, and `visual-judgment`. `needs-visual` and non-Polish `visual-judgment` signals are required advisories; Polish signals are optional advisories.
 
-## `coverage.json` (runner)
+## `findings.json`
+
+```json
+{
+  "schemaVersion": 2,
+  "findings": [],
+  "totals": { "Fail": 0, "Risk": 0, "Polish": 0 }
+}
+```
+
+Only high-confidence measured signals appear here. `Polish` remains in the totals shape for stable consumers but normally stays zero because Polish signals belong to advisories.
+
+## `advisories.json`
+
+```json
+{
+  "schemaVersion": 2,
+  "advisories": [],
+  "totals": { "required": 0, "optional": 0 }
+}
+```
+
+## `coverage.json`
 
 ```jsonc
 {
+  "schemaVersion": 2,
   "base_url": "http://localhost:3000",
-  "generated_at": "2026-07-07T03:00:00.000Z",   // runner stamps run time (UTC ISO-8601)
-  "matrix": [
-    { "route": "/", "viewport": "mobile", "theme": "dark", "state": "default",
-      "themeDriver": "media", "stateDriver": "page-default", "interceptions": 0,
-      "setupDriver": "none",
-      "stateSetup": { "status": "not-configured", "actions": 0, "assertions": 0 },
-      "keyboardProbe": { "status": "checked", "expected": 5, "visited": 5,
-        "dialogs": 0, "modalSelector": null, "maxSteps": 120 },
-      "hoverProbe": { "status": "not-applicable", "expected": 0, "checked": 0,
-        "missing": 0, "maxTargets": 80 },
-      "status": "checked", "counts": { "Fail": 1, "Risk": 0, "Polish": 0 } },
-    { "route": "/", "viewport": "desktop", "theme": "light", "state": "error",
-      "status": "error", "error": "TimeoutError: ..." },  // surfaces as "Not verified"
-    { "route": "/", "viewport": "mobile", "theme": "dark", "state": "empty",
-      "status": "not-forced", "reason": "data state not forced ..." }  // audit-chrome.mjs can't mock network
-  ],
-  "totals": { "Fail": 1, "Risk": 0, "Polish": 0 }
+  "generated_at": "2026-07-20T00:00:00.000Z",
+  "runner": { "name": "audit-chrome", "version": 2, "workers": 2, "durationMs": 4120 },
+  "matrix": [{
+    "index": 0,
+    "route": "/", "viewport": "desktop", "theme": "light", "state": "empty", "adaptation": "reflow-320",
+    "themeDriver": "media", "stateDriver": "configured-mock", "interceptions": 1,
+    "setupDriver": "none",
+    "stateSetup": { "status": "not-configured", "actions": 0, "assertions": 0 },
+    "keyboardProbe": { "status": "checked", "expected": 8, "visited": 8, "maxSteps": 120 },
+    "hoverProbe": { "status": "not-applicable", "expected": 0, "checked": 0, "missing": 0 },
+    "rulesRun": ["effectiveContrast", "horizontalOverflow"],
+    "suppressed": { "whitelist": 0, "baseline": 0, "perRuleCap": 0, "advisoryCap": 0, "byRule": {} },
+    "counts": { "Fail": 0, "Risk": 0, "Polish": 0 },
+    "advisoryTotals": { "required": 0, "optional": 0 },
+    "timings": { "navigationMs": 800, "stateSetupMs": 0, "detectMs": 80, "keyboardMs": 300, "pointerMs": 0, "screenshotMs": 20, "totalMs": 1250 },
+    "status": "checked"
+  }],
+  "totals": { "Fail": 0, "Risk": 0, "Polish": 0 },
+  "advisoryTotals": { "required": 0, "optional": 0 }
 }
 ```
 
-### the synthetic `coverage` rule
+Cells are sorted by configuration index even when workers run concurrently. Fresh browser contexts isolate cookies, local storage, cache, and service workers.
 
-When a single rule produces more than `maxFindingsPerRule` findings, the extras are dropped
-and one bookkeeping finding is emitted with `rule: "coverage"`, `severity: "Polish"`, noting how
-many were capped. It is not a UI defect — it flags a repeated defect worth fixing at the
-shared-component level. Consumers filtering by the detector rules in `audit-rules.md` should
-expect this extra rule name.
+Cell status:
 
-Cell `status` values: `checked` (audit ran on the intended state), `not-forced` (the CDP
-runner cannot mock this data state, or the Playwright runner installed a mock but no request
-matched its configured `stateMocks` patterns — honest, but **not verified**), `error` (navigation/HTTP failure,
-or an audit rule threw and was recorded in `rulesSkipped`). A cell that is anything other
-than `checked`, or any rule in `rulesSkipped`, must be reported as **Not verified** and
-blocks the runner's completion gate. Re-run `not-forced` cells with a matching Playwright
-route mock or MCP route mocks to actually exercise them.
+- `checked`: intended state and all required probes/rules were verified.
+- `not-forced`: a non-default state lacked interception/setup proof.
+- `error`: navigation, theme, mock, setup, rule, or trusted-probe failure.
 
-`themeDriver` is `media` or `init-script`; `stateDriver` remains `page-default`,
-`configured-mock`, `fallback-mock`, or `none`. `setupDriver` is `none` or
-`structured-actions`. `interceptions` is the number of requests
-actually handled for the cell, and is the proof required for non-default state coverage.
-
-`keyboardProbe.status` is `checked`, `not-applicable`, `incomplete`, or `error`. The last
-two make the cell `error` and block completion. The probe tests only the topmost visible
-modal but reports the total visible modal count; `modalSelector` identifies the tested layer.
-Runner-generated `focusTrapLeak` and `focusObscured` findings honor the same whitelist and
-baseline as DOM audit findings.
-
-`hoverProbe.status` uses the same four values. Mobile/touch cells and desktop cells with no
-eligible action are `not-applicable`; desktop fine-pointer cells are `checked` only after every
-eligible action was hovered with trusted input. Reaching `maxTargets` produces `incomplete`,
-and the last two statuses block completion. Runner-generated `missingHoverFeedback` findings
-honor the same whitelist and baseline. Their `scroll` value is `pointer`.
-
-`stateMocks.<state>` is an array of route rules. Each rule requires `pattern` and exactly
-one of `body` or `hold: true`; `status` defaults to 200 and `contentType` to
-`application/json`. Non-string bodies are JSON-serialized. `themeInitScripts.<theme>` is a
-trusted project script installed before page code; use it to set class/data-attribute themes.
-
-`stateSetups.<state>` may prove a non-default interaction state without network mocking.
-When an explicit `stateMocks.<state>` and a setup are both configured, both proofs must
-succeed; fallback mocks are opportunistic and do not invalidate a successful setup when no
-request matches.
+Any status other than `checked`, any un-baselined Fail, or any required advisory makes the runner exit 1. All three JSON documents are still written.

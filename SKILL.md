@@ -1,173 +1,140 @@
 ---
 name: ui-audit
-description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots — to catch rendered visual and keyboard defects (contrast, layout, overlap, overflow, clipped regions, focus containment/obscuring, state, responsive behavior, affordance) before claiming frontend work complete. Triggers on visual QA, "looks off/weird", alignment/spacing/contrast concerns, modal or keyboard-focus review, and any "is this screen done" check.
+description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots. Run it for visual QA, responsive or zoom/reflow checks, contrast and overflow defects, keyboard focus/focus-ring review, target sizing, modal containment, hover affordance, or any claim that a rendered screen is done. It measures the live DOM first and separates confirmed defects from visual-review advisories.
 license: MIT
-compatibility: Requires rendered DOM access; use Node 22 or newer plus Chrome/Chromium, or Python 3 with Playwright.
+compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium browser with rendered DOM access.
 ---
 
 # UI Audit
 
-Catch frontend defects that read fine in code but are wrong in the rendered screen.
-The core principle: **measure, don't eyeball.** Most missable UI defects — contrast,
-overflow, overlap, collapsed regions, tiny tap targets, focus escape/obscuring, layout shift — are exact,
-computable properties of the live DOM. Eyeballing a downscaled screenshot is the
-worst channel for them, so this skill runs a deterministic audit FIRST and reserves
-human judgment for things only taste can settle.
+Catch frontend defects that look plausible in source but fail in the rendered screen. Measure the live DOM first; reserve visual judgment for signals that CSSOM and geometry cannot settle reliably.
 
-Use the user's language in reports. Group findings by failure mode, not discovery order.
+Use the user's language in reports. Group results by failure mode, not discovery order.
 
-## Hard Rules
+## Hard rules
 
-- **Run the audit before judging.** Inject `scripts/audit.js` into the rendered page
-  and collect its measured findings before you form any opinion. Do not review from a
-  screenshot alone — it cannot show a contrast ratio or a sub-pixel clip.
-- **No completion/"looks good"/"no findings" claim** unless the audit ran across the
-  recorded matrix (viewports × themes × states) and you can show the coverage ledger.
-  "Looks good from the code" is never acceptable; if you cannot render, say the work is
-  **blocked on visual verification**.
-- **Severity is measured, not felt.** Take each finding's computed `severity`. Do not
-  downgrade a measured `Fail` to taste. Auto-measured findings may be `Fail`;
-  visual-judgment findings are capped at `Risk` until confirmed.
-- **Use trusted input for keyboard claims.** DOM structure can identify a suspicious modal,
-  but only real `Tab`/`Shift+Tab` input proves focus containment. Run the bundled keyboard
-  probe through Playwright or CDP; an incomplete probe is unverified coverage.
-- **Use trusted input for hover claims.** A computed resting cursor cannot prove `:hover`.
-  Run the bundled pointer probe on desktop fine-pointer cells and require a visible style,
-  descendant/icon, or tooltip change beyond the cursor; an incomplete probe is unverified coverage.
-- **Respect the request's authority.** A build/edit/finish request authorizes safe fixes to
-  in-scope defects found by the audit. A review/audit-only request authorizes reporting only;
-  list findings with evidence and wait before changing source.
+- Run `scripts/audit-chrome.mjs` before judging a rendered UI. A screenshot alone cannot prove contrast, clipping, focus traversal, target spacing, or sticky overlap.
+- Do not claim completion or “no findings” unless every configured matrix cell is `checked` in `coverage.json`.
+- Treat `findings.json` as measured defects. Do not downgrade a computed `Fail` by taste.
+- Resolve every `required` item in `advisories.json` with a screenshot/pixel check, a corrected implementation, or a deliberate baseline entry. Optional advisories do not block completion.
+- Use the trusted keyboard and pointer probes supplied by the runner. Synthetic DOM events do not prove sequential focus or `:hover` behavior.
+- A review-only request authorizes reporting; a build/edit/finish request authorizes safe fixes to in-scope defects.
 
-## Detect-first-then-judge Workflow
+## Workflow
 
-1. **Render** the real UI (running app route, Storybook story, or preview). If none
-   exists, create the narrowest way to render the screen. Cover the matrix: ≥1 mobile +
-   1 desktop viewport (unless the surface is explicitly fixed-viewport), every supported
-   theme, and every render state the screen has: data states (default, empty, error,
-   loading, stale/partial) and interaction states (open modal/menu, expanded disclosure)
-   that affect the task. Force data with mocks and interaction states with structured
-   `stateSetups`; remove project-local mocks after finishing.
-2. **Detect.** Inject the audit and capture measured findings. `audit.js` is engine-agnostic
-   — it runs anywhere you can evaluate JS in the page. Pick whichever path is available:
-   - **Interactive (MCP):** navigate, then `browser_evaluate` (Playwright MCP) or
-     `evaluate_script` (chrome-devtools MCP) the contents of `scripts/audit.js`, then
-     call `window.__uiAudit({route, theme, state, isMobile})`. Run it at scroll
-     **top and bottom** of each long screen (sticky-bar overlaps only appear at bottom).
-     CLS needs the observer installed *before* first paint: inject `audit.js` **and call
-     `window.__uiAuditInstallCLS()`** via an init script that runs on the new document
-     (`Page.addScriptToEvaluateOnNewDocument` / `add_init_script`) — a plain `evaluate`
-     after navigation is too late and CLS will read "not measured". If your MCP can't run
-     an init script, treat interactive CLS as unmeasured and rely on a batch runner for it.
-   - **Batch, zero dependencies (preferred), Node ≥ 22:** `node scripts/audit-chrome.mjs <url> --config audit-config.json`
-     — drives an installed Chrome/Chromium over the DevTools Protocol with Node's built-in
-     WebSocket (requires **Node ≥ 22**; it exits 2 with a clear message on older Node). No
-     pip/npm install. Writes `.ui-audit/findings.json` + `coverage.json`, exits non-zero on
-     any Fail or unverified matrix cell. It supports structured click/fill/press/hover/check/
-     select interaction setup, but **cannot mock network**, so it renders the default
-     page for every state and records non-`default` cells as `not-forced` in coverage (honest:
-     it did not verify them, and the runner exits non-zero).
-     Use the Playwright runner to actually exercise empty/error/loading. (Note: the bare
-     `playwright`/Chrome CLI only takes screenshots — it cannot inject and measure — so it is not enough.)
-   - **Batch, Playwright (if already set up):** `python3 scripts/run-ui-audit.py <url> --config audit-config.json`
-     — same `findings.json`/`coverage.json` shape, and additionally **forces data states**
-     (mocks `**/api/**` for empty/error/loading), runs the same structured `stateSetups`,
-     waits on `waitForSelector`/`document.fonts.ready`,
-     using `stateMocks` (with backward-compatible empty/error/loading fallbacks). A non-default
-     cell is `checked` only when a configured route actually intercepts a request; otherwise it
-     is `not-forced` and blocks completion. Use `themeInitScripts` for apps driven by a class or
-     data attribute instead of `prefers-color-scheme`. This is
-     the runner to use when the matrix has non-`default` states.
-     Needs `pip install playwright && playwright install chromium`.
-   Both runners inject `scripts/keyboard-probe.js` and `scripts/pointer-probe.js` and use
-   trusted browser input once per matrix cell. They verify modal initial focus,
-   forward/reverse boundary wrap, keyboard-focus obscuring, and visible desktop hover
-   feedback for buttons, links, menu/tab actions, and related click targets.
-3. **Resolve.** Any finding with `confidence: needs-visual` (text over a gradient/image,
-   unmeasured CLS) must be confirmed by pixel-sampling a screenshot crop or installing
-   the observer. A structural `focusTrapLeak` Risk must be resolved with the trusted
-   keyboard probe, not by checking whether background controls merely exist.
-4. **Triage.** Apply `whitelist`/`baseline` from config; dedupe repeated-component
-   findings to one root cause with an instance count; cap Polish volume.
-5. **Judge.** NOW apply `references/scrutiny-checklist.md` — but only to what the audit
-   cannot measure: page composition and scan path, density appropriateness, microcopy,
-   icon/brand coherence, empty-vs-error tone. Tag these `visual-judgment`; cap at `Risk`.
-6. **Report** using the template below. Every uncovered matrix cell or unrun rule
-   surfaces as **Not verified** — silence is not coverage.
+1. Render the real route, story, or preview. Configure mobile and desktop viewports, supported themes, meaningful data states, and interaction states.
+2. Run the canonical Node/CDP runner:
 
-## Severity (computed from thresholds)
+   ```bash
+   node scripts/audit-chrome.mjs http://localhost:3000 --config audit-config.json
+   ```
 
-| Severity | Meaning | Examples (measured) |
-|----------|---------|---------------------|
-| `Fail` | Broken now in the rendered state | text contrast < 4.5:1 (3:1 large); horizontal overflow; content covered by a sticky bar; region collapsed to ~0 with content; text clipped/escaping; tap target < 24px; broken image; trusted Tab escapes an open modal; focused control fully obscured; CLS > 0.25 |
-| `Risk` | Will break with realistic data/state/locale/viewport, or near threshold | placeholder < 4.5:1; tap target < 44px; dense adjacent actions with no visible hover feedback; selected-state inversion; CLS > 0.1 |
-| `Polish` | Functional but visibly unpolished | inconsistent multi-row control padding; orphaned narrow controls; standalone action with no visible hover feedback; design-system drift |
+   `run-ui-audit.py` and `capture.py` are compatibility shims that forward to this implementation. They do not require Playwright.
+3. Inspect all three schema-v2 outputs:
 
-Escalate when the issue hits a primary workflow, a repeated component, or a surface the
-user asked you to finish. See `references/audit-rules.md` for each rule's exact method.
+   - `findings.json`: high-confidence measured defects.
+   - `advisories.json`: `required` or `optional` review signals.
+   - `coverage.json`: exact matrix, state proof, probe counts, rule coverage, suppression, and timings.
+4. Resolve Fail findings and required advisories. Apply `baseline` only to an intentionally accepted `rule + selector`; do not use it to hide unverified coverage.
+5. Apply `references/scrutiny-checklist.md` to composition, density, microcopy, brand coherence, and other subjective residue.
+6. Report the verified matrix, findings, advisories, and any unverified cells.
 
-## Report Format
+## Matrix and deterministic state setup
+
+Copy `scripts/audit-config.default.json` and narrow it to the surface under review. The bundled full configuration includes two workers plus desktop `zoom-200` and `reflow-320` adaptations.
+
+```jsonc
+{
+  "routes": ["/", "/settings"],
+  "viewports": [
+    { "name": "mobile", "width": 390, "height": 844, "isMobile": true, "dpr": 3 },
+    { "name": "desktop", "width": 1280, "height": 900, "isMobile": false, "dpr": 1 }
+  ],
+  "themes": ["light", "dark"],
+  "states": ["default", "empty", "error", "loading"],
+  "adaptations": ["zoom-200", "reflow-320"],
+  "workers": 2,
+  "stateMocks": {
+    "empty": [{ "pattern": "**/api/items", "body": [] }],
+    "error": [{ "pattern": "**/api/items", "status": 500, "body": { "error": "forced" } }],
+    "loading": [{ "pattern": "**/api/items", "hold": true }]
+  },
+  "stateSetups": {
+    "dialog-open": {
+      "actions": [{ "type": "click", "selector": "#open-dialog" }],
+      "expect": [{ "selector": "[role=dialog][aria-modal=true]", "state": "visible" }]
+    }
+  }
+}
+```
+
+Configured or fallback mocks count as coverage only when CDP Fetch actually intercepts a request. An unmatched mock produces `not-forced`. If an explicit network mock and structured setup are both configured, both must succeed.
+
+Structured actions support `click`, `fill`, `press`, `hover`, `check`, and `selectOption`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
+
+## Adaptability and exemptions
+
+- `zoom-200` halves the desktop CSS viewport and doubles its scale, then reruns layout, target, and keyboard checks.
+- `reflow-320` uses a 320 CSS-px desktop viewport and fails page-level horizontal scrolling. An intentionally two-dimensional surface must scroll internally or use `data-ui-audit-reflow-exempt="true"` with a documented reason.
+- Target size is checked in every pointer-capable layout. A target below 24×24 CSS px fails only when the WCAG spacing exception also fails. Inline text links are exempt; essential/equivalent cases may use `data-ui-audit-target-exempt="true"` or a whitelist entry.
+- The 24–44px mobile comfort range is an optional advisory, not a conformance failure.
+
+## Output and completion gate
+
+Each signal retains `rule`, `severity`, `confidence`, `category`, selector, measurement, threshold, rect, fix, cell evidence, and instance count. Findings may be `Fail` or `Risk`; advisories add `review: required | optional`.
+
+The runner exits non-zero when:
+
+- any matrix cell is not `checked`;
+- any rule was skipped or trusted probe was incomplete;
+- an un-baselined `Fail` remains; or
+- a `required` advisory remains unresolved.
+
+`coverage.json` is always written, including on navigation, mock, setup, or rule failure.
+
+## Report format
 
 ```text
 UI review: <blocked | fixes recommended | no findings>
-Coverage: routes <…> · viewports <mobile,desktop> · themes <light,dark> · states <default,empty,error,…>
-Audit: ran (findings.json) | not run (BLOCKED)
+Coverage: routes <…> · viewports <…> · themes <…> · states <…> · adaptations <…>
+Audit: schema v2 · <N> checked / <N> total cells
 
-Findings (grouped by failure mode):
-<group, e.g. Contrast & legibility>
-- [Fail · auto-measured] <area>: <problem>. Measured: <number vs threshold>. Selector: <sel>. Viewport/state: <…>. Fix: <fix>.
+Findings:
+- [Fail · auto-measured] <area>: <problem>. Measured: <value vs threshold>. Selector: <…>. Cell: <…>. Fix: <…>.
 
-<group, e.g. Composition (judgment)>
-- [Risk · visual-judgment] <area>: <problem>. Evidence: <what you saw>. Fix: <fix>.
+Required review:
+- [Risk · needs-visual] <area>: <candidate>. Evidence: <…>. Resolution: <pixel check/fix/baseline>.
 
-Not verified: <matrix cells/states/rules not exercised>
-Approval needed: <specific fix set or next action>
+Optional advisories:
+- [Polish] <area>: <heuristic signal>. Evidence: <…>.
+
+Not verified: <cells/rules, or none>
 ```
 
-"No findings" is valid only when the audit ran and returned zero threshold violations
-across the recorded matrix, and the subjective residue was judged.
+“No findings” is valid only when findings are empty, required advisories are resolved, every cell is checked, and the subjective checklist was reviewed.
 
 ## Files
 
-- `scripts/audit.js` — the deterministic detector. Pure DOM/CSSOM/geometry; engine-agnostic.
-- `scripts/keyboard-probe.js` — shared focus-order and paint-occlusion helpers; runners supply trusted key events.
-- `scripts/pointer-probe.js` — shared hover target/style comparison helpers; runners supply trusted pointer movement.
-- `scripts/audit-chrome.mjs` — zero-dependency batch runner (drives installed Chrome via CDP / Node WebSocket, **Node ≥ 22**). No network mocking: non-`default` states are recorded `not-forced`.
-- `scripts/run-ui-audit.py` — Playwright batch runner (same JSON shape, **plus** explicit state mocking and theme init scripts; for envs that already use Playwright).
-- `scripts/audit-config.default.json` — thresholds, matrix, whitelist/baseline.
-- `references/audit-rules.md` — every audit rule: signal, method, threshold→severity, FP guards.
-- `references/findings-schema.md` — the findings/coverage JSON contract.
-- `references/scrutiny-checklist.md` — the judgment layer for the subjective residue only.
-- `tests/fixtures/` + `tests/expected.json` — defect fixtures (+ a clean baseline) and the
-  coverage spec: what each fixture must trigger. Point a runner at them to verify a change to `audit.js`.
+- `scripts/audit.js`: DOM/CSSOM/geometry detector and finding/advisory classifier.
+- `scripts/keyboard-probe.js`, `pointer-probe.js`: trusted-input planning and evidence helpers.
+- `scripts/audit-chrome.mjs`: canonical Node/CDP runner, network mocks, adaptations, concurrency, and v2 outputs.
+- `references/audit-rules.md`: exact rules, thresholds, and false-positive guards.
+- `references/findings-schema.md`: configuration and schema-v2 contract.
+- `tests/fixtures/` and `tests/expected.json`: recall and precision regression corpus.
 
-When you find a new failure mode: if it is measurable, add a rule to `audit.js` (and
-`audit-rules.md`); if it needs taste, add it to `scrutiny-checklist.md`. Keep detection
-in code and taste in the checklist.
+When adding a failure mode, put deterministic measurement in code and add `mustHit`/`mustNotHit` coverage. Put heuristics in the advisory channel with `mustAdvise`/`mustNotAdvise` coverage.
 
-## When NOT to use
+## Do not use for
 
-- Backend/logic/API-only changes with no rendered surface — there is nothing to measure.
-- Terminal/CLI output, native mobile, or non-DOM canvases — the detector is DOM/CSSOM only.
-- As a substitute for functional/interaction tests — it audits the rendered frame, not behavior.
+- backend/API-only work with no rendered surface;
+- terminal output, native mobile, or non-DOM canvas contents; or
+- replacement for functional interaction tests.
 
-## Common Mistakes
+## Common mistakes
 
-- **Trusting `not-forced` as coverage.** The zero-dependency runner labels non-`default`
-  data states `not-forced` because it cannot mock network. That is *not* a verified cell,
-  and it blocks the runner's completion gate — use the Playwright runner (or MCP with route
-  mocks) to actually force empty/error/loading.
-- **Claiming "no findings" from one cell.** "No findings" holds only across the recorded
-  matrix (viewports × themes × states); a single default-desktop pass is not coverage.
-- **`isMobile:true` with `dpr>1` in interactive mode.** CDP mobile emulation + a device
-  pixel ratio distorts `innerHeight`/geometry and breaks the layout rules. The batch runners
-  keep `mobile:false` and pass `isMobile` to the audit instead — do the same if you drive
-  the audit by hand.
-- **Downgrading a measured `Fail` to taste.** Severity is computed from thresholds; only
-  `visual-judgment` findings are yours to weigh, and they are already capped at `Risk`.
-- **Evaluating `audit.js` and expecting CLS.** That only defines the observer installer —
-  you must call `__uiAuditInstallCLS()` via an init script before navigation (see step 2).
-- **Calling outside focusables a proven trap leak.** `aria-modal` pages often leave background
-  controls in the DOM while JavaScript correctly wraps focus. Require trusted forward and
-  reverse boundary input before emitting `Fail`.
-- **Using a non-default state label without proof.** Add a matching `stateMocks` rule or a
-  `stateSetups.<state>` block whose expectations pass; a label by itself is not coverage.
+- Treating an installed mock as proof when its interception count is zero.
+- Running only the normal desktop cell and skipping 200% zoom or 320px reflow.
+- Treating optional advisory volume as confirmed defects.
+- Suppressing broad selectors before investigating a shared-component root cause.
+- Claiming a modal trap from DOM structure without trusted forward and reverse Tab input.
+- Evaluating `audit.js` after navigation and assuming CLS was measured; install `__uiAuditInstallCLS()` on the new document as the runner does.
