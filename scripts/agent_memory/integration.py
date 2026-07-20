@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .util import MemoryError, atomic_write
+from .util import user_home as default_user_home
 
 
 INTEGRATION_MARKER = "agent-memory-v2-managed"
@@ -243,7 +244,7 @@ def _backup_files(memory_home: Path, paths: Sequence[Path]) -> Path:
 
 
 def integration_paths(user_home: Path | None = None) -> dict[str, Path]:
-    home = user_home or Path.home()
+    home = user_home or default_user_home()
     return {
         "claude": home / ".claude" / "settings.json",
         "codex_hooks": home / ".codex" / "hooks.json",

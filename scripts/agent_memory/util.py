@@ -43,13 +43,30 @@ def digest_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def user_home() -> Path:
+    # Path.home() and expanduser() consult USERPROFILE on Windows and ignore
+    # HOME, so an overridden HOME resolves back to the real profile and writes
+    # outside the caller's sandbox. Honor HOME first on every platform.
+    raw = os.environ.get("HOME")
+    return Path(raw) if raw else Path.home()
+
+
+def expand_user_path(raw: str | Path) -> Path:
+    text = str(raw)
+    if text == "~":
+        return user_home()
+    if text.startswith(("~/", "~\\")):
+        return user_home() / text[2:]
+    return Path(text).expanduser()
+
+
 def memory_home(explicit: str | None = None) -> Path:
-    raw = explicit or os.environ.get("AGENT_MEMORY_HOME") or str(Path.home() / ".agents" / "memory")
-    return Path(raw).expanduser().resolve()
+    raw = explicit or os.environ.get("AGENT_MEMORY_HOME") or str(user_home() / ".agents" / "memory")
+    return expand_user_path(raw).resolve()
 
 
 def resolve_cwd(raw: str | None = None) -> Path:
-    return Path(raw or os.getcwd()).expanduser().resolve()
+    return expand_user_path(raw or os.getcwd()).resolve()
 
 
 def _git_value(cwd: Path, *args: str) -> str:
