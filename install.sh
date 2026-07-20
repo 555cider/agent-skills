@@ -83,9 +83,7 @@ done
 report_ignored_skill_dirs() {
   local n
   [ ${#IGNORED_SKILL_DIRS[@]} -gt 0 ] || return 0
-  printf 'note: ignoring %d director%s under skills/ without SKILL.md:\n' \
-    "${#IGNORED_SKILL_DIRS[@]}" \
-    "$([ ${#IGNORED_SKILL_DIRS[@]} -eq 1 ] && echo y || echo ies)" >&2
+  printf 'note: ignoring directories under skills/ without SKILL.md:\n' >&2
   for n in "${IGNORED_SKILL_DIRS[@]}"; do
     printf '        skills/%s\n' "$n" >&2
   done

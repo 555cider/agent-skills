@@ -12,6 +12,16 @@ fail() {
   exit 1
 }
 
+# `ln -s` degrades to a directory copy on Windows without symlink privilege,
+# so tests that need a real symlink report a skip instead of a bogus failure.
+symlinks_supported() {
+  local probe="$WORK/symlink-probe"
+  rm -rf "$probe"
+  mkdir -p "$probe/target"
+  ln -s "$probe/target" "$probe/link" 2>/dev/null || return 1
+  [ -L "$probe/link" ]
+}
+
 assert_contains_line() {
   local needle="$1" file="$2"
   grep -Fx "$needle" "$file" >/dev/null || fail "expected '$needle' in $file"
@@ -249,6 +259,10 @@ test_uninstall_all_removes_agent_memory_local_fallback_install() {
 }
 
 test_uninstall_preserves_clone_without_upstream() {
+  symlinks_supported || {
+    echo "SKIP ${FUNCNAME[0]}: this OS does not allow creating symlinks"
+    return 0
+  }
   local home="$WORK/no-upstream-home"
   local clone="$home/.agents/skills/test-skill"
   local link="$home/.codex/skills/test-skill"
