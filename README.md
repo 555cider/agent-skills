@@ -23,6 +23,12 @@ skills/
 
 The directory name MUST match the `name:` field in `SKILL.md` frontmatter.
 
+A directory without `SKILL.md` is not a skill. `install.sh`, `uninstall.sh`,
+and CI all enumerate `skills/*/SKILL.md`, so a leftover from a rename or an
+interrupted checkout is reported and ignored instead of being installed as a
+phantom skill. Nothing is ever deleted from the checkout — remove such
+directories yourself.
+
 ## Skills
 
 - [`skills/agent-memory/`](skills/agent-memory/README.md) - evidence-aware,
@@ -72,7 +78,6 @@ cd agent-skills
 ./install.sh --local peer-review   # apply this checkout's local skill files
 ./install.sh --local agent-memory --shadow   # install + shared recall, keep native memory
 ./install.sh --local agent-memory --primary  # install + make Agent Memory primary
-./install.sh --local agent-memory --shadow --discard-v1  # explicit breaking v1 replacement
 ./install.sh --list                # print available skill names
 ```
 
@@ -108,25 +113,6 @@ split branch exists, use local mode:
 ./install.sh --local ui-audit      # copy one local skill into ~/.agents/skills
 ```
 
-### Migrating `ui-splint` to `ui-audit`
-
-`ui-splint` was renamed to `ui-audit`, including its runner, browser globals,
-and default output directory. Run either of these from an up-to-date monorepo
-checkout:
-
-```bash
-./install.sh ui-audit
-./install.sh ui-splint  # accepted only as a migration selector
-```
-
-The installer verifies that the old clone has no local changes or unpushed
-commits, installs and links `ui-audit`, and only then removes the managed
-`ui-splint` installation. If the safety check or new install fails, the old
-installation is preserved. The old `split/ui-splint` branch is removed after
-`split/ui-audit` is published, so a standalone old clone cannot migrate with
-`git pull`; rerun this repository's installer instead. Existing project-local
-`.ui-splint/` results are left untouched.
-
 Local mode does not read `origin` or clone `split/<skill-name>`. It
 synchronizes the current checkout's `skills/<skill-name>/` into
 `~/.agents/skills/<skill-name>/`, removes stale files there, and preserves
@@ -140,12 +126,8 @@ creates a private Python venv for its pinned optional provider/vector
 dependencies, and prints only the remaining hook-review/restart actions. These
 mode flags are rejected unless `agent-memory` is among the selected skills.
 
-Agent Memory v2 has no v1 data migration. A recognized v1 Markdown/index store
-blocks installation before skill files change. Re-run with `--discard-v1` only
-when you explicitly want that store deleted without backup; an existing v2 DB
-is protected from this path. See
-[`skills/agent-memory/README.md`](skills/agent-memory/README.md) for the storage,
-trust, provider, and lifecycle contracts.
+See [`skills/agent-memory/README.md`](skills/agent-memory/README.md) for the
+storage, trust, provider, and lifecycle contracts.
 
 The `split/<skill-name>` branches are produced by
 [`.github/workflows/split.yml`](.github/workflows/split.yml) on every push

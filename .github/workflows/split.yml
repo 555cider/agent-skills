@@ -39,10 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Installer migration coverage reconstructs the final ui-splint tree
-          # from the commit immediately before its deletion.
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -54,8 +50,8 @@ jobs:
       - name: Validate skill packages and eval assets
         run: |
           set -euo pipefail
-          for skill in skills/*; do
-            agentskills validate "$skill"
+          for manifest in skills/*/SKILL.md; do
+            agentskills validate "$(dirname "$manifest")"
           done
           python3 tests/validate-skill-evals.py
       - name: Run deterministic regression suites
@@ -107,18 +103,5 @@ jobs:
           done
           if [ "${#failed[@]}" -gt 0 ]; then
             echo "::error::split failed for: ${failed[*]}"
-            exit 1
-          fi
-
-          # ui-splint was fully renamed to ui-audit. Remove the legacy branch
-          # only after every current split push succeeded and the replacement
-          # branch is visible remotely, so a publication failure never strands
-          # existing users without either branch.
-          if git ls-remote --exit-code --heads origin split/ui-audit >/dev/null 2>&1; then
-            if git ls-remote --exit-code --heads origin split/ui-splint >/dev/null 2>&1; then
-              git push origin --delete split/ui-splint
-            fi
-          else
-            echo "::error::split/ui-audit was not published; refusing to delete split/ui-splint"
             exit 1
           fi

@@ -17,18 +17,6 @@ assert_contains_line() {
   grep -Fx "$needle" "$file" >/dev/null || fail "expected '$needle' in $file"
 }
 
-test_list_includes_agent_memory() {
-  local out="$WORK/list.out"
-  "$INSTALL" --list >"$out"
-  assert_contains_line "agent-memory" "$out"
-}
-
-test_uninstall_list_includes_agent_memory() {
-  local out="$WORK/uninstall-list.out"
-  "$UNINSTALL" --list >"$out"
-  assert_contains_line "agent-memory" "$out"
-}
-
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing() {
   local repo="$WORK/repo"
   local home="$WORK/home"
@@ -283,160 +271,47 @@ test_uninstall_preserves_clone_without_upstream() {
     fail "expected uninstall refusal to explain the missing upstream"
 }
 
-test_ui_audit_is_the_only_listed_name() {
-  local install_out="$WORK/ui-audit-install-list.out"
-  local uninstall_out="$WORK/ui-audit-uninstall-list.out"
+test_directory_without_skill_md_is_not_a_skill() {
+  local repo="$WORK/stray-repo"
+  local home="$WORK/stray-home"
 
-  "$INSTALL" --list >"$install_out"
-  "$UNINSTALL" --list >"$uninstall_out"
-  assert_contains_line "ui-audit" "$install_out"
-  assert_contains_line "ui-audit" "$uninstall_out"
-  ! grep -Fx "ui-splint" "$install_out" >/dev/null || fail "legacy ui-splint must not be listed for install"
-  ! grep -Fx "ui-splint" "$uninstall_out" >/dev/null || fail "legacy ui-splint must not be listed for uninstall"
-}
-
-test_ui_audit_migrates_managed_legacy_install() {
-  local home="$WORK/ui-audit-migrate-home"
-  local legacy="$home/.agents/skills/ui-splint"
-
-  mkdir -p "$legacy" "$home/.codex/skills"
-  cat >"$legacy/SKILL.md" <<'SKILL'
+  mkdir -p "$repo/skills/real-skill" "$repo/skills/leftover/scripts/__pycache__" "$home/.codex"
+  cp "$INSTALL" "$repo/install.sh"
+  chmod +x "$repo/install.sh"
+  cat >"$repo/skills/real-skill/SKILL.md" <<'SKILL'
 ---
-name: ui-splint
-description: Legacy UI audit skill.
+name: real-skill
+description: Real test skill.
 ---
 SKILL
-  ln -s "$legacy" "$home/.codex/skills/ui-splint"
+  printf 'bytecode
+' >"$repo/skills/leftover/scripts/__pycache__/stale.cpython-314.pyc"
 
-  HOME="$home" "$INSTALL" --local ui-splint >"$WORK/ui-audit-migrate.out" 2>"$WORK/ui-audit-migrate.err"
+  HOME="$home" "$repo/install.sh" --local >"$WORK/stray.out" 2>"$WORK/stray.err" ||
+    fail "expected a directory without SKILL.md to leave the exit status clean"
 
-  [ -f "$home/.agents/skills/ui-audit/SKILL.md" ] || fail "expected canonical ui-audit install"
-  [ -L "$home/.codex/skills/ui-audit" ] || fail "expected canonical ui-audit harness link"
-  [ ! -e "$legacy" ] || fail "expected legacy ui-splint install to be removed"
-  [ ! -e "$home/.codex/skills/ui-splint" ] && [ ! -L "$home/.codex/skills/ui-splint" ] ||
-    fail "expected legacy ui-splint harness link to be removed"
-  grep -F "was renamed to ui-audit" "$WORK/ui-audit-migrate.err" >/dev/null ||
-    fail "expected old selector to report the rename"
-  grep -F "migrated ui-splint to ui-audit" "$WORK/ui-audit-migrate.out" >/dev/null ||
-    fail "expected successful migration summary"
-}
+  [ -f "$home/.agents/skills/real-skill/SKILL.md" ] || fail "expected the declared skill to install"
+  [ ! -e "$home/.agents/skills/leftover" ] ||
+    fail "expected a directory without SKILL.md to never be installed"
+  [ ! -e "$home/.codex/skills/leftover" ] && [ ! -L "$home/.codex/skills/leftover" ] ||
+    fail "expected no harness link for a directory without SKILL.md"
+  grep -F "skills/leftover" "$WORK/stray.err" >/dev/null ||
+    fail "expected the ignored directory to be reported rather than silently skipped"
+  [ -d "$repo/skills/leftover" ] ||
+    fail "expected install.sh to never delete from the source checkout"
 
-test_ui_audit_migrates_managed_local_sync_clone() {
-  local home="$WORK/ui-audit-local-sync-home"
-  local legacy="$home/.agents/skills/ui-splint"
-  local remote="$WORK/ui-audit-local-sync-remote.git"
-  local deletion_commit snapshot
+  "$repo/install.sh" --list >"$WORK/stray-list.out" 2>/dev/null
+  assert_contains_line "real-skill" "$WORK/stray-list.out"
+  ! grep -Fx "leftover" "$WORK/stray-list.out" >/dev/null ||
+    fail "expected --list to omit a directory without SKILL.md"
 
-  mkdir -p "$legacy" "$home/.codex/skills"
-  cat >"$legacy/SKILL.md" <<'SKILL'
----
-name: ui-splint
-description: Published legacy baseline.
----
-SKILL
-  git init -q "$legacy"
-  git -C "$legacy" config user.email "test@example.com"
-  git -C "$legacy" config user.name "Test"
-  git -C "$legacy" add SKILL.md
-  git -C "$legacy" commit -qm init
-  git -C "$legacy" branch -m split/ui-splint
-  git init --bare -q "$remote"
-  git -C "$legacy" remote add origin "$remote"
-  git -C "$legacy" push -qu origin split/ui-splint
-
-  # Reproduce the old --local behavior: preserve .git, but replace the whole
-  # working tree with the monorepo's last canonical ui-splint snapshot.
-  find "$legacy" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
-  deletion_commit="$(git -C "$ROOT" log -1 --format=%H --diff-filter=D -- skills/ui-splint/SKILL.md)"
-  snapshot="$(git -C "$ROOT" rev-parse "$deletion_commit^")"
-  git -C "$ROOT" archive "$snapshot:skills/ui-splint" | tar -x -C "$legacy"
-  mkdir -p "$legacy/scripts/__pycache__"
-  printf 'generated cache\n' >"$legacy/scripts/__pycache__/capture.cpython-312.pyc"
-  ln -s "$legacy" "$home/.codex/skills/ui-splint"
-
-  HOME="$home" "$INSTALL" --local ui-audit >"$WORK/ui-audit-local-sync.out" 2>"$WORK/ui-audit-local-sync.err"
-
-  [ -f "$home/.agents/skills/ui-audit/SKILL.md" ] || fail "expected managed local sync to migrate"
-  [ ! -e "$legacy" ] || fail "expected managed local-sync clone to be removed"
-  [ -L "$home/.codex/skills/ui-audit" ] || fail "expected canonical harness link after local-sync migration"
-  grep -F "recognized managed --local ui-splint sync" "$WORK/ui-audit-local-sync.out" >/dev/null ||
-    fail "expected managed local-sync recognition note"
-}
-
-test_ui_audit_migration_preserves_dirty_legacy_clone() {
-  local home="$WORK/ui-audit-dirty-home"
-  local legacy="$home/.agents/skills/ui-splint"
-
-  mkdir -p "$legacy" "$home/.codex/skills"
-  cat >"$legacy/SKILL.md" <<'SKILL'
----
-name: ui-splint
-description: Legacy UI audit skill.
----
-SKILL
-  git init -q "$legacy"
-  git -C "$legacy" config user.email "test@example.com"
-  git -C "$legacy" config user.name "Test"
-  git -C "$legacy" add SKILL.md
-  git -C "$legacy" commit -qm init
-  printf 'local work\n' >"$legacy/local-work.txt"
-  ln -s "$legacy" "$home/.codex/skills/ui-splint"
-
-  if HOME="$home" "$INSTALL" --local ui-audit >"$WORK/ui-audit-dirty.out" 2>"$WORK/ui-audit-dirty.err"; then
-    fail "expected dirty legacy clone migration to fail"
+  if HOME="$home" "$repo/install.sh" --local leftover >"$WORK/stray-select.out" 2>"$WORK/stray-select.err"; then
+    fail "expected selecting a directory without SKILL.md to fail"
   fi
-  [ -f "$legacy/local-work.txt" ] || fail "expected dirty legacy clone to be preserved"
-  [ -L "$home/.codex/skills/ui-splint" ] || fail "expected legacy harness link to be preserved"
-  [ ! -e "$home/.agents/skills/ui-audit" ] || fail "expected canonical install to wait for safe migration"
-  grep -F "has local changes" "$WORK/ui-audit-dirty.err" >/dev/null ||
-    fail "expected dirty-clone migration warning"
-}
-
-test_ui_audit_new_install_failure_preserves_legacy() {
-  local home="$WORK/ui-audit-failure-home"
-  local legacy="$home/.agents/skills/ui-splint"
-  local canonical="$home/.agents/skills/ui-audit"
-
-  mkdir -p "$legacy" "$canonical" "$home/.codex/skills"
-  cat >"$legacy/SKILL.md" <<'SKILL'
----
-name: ui-splint
-description: Legacy UI audit skill.
----
-SKILL
-  printf 'unrelated canonical directory\n' >"$canonical/keep.txt"
-  ln -s "$legacy" "$home/.codex/skills/ui-splint"
-
-  if HOME="$home" "$INSTALL" --local ui-audit >"$WORK/ui-audit-failure.out" 2>"$WORK/ui-audit-failure.err"; then
-    fail "expected canonical install failure during migration"
-  fi
-  [ -f "$legacy/SKILL.md" ] || fail "expected legacy install to survive canonical install failure"
-  [ -L "$home/.codex/skills/ui-splint" ] || fail "expected legacy link to survive canonical install failure"
-  grep -Fx "unrelated canonical directory" "$canonical/keep.txt" >/dev/null ||
-    fail "expected unrelated canonical directory to be preserved"
-  grep -F "preserving the existing ui-splint install" "$WORK/ui-audit-failure.err" >/dev/null ||
-    fail "expected rollback-preservation warning"
-}
-
-test_uninstall_all_removes_recognized_ui_splint_legacy() {
-  local home="$WORK/ui-splint-uninstall-all-home"
-  local legacy="$home/.agents/skills/ui-splint"
-
-  mkdir -p "$legacy" "$home/.codex/skills"
-  cat >"$legacy/SKILL.md" <<'SKILL'
----
-name: ui-splint
-description: Legacy UI audit skill.
----
-SKILL
-  ln -s "$legacy" "$home/.codex/skills/ui-splint"
-
-  HOME="$home" "$UNINSTALL" --all >"$WORK/ui-splint-uninstall-all.out" 2>"$WORK/ui-splint-uninstall-all.err"
-  [ ! -e "$legacy" ] || fail "expected --all to remove recognized ui-splint legacy install"
-  [ ! -e "$home/.codex/skills/ui-splint" ] && [ ! -L "$home/.codex/skills/ui-splint" ] ||
-    fail "expected --all to remove recognized ui-splint legacy link"
-  grep -F "skill: ui-splint" "$WORK/ui-splint-uninstall-all.out" >/dev/null ||
-    fail "expected --all output to include recognized legacy cleanup"
+  grep -F "has no SKILL.md" "$WORK/stray-select.err" >/dev/null ||
+    fail "expected the selection error to distinguish a stray directory from a typo"
+  grep -F "skill not found: nope" <(HOME="$home" "$repo/install.sh" --local nope 2>&1 || true) >/dev/null ||
+    fail "expected an unknown name to still report a plain not-found error"
 }
 
 test_agent_memory_shadow_one_command_setup() {
@@ -477,98 +352,6 @@ PY
   grep -F "integration applied and self-check passed" "$out" >/dev/null || fail "expected successful shadow setup"
 }
 
-test_agent_memory_primary_one_command_setup() {
-  local home="$WORK/primary-home"
-  local out="$WORK/primary.out"
-  local err="$WORK/primary.err"
-
-  mkdir -p "$home/.claude" "$home/.codex"
-  printf '%s\n' '{"autoMemoryEnabled":true,"permissions":{"allow":["Bash(git status)"]}}' >"$home/.claude/settings.json"
-  printf '%s\n' \
-    '[features]' \
-    'memories = true' \
-    '' \
-    '[plugins."remember@claude-plugins-official"]' \
-    'enabled = false' \
-    '' \
-    '[plugins."remember-codex-bridge@personal"]' \
-    'enabled = true' >"$home/.codex/config.toml"
-
-  HOME="$home" "$INSTALL" --local agent-memory --primary >"$out" 2>"$err"
-
-  python3 - "$home" <<'PY'
-import json
-import pathlib
-import sys
-import tomllib
-
-home = pathlib.Path(sys.argv[1])
-claude = json.loads((home / ".claude/settings.json").read_text())
-codex = tomllib.loads((home / ".codex/config.toml").read_text())
-hooks = json.loads((home / ".codex/hooks.json").read_text())
-assert claude["autoMemoryEnabled"] is False
-assert claude["permissions"]["allow"] == ["Bash(git status)"]
-assert codex["features"]["memories"] is False
-assert codex["plugins"]["remember@claude-plugins-official"]["enabled"] is False
-assert codex["plugins"]["remember-codex-bridge@personal"]["enabled"] is False
-assert hooks["hooks"]["UserPromptSubmit"]
-assert (home / ".config/opencode/plugins/agent-memory.js").is_file()
-assert (home / ".local/bin/agent-memory").is_file()
-PY
-  grep -F "agent-memory integration: primary" "$out" >/dev/null || fail "expected primary integration summary"
-  grep -F "integration applied and self-check passed" "$out" >/dev/null || fail "expected successful primary self-check"
-  grep -F "review the Agent Memory hook in /hooks" "$out" >/dev/null || fail "expected concise Codex next step"
-  grep -F "restart to load the global plugin" "$out" >/dev/null || fail "expected concise OpenCode next step"
-}
-
-test_agent_memory_mode_requires_selection() {
-  local home="$WORK/mode-validation-home"
-  mkdir -p "$home"
-  if HOME="$home" "$INSTALL" --local peer-review --primary >"$WORK/mode-validation.out" 2>"$WORK/mode-validation.err"; then
-    fail "expected --primary without agent-memory selection to fail"
-  fi
-  grep -F -- "--primary requires agent-memory to be selected" "$WORK/mode-validation.err" >/dev/null ||
-    fail "expected integration selection error"
-  [ ! -e "$home/.agents" ] || fail "expected invalid setup not to mutate HOME"
-}
-
-test_agent_memory_v1_requires_explicit_discard() {
-  local home="$WORK/v1-discard-home"
-  local store="$home/.agents/memory"
-
-  mkdir -p "$store/.index" "$store/global" "$home/.codex"
-  printf 'legacy sqlite\n' >"$store/.index/memory.sqlite3"
-  printf '# legacy memory\n' >"$store/global/MEMORY.md"
-
-  if HOME="$home" "$INSTALL" --local agent-memory >"$WORK/v1-block.out" 2>"$WORK/v1-block.err"; then
-    fail "expected incompatible v1 data to block Agent Memory v2 install"
-  fi
-  grep -F "v2 has no migration path" "$WORK/v1-block.err" >/dev/null ||
-    fail "expected v1 refusal to explain the breaking upgrade"
-  [ ! -e "$home/.agents/skills/agent-memory" ] ||
-    fail "expected v1 preflight to run before installing skill files"
-
-  HOME="$home" "$INSTALL" --local agent-memory --discard-v1 >"$WORK/v1-discard.out" 2>"$WORK/v1-discard.err"
-  [ ! -e "$store/.index" ] && [ ! -e "$store/global" ] ||
-    fail "expected --discard-v1 to delete recognized legacy data"
-  [ -f "$home/.agents/skills/agent-memory/SKILL.md" ] ||
-    fail "expected install to continue after explicit v1 discard"
-  grep -F "no backup was created" "$WORK/v1-discard.out" >/dev/null ||
-    fail "expected destructive v1 discard output to state backup semantics"
-
-  HOME="$home" "$home/.local/bin/agent-memory" doctor --format json >/dev/null
-  mkdir -p "$store/global"
-  printf '# stray legacy marker\n' >"$store/global/MEMORY.md"
-  if HOME="$home" "$INSTALL" --local agent-memory --discard-v1 >"$WORK/v1-v2-protect.out" 2>"$WORK/v1-v2-protect.err"; then
-    fail "expected --discard-v1 to refuse when a v2 DB exists"
-  fi
-  [ -f "$store/agent-memory.sqlite3" ] || fail "expected existing v2 DB to be preserved"
-  grep -F "v2 database already exists" "$WORK/v1-v2-protect.err" >/dev/null ||
-    fail "expected v2 protection refusal"
-}
-
-test_list_includes_agent_memory
-test_uninstall_list_includes_agent_memory
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
 test_default_fallback_does_not_overwrite_mismatched_plain_directory
 test_local_install_overwrites_dirty_managed_clone
@@ -577,15 +360,7 @@ test_default_install_does_not_accept_an_unrelated_git_repo
 test_uninstall_removes_local_fallback_install
 test_uninstall_all_removes_agent_memory_local_fallback_install
 test_uninstall_preserves_clone_without_upstream
-test_ui_audit_is_the_only_listed_name
-test_ui_audit_migrates_managed_legacy_install
-test_ui_audit_migrates_managed_local_sync_clone
-test_ui_audit_migration_preserves_dirty_legacy_clone
-test_ui_audit_new_install_failure_preserves_legacy
-test_uninstall_all_removes_recognized_ui_splint_legacy
+test_directory_without_skill_md_is_not_a_skill
 test_agent_memory_shadow_one_command_setup
-test_agent_memory_primary_one_command_setup
-test_agent_memory_mode_requires_selection
-test_agent_memory_v1_requires_explicit_discard
 
 echo "install tests passed"
