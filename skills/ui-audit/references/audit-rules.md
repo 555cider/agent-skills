@@ -10,6 +10,11 @@ Global exemptions (applied by every rule via `isExempt`/`isVisible`): `display:n
 `[disabled]`/`[aria-disabled=true]`, and the sr-only/visually-hidden 1px-clip pattern.
 `whitelist` selectors and `baseline` (rule+selector) entries are dropped from output.
 
+Output policy is independent from severity: high-confidence measurements go to
+`findings.json`; `needs-visual`/`visual-judgment` Risk signals become required
+advisories; every Polish signal becomes an optional advisory. Suppression runs before
+caps, and optional advisory caps are distributed round-robin across rules.
+
 ---
 
 ## effectiveContrast — `Fail` — auto-measured
@@ -68,22 +73,27 @@ Content present in the DOM but rendered box collapsed to ~0 (broken flex/height 
   (NB: default computed `transition-property` is `all` with `0s` — duration must be `>0` to count
   as a fade-in). Reported once at the outermost hidden ancestor.
 
-## tapTarget — `Fail`(<24px) / `Risk`(<44px, crowding) — auto-measured (mobile only)
-- **Method:** interactive elements (button, role=button, input, select, textarea, a[href]
-  non-inline, [onclick], role=tab/menuitem). Min dimension `< 24` → `Fail` (WCAG 2.5.8);
-  `< 44` → `Risk`. Crowding: only for small targets (`min < 44`) NOT inside a
-  `nav/[role=navigation]/[role=tablist]/[role=tabbar]` (edge-to-edge adjacency is intended
-  there), nearest-neighbor edge gap `< 8px` → `Risk`.
+## targetSizeMinimum — `Fail` / optional `Polish` advisory — auto-measured
+- **Method:** inspect interactive elements in every pointer-capable layout, not only mobile.
+  A target whose minimum dimension is `<24px` passes when a 24px-diameter circle centered
+  on it does not intersect another target or another sub-minimum target's circle (WCAG
+  2.5.8 spacing exception); otherwise it is a `Fail`.
+- **Comfort advisory:** a mobile target from 24px through 43px is an optional Polish
+  advisory. It is not reported as a conformance failure.
+- **FP guards:** inline text links and hidden/disabled controls are exempt. Use
+  `data-ui-audit-target-exempt=true` only for documented equivalent/essential cases.
 
-## disabledLookingPrimary — `Risk` — visual-judgment
-- **Method:** the primary submit (or largest enabled button) per form; flag if its fill
+## disabledLookingPrimary — required advisory — visual-judgment
+- **Method:** an enabled submit or explicitly primary-marked button; flag if its fill
   `saturation < 0.25` AND fill-vs-page contrast `< 1.5:1` (pale, blends in → reads disabled).
-  Ghost/outline buttons (fill alpha `< 0.1`) skipped.
+  Ghost/outline buttons are skipped, and arbitrary largest buttons are never assumed primary.
 
 ## selectedStateAmbiguity — `Risk` — visual-judgment
 Segmented/tab/radio groups where the wrong item looks active.
-- **Method:** group = `[role=tablist]/[role=radiogroup]` or a flex/grid row of 2–4 sibling
-  buttons (NOT inside `nav`). prominence = `contrast(itemFill, groupBg)`. **Inversion:** an
+- **Method:** group = `[role=tablist]/[role=radiogroup]` or an explicitly marked
+  `[data-ui-audit-selection-group]`/`.seg`/`.segmented-control`/`.segment-control`.
+  Arbitrary two-button flex rows are excluded because they are commonly CTA pairs.
+  prominence = `contrast(itemFill, groupBg)`. **Inversion:** an
   unselected item's prominence `> 1.5` and `> 1.4×` the selected item's. **Ambiguous:** no
   programmatic selection (`aria-selected/current/checked`/active class) yet one item stands
   out (max prominence `> 1.6`).
@@ -119,25 +129,42 @@ Segmented/tab/radio groups where the wrong item looks active.
 - **Coverage guard:** `keyboardProbe.maxSteps` bounds traversal. Hitting the bound or leaving
   the document before all expected tab stops are visited marks the cell unverified.
 
+## focusIndicatorMissing / focusIndicatorContrast — `Fail` — trusted auto-measurement
+- **Method:** capture every tabbable element's resting fingerprint, reach it through trusted
+  Tab input, then compare outline, border, shadow, background, and pseudo-element styles.
+  Browser `outline:auto` and a visible text caret pass. No visible change is
+  `focusIndicatorMissing` (WCAG 2.4.7).
+- **Contrast:** a simple author outline/border is compared with the adjacent background;
+  `<3:1` is `focusIndicatorContrast` (WCAG 1.4.11).
+- **Review fallback:** gradients, shadows, and complex pseudo-element treatments emit
+  `focusIndicatorReview` as a required `needs-visual` advisory instead of inventing a ratio.
+- **Coverage guard:** the first programmatically positioned traversal target is not used for
+  focus-visibility claims; subsequent targets require trusted keyboard input.
+
 ## layoutShiftCLS — `Fail`(>0.25) / `Risk`(>0.1) — auto-measured
 - **Method:** reads a CLS accumulator populated by a `layout-shift` PerformanceObserver. The
   observer must be installed **before navigation** — `__uiAuditInstallCLS()` (the runner does
   this via `add_init_script`). If not installed, emits a `needs-visual` note instead of a number.
 
-## designSystemDrift — `Polish` — visual-judgment
+## designSystemDrift — optional advisory — visual-judgment
 - **Method:** histograms over visible elements: distinct `border-radius` (`>4`), `box-shadow`
   (`>4`), saturated accent hues in 30° buckets used ≥2× (`>6`), font-size/weight pairs (`>10`).
   Tolerance-gated and capped; never escalates above `Polish` on its own. Exclude data-viz/code.
 
-## loneNarrowElement — `Polish` — auto-measured
-- **Method:** checks if any button, input, select, badge, chip, tag or narrow content element with rendered width `< loneNarrowWidth` (default `180px`) occupies a whole row by itself (i.e. no other visible non-ancestor, non-descendant element overlaps it vertically).
+## loneNarrowElement — optional advisory — auto-measured
+- **Method:** checks only top-level interactive controls inside a local semantic control
+  group (`data-ui-audit-control-group`, form, role=group, toolbar, filters, controls). A
+  narrow control must be alone on its row while an adjacent row contains at least two
+  related controls.
 - **Threshold:** width `< 180px` (or configured value).
-- **FP guards:** ignores inline text links, hidden/exempt elements, and elements that share a row with other elements (e.g. sidebars sharing row with main content).
+- **FP guards:** ignores headings, labels, skip links, badges, text nodes, button descendants,
+  unrelated page content, and `data-ui-audit-layout-exempt=true`.
 
-## excessiveButtonsInRow — `Polish` — auto-measured
-- **Method:** finds all visible button-like elements, groups them into rows based on vertical overlap (sharing at least 50% height or 10px vertically), and flags any row containing more than `maxButtonsInRow` (default `4`).
+## excessiveButtonsInRow — optional advisory — auto-measured
+- **Method:** counts buttons within the same nearest local action container and rendered row.
 - **Threshold:** count `> 4` (or configured value).
-- **FP guards:** ignores hidden/exempt elements; groups using vertical bounding rect intersection to prevent false groupings.
+- **FP guards:** navigation, tablists, explicit valid control groups, and page-wide common
+  ancestors are excluded.
 
 ## tinyText — `Polish` / `Risk` — auto-measured
 - **Method:** TreeWalker scans visible text nodes. Checks computed `fontSize` of parent elements.
@@ -213,16 +240,33 @@ Segmented/tab/radio groups where the wrong item looks active.
 - **Threshold:** rendered aspect ratio differs from natural aspect ratio by `> 5%`.
 - **FP guards:** ignores icons smaller than `5px` in width/height.
 
-## missingClickableCursor — `Polish` — auto-measured
-- **Method:** Finds visible interactive elements (`button`, `a[href]`, `[role=button]`, `[onclick]`, checkboxes/radios, submit inputs). Checks if their computed style has `cursor: pointer`.
+## missingClickableCursor — optional advisory — auto-measured
+- **Method:** checks custom non-native `[role=button]`, `[role=link]`, and `[onclick]`
+  elements. Native buttons, links, checkboxes, radios, and inputs do not require
+  `cursor:pointer` and are excluded.
 - **Threshold:** clickable element lacks `cursor: pointer`.
 - **FP guards:** ignores hidden/exempt elements.
 
-## missingHoverFeedback — `Polish` / `Risk` — auto-measured by runner
-- **Method:** the Playwright/CDP runner moves a trusted fine pointer onto each visible enabled button, link, menu/tab action, button-like input, `summary`, or click target. It compares rendered target/descendant/near-ancestor and `::before`/`::after` visual styles before and after hover; a newly visible tooltip also counts.
+## zoom-200 / reflow-320 — adaptation matrix checks
+- `zoom-200` halves the selected desktop CSS viewport and doubles its device scale, then
+  reruns document/layout/keyboard rules to catch 200% text loss and clipping.
+- `reflow-320` uses a 320 CSS-px desktop viewport. Page-level horizontal overflow fails;
+  internally scrollable data surfaces pass. A documented essential two-dimensional surface
+  may use `data-ui-audit-reflow-exempt=true`.
+- Adaptations are cell dimensions recorded in coverage rather than detector rule names;
+  every signal's `cell.adaptation` identifies the failing mode.
+
+## missingHoverFeedback — required advisory — trusted-input heuristic
+- **Method:** the CDP runner moves a trusted fine pointer onto each visible enabled button,
+  link, menu/tab action, button-like input, `summary`, or click target. It compares rendered
+  target/descendant/near-ancestor and pseudo-element styles; a tooltip also counts.
 - **Threshold:** no change in color, background, border, shadow, outline, text decoration, opacity, filter, transform, or font weight after the configured settle/retry window. A cursor-only change does not count.
-- **Severity:** `Polish` for a standalone action; `Risk` when another action is in the same form/search/toolbar/nav/menu/tab group or within `denseGapPx` (default `12px`).
-- **FP guards:** desktop fine-pointer cells only; ignores disabled, hidden, pointer-disabled, nested duplicate, whitelist, and baseline targets. `maxTargets` truncation or a probe error makes coverage incomplete instead of silently skipping targets.
+- **Aggregation:** report one Risk advisory per semantic form/search/toolbar/nav/menu/tab
+  group, with every affected target selector as evidence. Standalone and merely adjacent
+  controls are still probed for coverage but do not generate noisy advisories.
+- **FP guards:** desktop fine-pointer cells only; ignores disabled, hidden, pointer-disabled,
+  nested duplicate, whitelist, and baseline targets. `maxTargets` truncation or a probe
+  error makes coverage incomplete instead of silently skipping targets.
 
 ## missingModalBackdrop — `Risk` — auto-measured
 - **Method:** Detects open modals (`[role=dialog]`, `[aria-modal=true]`) that lack a full-screen, semi-transparent z-index backdrop overlay to obscure background content.

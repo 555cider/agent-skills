@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>adaptation failures</title>
+<style>
+  *{box-sizing:border-box} body{margin:0;padding:24px;background:#fff;color:#111;font:16px/1.5 system-ui;overflow-x:hidden}
+  #zoom-overflow{width:700px;border:2px solid #b91c1c;padding:12px}
+  .table-scroll{max-width:100%;overflow-x:auto;margin-top:24px}.table-scroll table{width:640px;border-collapse:collapse}
+  td{border:1px solid #555;padding:8px}
+</style></head><body>
+  <main><p id="zoom-overflow">This surface fits its normal desktop viewport but cannot reflow at 200 percent zoom or at 320 CSS pixels.</p>
+  <div id="essential-surface" data-ui-audit-reflow-exempt="true" style="width:400px">Documented essential two-dimensional surface</div>
+  <div class="table-scroll"><table><tr><td>Intentional</td><td>internally</td><td>scrollable</td><td>data surface</td></tr></table></div></main>
+</body></html>

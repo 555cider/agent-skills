@@ -17,7 +17,9 @@
  *      and calls __uiAudit again per cell. Geometry rules reflect the CURRENT
  *      scroll/overlay state, so call at scroll-bottom to catch sticky-bar overlap.
  *
- * Returns: { meta, coverage, findings[] }  — see references/findings-schema.md.
+ * Returns: { meta, coverage, findings[], advisories[] } — see
+ * references/findings-schema.md. Findings are high-confidence measured defects;
+ * heuristics and unresolved visual measurements are kept in a separate channel.
  *
  * Severity is COMPUTED from thresholds, never from feel:
  *   Fail  = broken now in the rendered state (measured past threshold).
@@ -89,8 +91,54 @@
     whitelist: [],         // CSS selectors to ignore entirely
     baseline: [],          // [{rule, selector}] approved/known findings to suppress
     maxFindingsPerRule: 60,
-    maxPolish: 15
+    maxPolish: 15,
+    rulePhase: 'all'
   };
+
+  // Central rule metadata keeps execution cost and output policy explicit. Rules
+  // that depend on the current scroll position are the only rules repeated by the
+  // runner after the top-of-page pass.
+  var RULES = [
+    ruleDef('effectiveContrast', ruleContrast, 'document', 'contrast', 'WCAG 1.4.3'),
+    ruleDef('placeholderContrast', rulePlaceholder, 'document', 'contrast', 'WCAG 1.4.3'),
+    ruleDef('horizontalOverflow', ruleHOverflow, 'document', 'layout', 'WCAG 1.4.10'),
+    ruleDef('offViewport', ruleOffViewport, 'document', 'layout'),
+    ruleDef('stickyOverlapContent', ruleStickyOverlap, 'viewport', 'layout'),
+    ruleDef('ancestorCollapse', ruleCollapse, 'document', 'layout'),
+    ruleDef('textClip', ruleTextClip, 'document', 'layout'),
+    ruleDef('invisibleContent', ruleInvisibleContent, 'document', 'visibility'),
+    ruleDef('targetSizeMinimum', ruleTapTarget, 'document', 'accessibility', 'WCAG 2.5.8'),
+    ruleDef('disabledLookingPrimary', rulePrimaryAffordance, 'document', 'affordance'),
+    ruleDef('selectedStateAmbiguity', ruleSelectedState, 'document', 'state'),
+    ruleDef('authModeNavConflict', ruleAuthConflict, 'document', 'state'),
+    ruleDef('brokenOrDistortedMedia', ruleMedia, 'document', 'media'),
+    ruleDef('focusTrapLeak', ruleFocusTrap, 'document', 'keyboard', 'WCAG 2.1.2'),
+    ruleDef('layoutShiftCLS', ruleCLS, 'document', 'stability'),
+    ruleDef('designSystemDrift', ruleDrift, 'document', 'heuristic'),
+    ruleDef('loneNarrowElement', ruleLoneNarrow, 'document', 'heuristic'),
+    ruleDef('excessiveButtonsInRow', ruleExcessiveButtons, 'document', 'heuristic'),
+    ruleDef('tinyText', ruleTinyText, 'document', 'typography'),
+    ruleDef('unlabeledInput', ruleUnlabeledInput, 'document', 'accessibility', 'WCAG 4.1.2'),
+    ruleDef('lineLength', ruleLineLength, 'document', 'heuristic'),
+    ruleDef('controlGroupSpacing', ruleControlGroupSpacing, 'document', 'heuristic'),
+    ruleDef('orphanedControlRow', ruleOrphanedControlRow, 'document', 'heuristic'),
+    ruleDef('inconsistentSiblingsSpacing', ruleInconsistentSpacing, 'document', 'heuristic'),
+    ruleDef('textLineHeightOverlap', ruleTextLineHeightOverlap, 'document', 'typography'),
+    ruleDef('emptyInteractiveTarget', ruleEmptyInteractiveTarget, 'document', 'accessibility', 'WCAG 4.1.2'),
+    ruleDef('misalignedRowItems', ruleMisalignedRowItems, 'document', 'heuristic'),
+    ruleDef('accidentalFlexWrap', ruleAccidentalFlexWrap, 'document', 'heuristic'),
+    ruleDef('nonScrollableOverflow', ruleNonScrollableOverflow, 'document', 'layout'),
+    ruleDef('inconsistentBorderRadius', ruleInconsistentBorderRadius, 'document', 'heuristic'),
+    ruleDef('excessiveFirstViewportSpacing', ruleExcessiveFirstViewportSpacing, 'document', 'heuristic'),
+    ruleDef('buttonSelfHeightMismatch', ruleButtonHeightMismatch, 'document', 'heuristic'),
+    ruleDef('stretchedIconDistortion', ruleStretchedIconDistortion, 'document', 'media'),
+    ruleDef('missingClickableCursor', ruleMissingClickableCursor, 'document', 'heuristic'),
+    ruleDef('missingModalBackdrop', ruleMissingModalBackdrop, 'document', 'visibility')
+  ];
+
+  function ruleDef(name, fn, phase, category, standard) {
+    return { name: name, fn: fn, phase: phase, category: category, standard: standard || null };
+  }
 
   function audit(userConfig) {
     var cfg = merge(DEFAULTS, userConfig || {});
@@ -98,7 +146,8 @@
     var findings = [];
     var rulesRun = [];
     var rulesSkipped = [];
-    var ctx = { cfg: cfg, isMobile: isMobile, findings: findings, scanned: 0 };
+    var elementIndex = qsa('body *');
+    var ctx = { cfg: cfg, isMobile: isMobile, findings: findings, scanned: elementIndex.length, elements: elementIndex };
 
     if (_getBoundingClientRect) {
       root.Element.prototype.getBoundingClientRect = function () {
@@ -122,59 +171,14 @@
       }
     }
 
-    var RULES = [
-      ['effectiveContrast', ruleContrast],
-      ['placeholderContrast', rulePlaceholder],
-      ['horizontalOverflow', ruleHOverflow],
-      ['offViewport', ruleOffViewport],
-      ['stickyOverlapContent', ruleStickyOverlap],
-      ['ancestorCollapse', ruleCollapse],
-      ['textClip', ruleTextClip],
-      ['invisibleContent', ruleInvisibleContent],
-      ['tapTarget', ruleTapTarget],
-      ['disabledLookingPrimary', rulePrimaryAffordance],
-      ['selectedStateAmbiguity', ruleSelectedState],
-      ['authModeNavConflict', ruleAuthConflict],
-      ['brokenOrDistortedMedia', ruleMedia],
-      ['focusTrapLeak', ruleFocusTrap],
-      ['layoutShiftCLS', ruleCLS],
-      ['designSystemDrift', ruleDrift],
-      ['loneNarrowElement', ruleLoneNarrow],
-      ['excessiveButtonsInRow', ruleExcessiveButtons],
-      ['tinyText', ruleTinyText],
-      ['unlabeledInput', ruleUnlabeledInput],
-      ['lineLength', ruleLineLength],
-      ['controlGroupSpacing', ruleControlGroupSpacing],
-      ['orphanedControlRow', ruleOrphanedControlRow],
-      ['inconsistentSiblingsSpacing', ruleInconsistentSpacing],
-      ['textLineHeightOverlap', ruleTextLineHeightOverlap],
-      ['emptyInteractiveTarget', ruleEmptyInteractiveTarget],
-      ['misalignedRowItems', ruleMisalignedRowItems],
-      ['accidentalFlexWrap', ruleAccidentalFlexWrap],
-      ['nonScrollableOverflow', ruleNonScrollableOverflow],
-      ['inconsistentBorderRadius', ruleInconsistentBorderRadius],
-      ['excessiveFirstViewportSpacing', ruleExcessiveFirstViewportSpacing],
-      ['buttonSelfHeightMismatch', ruleButtonHeightMismatch],
-      ['stretchedIconDistortion', ruleStretchedIconDistortion],
-      ['missingClickableCursor', ruleMissingClickableCursor],
-      ['missingModalBackdrop', ruleMissingModalBackdrop]
-    ];
-
     try {
-      RULES.forEach(function (pair) {
-        var name = pair[0], fn = pair[1];
+      RULES.forEach(function (rule) {
+        if (cfg.rulePhase === 'viewport' && rule.phase !== 'viewport') return;
+        if (cfg.rulePhase === 'document' && rule.phase !== 'document') return;
+        var name = rule.name, fn = rule.fn;
         try {
-          var before = findings.length;
           fn(ctx);
           rulesRun.push(name);
-          // cap volume per rule
-          var added = findings.length - before;
-          if (added > cfg.maxFindingsPerRule) {
-            findings.splice(before + cfg.maxFindingsPerRule, added - cfg.maxFindingsPerRule);
-            ctx.findings.push(mk('coverage', 'Polish', 'auto-measured', 'html',
-              name + ' produced ' + added + ' findings; capped at ' + cfg.maxFindingsPerRule, {}, {}, null,
-              'Fix the shared component/token; this defect repeats.'));
-          }
         } catch (err) {
           rulesSkipped.push(name + ': ' + (err && err.message || err));
         }
@@ -183,22 +187,41 @@
       clearCache();
     }
 
-    // suppress whitelist + baseline
+    // Suppress before any cap so approved instances do not starve real defects.
+    var suppressed = { whitelist: 0, baseline: 0, perRuleCap: 0, advisoryCap: 0, byRule: {} };
     var clean = findings.filter(function (f) {
-      if (cfg.whitelist.some(function (s) { return whitelisted(f, s); })) return false;
-      if (cfg.baseline.some(function (b) { return b.rule === f.rule && b.selector === f.selector; })) return false;
+      if (cfg.whitelist.some(function (s) { return whitelisted(f, s); })) { suppressed.whitelist++; return false; }
+      if (cfg.baseline.some(function (b) { return b.rule === f.rule && b.selector === f.selector; })) { suppressed.baseline++; return false; }
       return true;
     });
-    // cap total polish volume
-    var polishCount = 0;
-    clean = clean.filter(function (f) {
-      if (f.severity !== 'Polish') return true;
-      polishCount++;
-      return polishCount <= cfg.maxPolish;
-    });
+    clean = dedupeSignals(clean);
 
-    var counts = { Fail: 0, Risk: 0, Polish: 0 };
-    clean.forEach(function (f) { counts[f.severity] = (counts[f.severity] || 0) + 1; });
+    var metaByName = {};
+    RULES.forEach(function (rule) { metaByName[rule.name] = rule; });
+    clean.forEach(function (f) {
+      var meta = metaByName[f.rule] || { category: 'coverage', standard: null };
+      f.category = meta.category;
+      if (meta.standard) f.standard = meta.standard;
+    });
+    clean = capPerRule(clean, cfg.maxFindingsPerRule, suppressed);
+
+    var findingSignals = [];
+    var advisorySignals = [];
+    clean.forEach(function (f) {
+      if (f.severity === 'Polish' || f.confidence === 'visual-judgment' || f.confidence === 'needs-visual') {
+        f.review = f.severity === 'Polish' ? 'optional' : 'required';
+        advisorySignals.push(f);
+      } else {
+        findingSignals.push(f);
+      }
+    });
+    var required = advisorySignals.filter(function (f) { return f.review === 'required'; });
+    var optional = advisorySignals.filter(function (f) { return f.review === 'optional'; });
+    optional = fairCap(optional, cfg.maxPolish, suppressed);
+    advisorySignals = required.concat(optional);
+
+    var counts = countSeverities(findingSignals);
+    var advisoryCounts = { required: required.length, optional: optional.length };
 
     return {
       meta: {
@@ -215,10 +238,66 @@
         rulesRun: rulesRun,
         rulesSkipped: rulesSkipped,
         elementsScanned: ctx.scanned,
-        counts: counts
+        counts: counts,
+        advisoryCounts: advisoryCounts,
+        suppressed: suppressed
       },
-      findings: clean
+      findings: findingSignals,
+      advisories: advisorySignals
     };
+  }
+
+  function dedupeSignals(items) {
+    var seen = {};
+    return items.filter(function (f) {
+      var key = f.rule + '|' + f.selector + '|' + f.message;
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    });
+  }
+
+  function capPerRule(items, max, suppressed) {
+    if (!Number.isFinite(max) || max < 1) return items;
+    var counts = {};
+    return items.filter(function (f) {
+      counts[f.rule] = (counts[f.rule] || 0) + 1;
+      if (counts[f.rule] <= max) return true;
+      suppressed.perRuleCap++;
+      suppressed.byRule[f.rule] = (suppressed.byRule[f.rule] || 0) + 1;
+      return false;
+    });
+  }
+
+  // Round-robin across rules prevents one noisy heuristic from consuming the
+  // entire optional-advisory budget.
+  function fairCap(items, max, suppressed) {
+    if (!Number.isFinite(max) || max < 0 || items.length <= max) return items;
+    var buckets = {}, order = [];
+    items.forEach(function (item) {
+      if (!buckets[item.rule]) { buckets[item.rule] = []; order.push(item.rule); }
+      buckets[item.rule].push(item);
+    });
+    var out = [], index = 0;
+    while (out.length < max && order.length) {
+      var rule = order[index % order.length];
+      if (buckets[rule].length) out.push(buckets[rule].shift());
+      if (!buckets[rule].length) {
+        order.splice(index % order.length, 1);
+        if (!order.length) break;
+      } else index++;
+    }
+    suppressed.advisoryCap += items.length - out.length;
+    items.forEach(function (item) {
+      if (out.indexOf(item) < 0) suppressed.byRule[item.rule] = (suppressed.byRule[item.rule] || 0) + 1;
+    });
+    return out;
+  }
+
+  function countSeverities(items) {
+    var counts = { Fail: 0, Risk: 0, Polish: 0 };
+    items.forEach(function (f) { counts[f.severity] = (counts[f.severity] || 0) + 1; });
+    return counts;
   }
 
   // ------------------------------- rules -------------------------------
@@ -239,7 +318,6 @@
       if (!el || seen.has(el)) continue;
       seen.add(el);
       if (!isVisible(el) || isExempt(el)) continue;
-      ctx.scanned++;
       var cs = getComputedStyle(el);
       var fg = parseColor(cs.color);
       if (!fg) continue;
@@ -276,7 +354,6 @@
     var cfg = ctx.cfg;
     qsa('input[placeholder], textarea[placeholder]').forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
-      ctx.scanned++;
       var ph = getComputedStyle(el, '::placeholder');
       var fg = parseColor(ph.color);
       if (!fg) return;
@@ -297,16 +374,22 @@
     var tol = ctx.cfg.overflowTolerancePx;
     if (de.scrollWidth <= de.clientWidth + tol) return;
     // find widest visible offenders that cross the viewport's right edge
-    var vw = de.clientWidth, offenders = [];
-    qsa('body *').forEach(function (el) {
+    var vw = de.clientWidth, offenders = [], exemptOverflow = false;
+    ctx.elements.forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
+      if (ctx.cfg.adaptation === 'reflow-320' && el.closest('[data-ui-audit-reflow-exempt=true]')) {
+        var exemptRect = el.getBoundingClientRect();
+        if (exemptRect.right > vw + tol) exemptOverflow = true;
+        return;
+      }
       var cs = getComputedStyle(el);
-      if (/(auto|scroll)/.test(cs.overflowX)) return; // intentional scroll container
+      if (/(auto|scroll)/.test(cs.overflowX) || insideHorizontalScroller(el)) return;
       var r = el.getBoundingClientRect();
       if (r.width > 0 && r.right > vw + tol && r.left < vw) {
         offenders.push({ el: el, over: Math.round(r.right - vw) });
       }
     });
+    if (!offenders.length && exemptOverflow) return;
     offenders.sort(function (a, b) { return b.over - a.over; });
     ctx.findings.push(mk('horizontalOverflow', 'Fail', 'auto-measured', 'html',
       'Page scrolls horizontally: scrollWidth ' + de.scrollWidth + ' > viewport ' + vw + '.',
@@ -318,7 +401,7 @@
 
   function ruleOffViewport(ctx) {
     var vw = document.documentElement.clientWidth;
-    qsa('body *').forEach(function (el) {
+    ctx.elements.forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
       if (!hasOwnText(el) && el.childElementCount) return;
       var r = el.getBoundingClientRect();
@@ -337,7 +420,7 @@
   }
 
   function ruleStickyOverlap(ctx) {
-    var bars = qsa('body *').filter(function (el) {
+    var bars = ctx.elements.filter(function (el) {
       if (!isVisible(el) || isExempt(el)) return false;
       var p = getComputedStyle(el).position;
       if (p !== 'fixed' && p !== 'sticky') return false;
@@ -378,7 +461,7 @@
 
   function ruleCollapse(ctx) {
     var px = ctx.cfg.collapsePx;
-    qsa('body *').forEach(function (el) {
+    ctx.elements.forEach(function (el) {
       if (isExempt(el)) return;
       var hasContent = el.childElementCount > 0 || hasOwnText(el);
       if (!hasContent) return;
@@ -411,7 +494,7 @@
 
   function ruleTextClip(ctx) {
     var tol = ctx.cfg.overflowTolerancePx;
-    qsa('body *').forEach(function (el) {
+    ctx.elements.forEach(function (el) {
       if (!isVisible(el) || isExempt(el) || !hasOwnText(el)) return;
       var cs = getComputedStyle(el);
       var overX = el.scrollWidth > el.clientWidth + tol, overY = el.scrollHeight > el.clientHeight + tol;
@@ -441,7 +524,7 @@
   }
 
   function ruleInvisibleContent(ctx) {
-    qsa('body *').forEach(function (el) {
+    ctx.elements.forEach(function (el) {
       var cs = getComputedStyle(el);
       if (cs.display === 'none') return;
       var hiddenVis = cs.visibility === 'hidden';
@@ -466,11 +549,11 @@
   }
 
   function ruleTapTarget(ctx) {
-    if (!ctx.isMobile) return;
     var cfg = ctx.cfg.tap;
     var sel = 'button,[role=button],a[href],input:not([type=hidden]),select,textarea,[onclick],[role=tab],[role=menuitem]';
     var targets = qsa(sel).filter(function (el) {
       if (!isVisible(el) || isExempt(el)) return false;
+      if (el.closest('[data-ui-audit-target-exempt=true]')) return false;
       if (el.tagName === 'A' && getComputedStyle(el).display === 'inline') return false; // inline text link
       var r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0;
@@ -479,35 +562,51 @@
       var r = el.getBoundingClientRect();
       var small = Math.min(r.width, r.height);
       if (small < cfg.fail) {
-        ctx.findings.push(mk('tapTarget', 'Fail', 'auto-measured', cssPath(el),
-          'Tap target ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px is below the ' + cfg.fail + 'px minimum.',
-          { w: Math.round(r.width), h: Math.round(r.height) }, { min: cfg.fail }, rectOf(el),
-          'Increase hit area to at least ' + cfg.risk + '×' + cfg.risk + 'px (padding or min-width/height).'));
-      } else if (small < cfg.risk) {
-        ctx.findings.push(mk('tapTarget', 'Risk', 'auto-measured', cssPath(el),
-          'Tap target ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px is under the comfortable ' + cfg.risk + 'px.',
+        var spacing = targetSpacingProof(el, targets, cfg.fail);
+        if (!spacing.passes) {
+          ctx.findings.push(mk('targetSizeMinimum', 'Fail', 'auto-measured', cssPath(el),
+            'Pointer target ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px is below ' + cfg.fail + 'px and its spacing exception fails.',
+            { w: Math.round(r.width), h: Math.round(r.height), nearestGapPx: round2(spacing.nearestGapPx), nearestSelector: spacing.nearestSelector },
+            { min: cfg.fail, spacingCircleDiameter: cfg.fail }, rectOf(el),
+            'Increase the hit area to at least ' + cfg.fail + '×' + cfg.fail + 'px, or provide enough separation for the WCAG spacing exception.'));
+        }
+      }
+      if (ctx.isMobile && small >= cfg.fail && small < cfg.risk) {
+        ctx.findings.push(mk('targetSizeMinimum', 'Polish', 'auto-measured', cssPath(el),
+          'Pointer target ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px meets the minimum but is under the comfortable ' + cfg.risk + 'px mobile size.',
           { w: Math.round(r.width), h: Math.round(r.height) }, { comfortable: cfg.risk }, rectOf(el),
           'Aim for ' + cfg.risk + 'px touch targets on mobile.'));
       }
-      // crowding: nearest neighbor gap. Only a mis-tap risk when targets are SMALL and
-      // not in a nav/tab bar where edge-to-edge adjacency is the intended design.
-      if (Math.min(r.width, r.height) >= cfg.risk) return;
-      if (el.closest('nav,[role=navigation],[role=tablist],[role=tabbar]')) return;
-      for (var i = 0; i < targets.length; i++) {
-        var o = targets[i];
-        if (o === el || el.contains(o) || o.contains(el)) continue;
-        var or = o.getBoundingClientRect();
-        if (Math.min(or.width, or.height) >= cfg.risk) continue;
-        var gap = edgeGap(r, or);
-        if (gap >= 0 && gap < cfg.crowdGap) {
-          ctx.findings.push(mk('tapTarget', 'Risk', 'auto-measured', cssPath(el),
-            'Tap target is only ' + Math.round(gap) + 'px from an adjacent target (' + cssPath(o) + ').',
-            { gapPx: Math.round(gap) }, { minGap: cfg.crowdGap }, rectOf(el),
-            'Add spacing between adjacent touch targets (>=' + cfg.crowdGap + 'px).'));
-          break;
-        }
-      }
     });
+  }
+
+  // WCAG 2.5.8 spacing exception: a 24 CSS-px diameter circle centered on a
+  // sub-minimum target must not intersect another target (or another such circle).
+  function targetSpacingProof(el, targets, diameter) {
+    var r = el.getBoundingClientRect();
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2, radius = diameter / 2;
+    var proof = { passes: true, nearestGapPx: Infinity, nearestSelector: null };
+    targets.forEach(function (other) {
+      if (other === el || el.contains(other) || other.contains(el)) return;
+      var o = other.getBoundingClientRect();
+      var ocx = o.left + o.width / 2, ocy = o.top + o.height / 2;
+      var otherSmall = Math.min(o.width, o.height) < diameter;
+      var distance;
+      if (otherSmall) {
+        distance = Math.sqrt(Math.pow(cx - ocx, 2) + Math.pow(cy - ocy, 2)) - diameter;
+      } else {
+        var dx = Math.max(o.left - cx, 0, cx - o.right);
+        var dy = Math.max(o.top - cy, 0, cy - o.bottom);
+        distance = Math.sqrt(dx * dx + dy * dy) - radius;
+      }
+      if (distance < proof.nearestGapPx) {
+        proof.nearestGapPx = distance;
+        proof.nearestSelector = cssPath(other);
+      }
+      if (distance < 0) proof.passes = false;
+    });
+    if (!Number.isFinite(proof.nearestGapPx)) proof.nearestGapPx = null;
+    return proof;
   }
 
   function rulePrimaryAffordance(ctx) {
@@ -519,11 +618,14 @@
         return isVisible(b) && !isExempt(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
       });
       if (!btns.length) return;
-      // candidate primary = submit or largest button
-      var primary = btns.filter(function (b) { return b.type === 'submit' || b.getAttribute('type') === 'submit'; })[0];
-      if (!primary) {
-        primary = btns.slice().sort(function (a, b) { return area(b) - area(a); })[0];
-      }
+      // Candidate primary must carry actual submit/primary semantics. Picking the
+      // largest arbitrary button on a page mistakes filters and tabs for CTAs.
+      var primary = btns.filter(function (b) {
+        return !!b.form && (b.type === 'submit' || b.getAttribute('type') === 'submit');
+      })[0];
+      if (!primary) primary = btns.filter(function (b) {
+        return b.matches('[data-primary=true],.primary,.primary-action,[class*=primary]');
+      })[0];
       if (!primary) return;
       var cs = getComputedStyle(primary);
       var fill = parseColor(cs.backgroundColor);
@@ -544,22 +646,10 @@
     // segmented/tab/radio groups: ambiguous or inverted selection
     var groups = [];
     qsa('[role=tablist],[role=radiogroup]').forEach(function (g) { groups.push(g); });
-    // heuristic groups: a parent with 2-4 sibling buttons of similar size in a row.
-    // Exclude app navigation — bottom nav / nav bars are handled by authModeNavConflict
-    // and contrast; treating them as segmented controls produces noise.
-    qsa('body *').forEach(function (g) {
-      if (groups.indexOf(g) >= 0) return;
-      if (g.matches('nav,[role=navigation]') || g.closest('nav,[role=navigation]')) return;
-      var kids = Array.prototype.filter.call(g.children, function (c) {
-        return /^(BUTTON|A)$/.test(c.tagName) && isVisible(c);
-      });
-      if (kids.length < 2 || kids.length > 4) return;
-      var cs = getComputedStyle(g);
-      if (cs.display.indexOf('flex') < 0 && cs.display.indexOf('grid') < 0) return;
-      // similar size + horizontal
-      var hs = kids.map(function (k) { return k.getBoundingClientRect(); });
-      var sameRow = hs.every(function (r) { return Math.abs(r.top - hs[0].top) < 4; });
-      if (sameRow) groups.push(g);
+    // Non-ARIA custom segmented controls must opt in with an explicit semantic
+    // marker. Arbitrary two-button flex rows are normally primary/secondary CTAs.
+    qsa('[data-ui-audit-selection-group],.segmented-control,.segment-control,.seg').forEach(function (g) {
+      if (groups.indexOf(g) < 0 && !g.closest('nav,[role=navigation]')) groups.push(g);
     });
     var seenG = new Set();
     groups.forEach(function (g) {
@@ -614,7 +704,7 @@
     var authCtx = hasPassword || routeAuth || modeSelector;
     if (!authCtx) return;
     // persistent app nav: role=navigation OR fixed bottom bar with >=3 link/tab items
-    var navs = qsa('nav,[role=navigation]').concat(qsa('body *').filter(function (el) {
+    var navs = qsa('nav,[role=navigation]').concat(ctx.elements.filter(function (el) {
       var cs = getComputedStyle(el);
       return cs.position === 'fixed' && (parseFloat(cs.bottom) === 0) && isVisible(el);
     })).filter(function (el, i, arr) { return arr.indexOf(el) === i; }); // dedupe
@@ -736,48 +826,45 @@
   function ruleLoneNarrow(ctx) {
     var cfg = ctx.cfg.layout || { loneNarrowWidth: 180 };
     var threshold = cfg.loneNarrowWidth;
-    var sel = 'button,[role=button],.btn,input,select,textarea,.chip,.badge,.pill,.tag';
-
-    var allVisible = qsa('body *').filter(function (el) {
+    var sel = 'button,[role=button],.btn,input:not([type=hidden]),select,textarea';
+    var candidates = qsa(sel).filter(function (el) {
       if (!isVisible(el) || isExempt(el)) return false;
+      if (el.closest('h1,h2,h3,h4,h5,h6,label,[data-ui-audit-layout-exempt=true]')) return false;
+      var closestInteractive = el.closest('button,[role=button],a[href],input,select,textarea');
+      if (closestInteractive && closestInteractive !== el) return false;
       var r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    });
-
-    var candidates = allVisible.filter(function (el) {
-      var r = el.getBoundingClientRect();
-      if (r.width >= threshold) return false;
-      var cs = getComputedStyle(el);
-      if (cs.display === 'inline' && el.tagName === 'A') return false;
-
-      if (el.matches(sel) || (hasOwnText(el) && r.width < threshold)) {
-        return true;
-      }
-      return false;
+      return r.width > 0 && r.height > 0 && r.width < threshold;
     });
 
     candidates.forEach(function (el) {
       var r = el.getBoundingClientRect();
-      var alone = true;
-      for (var i = 0; i < allVisible.length; i++) {
-        var other = allVisible[i];
-        if (other === el || el.contains(other) || other.contains(el)) continue;
-
+      var group = el.closest('[data-ui-audit-control-group],form,[role=group],.toolbar,.filters,.controls');
+      if (!group || group === el) return;
+      var controls = qsa(sel, group).filter(function (other) {
+        if (other === el || !isVisible(other) || isExempt(other)) return false;
+        return other.closest('[data-ui-audit-control-group],form,[role=group],.toolbar,.filters,.controls') === group;
+      });
+      if (controls.length < 2) return;
+      var sameRow = controls.some(function (other) {
         var or = other.getBoundingClientRect();
         var overlap = Math.min(r.bottom, or.bottom) - Math.max(r.top, or.top);
         var minH = Math.min(r.height, or.height);
-
-        if (overlap > 0 && (overlap >= minH * 0.5 || overlap >= 10)) {
-          alone = false;
-          break;
-        }
-      }
-
-      if (alone) {
+        return overlap > 0 && (overlap >= minH * 0.5 || overlap >= 10);
+      });
+      if (sameRow) return;
+      var adjacentRows = {};
+      controls.forEach(function (other) {
+        var top = Math.round(other.getBoundingClientRect().top / 6) * 6;
+        adjacentRows[top] = (adjacentRows[top] || 0) + 1;
+      });
+      var hasPeerRow = Object.keys(adjacentRows).some(function (top) {
+        return adjacentRows[top] >= 2 && Math.abs(Number(top) - r.top) < Math.max(180, group.getBoundingClientRect().height);
+      });
+      if (hasPeerRow) {
         var text = (el.textContent || el.value || '').trim().slice(0, 20);
         ctx.findings.push(mk('loneNarrowElement', 'Polish', 'auto-measured', cssPath(el),
-          'Narrow element "' + text + '" (' + Math.round(r.width) + 'px) occupies a whole row by itself. Prefer sharing the row with other elements.',
-          { width: Math.round(r.width), text: text }, { threshold: threshold }, rectOf(el),
+          'Narrow control "' + text + '" (' + Math.round(r.width) + 'px) is stranded beside an adjacent row of related controls.',
+          { width: Math.round(r.width), text: text, groupSelector: cssPath(group) }, { threshold: threshold }, rectOf(el),
           'Place this element in the same row as other related controls, or increase its width to fill the row if it must be alone.'));
       }
     });
@@ -797,68 +884,48 @@
       return false;
     }
 
-    var buttons = qsa('body *').filter(function (el) {
+    var buttons = qsa('button,[role=button],input[type=button],input[type=submit],.btn,.button').filter(function (el) {
       if (!isVisible(el) || isExempt(el)) return false;
       var r = el.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) return false;
       return isButton(el);
     });
-
-    var rows = [];
-    buttons.forEach(function (b) {
-      var br = b.getBoundingClientRect();
-      var placed = false;
-      for (var i = 0; i < rows.length; i++) {
-        var row = rows[i];
-        var overlaps = row.some(function (member) {
-          var mr = member.rect;
-          var overlap = Math.min(br.bottom, mr.bottom) - Math.max(br.top, mr.top);
-          var minH = Math.min(br.height, mr.height);
-          return overlap > 0 && (overlap >= minH * 0.5 || overlap >= 10);
-        });
-        if (overlaps) {
-          row.push({ el: b, rect: br });
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) {
-        rows.push([{ el: b, rect: br }]);
-      }
+    var containers = [];
+    buttons.forEach(function (button) {
+      var container = button.closest('[data-ui-audit-action-group],[role=toolbar],.actions,.toolbar') || button.parentElement;
+      if (container && containers.indexOf(container) < 0) containers.push(container);
     });
-
-    rows.forEach(function (row) {
+    containers.forEach(function (container) {
+      if (container.closest('nav,[role=navigation],[role=tablist],[data-ui-audit-valid-control-group=true]')) return;
+      var local = buttons.filter(function (button) {
+        return (button.closest('[data-ui-audit-action-group],[role=toolbar],.actions,.toolbar') || button.parentElement) === container;
+      });
+      var rows = [];
+      local.forEach(function (button) {
+        var br = button.getBoundingClientRect();
+        var row = rows.filter(function (candidate) { return Math.abs(candidate[0].rect.top - br.top) < 6; })[0];
+        if (row) row.push({ el: button, rect: br });
+        else rows.push([{ el: button, rect: br }]);
+      });
+      rows.forEach(function (row) {
       if (row.length > maxCount) {
-        var commonAncestor = findCommonAncestor(row.map(function (item) { return item.el; }));
         var selectors = row.map(function (item) {
           return (item.el.textContent || '').trim().slice(0, 15) || item.el.tagName.toLowerCase();
         }).join(', ');
 
-        ctx.findings.push(mk('excessiveButtonsInRow', 'Polish', 'auto-measured', cssPath(commonAncestor),
+        ctx.findings.push(mk('excessiveButtonsInRow', 'Polish', 'auto-measured', cssPath(container),
           'Too many buttons listed in a single row (' + row.length + ' buttons: ' + selectors + '). Consider grouping some under a menu/dropdown.',
-          { count: row.length }, { max: maxCount }, rectOf(commonAncestor),
+          { count: row.length }, { max: maxCount }, rectOf(container),
           'Group some or all of these buttons into a dropdown menu (e.g., a "More" action menu) to clean up the row.'));
       }
-    });
-  }
-
-  function findCommonAncestor(elements) {
-    if (!elements.length) return document.body;
-    var current = elements[0];
-    while (current) {
-      var allContain = elements.every(function (el) {
-        return current.contains(el);
       });
-      if (allContain) return current;
-      current = current.parentElement;
-    }
-    return document.body;
+    });
   }
 
   function ruleDrift(ctx) {
     var cfg = ctx.cfg.polish;
     var radii = {}, shadows = {}, hues = {}, fontPairs = {};
-    qsa('body *').forEach(function (el) {
+    ctx.elements.forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
       var cs = getComputedStyle(el);
       var r = el.getBoundingClientRect();
@@ -1092,7 +1159,7 @@
   }
 
   function ruleInconsistentSpacing(ctx) {
-    qsa('body *').forEach(function (parent) {
+    ctx.elements.forEach(function (parent) {
       if (parent.childElementCount < 3) return;
       var groups = {};
       for (var i = 0; i < parent.children.length; i++) {
@@ -1160,7 +1227,7 @@
   }
 
   function ruleMisalignedRowItems(ctx) {
-    qsa('body *').forEach(function (parent) {
+    ctx.elements.forEach(function (parent) {
       if (parent.childElementCount < 2) return;
       var kids = Array.prototype.slice.call(parent.children).filter(function (c) {
         return isVisible(c) && !isExempt(c);
@@ -1191,7 +1258,7 @@
   }
 
   function ruleAccidentalFlexWrap(ctx) {
-    qsa('body *').forEach(function (el) {
+    ctx.elements.forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
       var cs = getComputedStyle(el);
       if (cs.display.indexOf('flex') < 0 || cs.flexWrap !== 'wrap') return;
@@ -1234,7 +1301,7 @@
   }
 
   function ruleNonScrollableOverflow(ctx) {
-    qsa('body *').forEach(function (el) {
+    ctx.elements.forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
       var cs = getComputedStyle(el);
       if (cs.overflowY !== 'hidden' && cs.overflowY !== 'clip') return;
@@ -1251,7 +1318,7 @@
   }
 
   function ruleInconsistentBorderRadius(ctx) {
-    qsa('body *').forEach(function (parent) {
+    ctx.elements.forEach(function (parent) {
       if (parent.childElementCount < 2) return;
       var groups = {};
       for (var i = 0; i < parent.children.length; i++) {
@@ -1300,7 +1367,7 @@
   }
 
   function ruleButtonHeightMismatch(ctx) {
-    qsa('body *').forEach(function (parent) {
+    ctx.elements.forEach(function (parent) {
       if (parent.childElementCount < 2) return;
       var buttons = Array.prototype.slice.call(parent.children).filter(function (c) {
         if (!isVisible(c) || isExempt(c)) return false;
@@ -1351,7 +1418,9 @@
   }
 
   function ruleMissingClickableCursor(ctx) {
-    qsa('button, a[href], [role=button], [onclick], input[type=checkbox], input[type=radio], input[type=submit], input[type=button]').forEach(function (el) {
+    // Native buttons, links, and form controls do not require cursor:pointer.
+    // Restrict this advisory to custom elements that borrow interactive semantics.
+    qsa('[role=button]:not(button),[role=link]:not(a),[onclick]:not(button):not(a):not(input)').forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
       var cs = getComputedStyle(el);
       if (!cs) return;
@@ -1374,7 +1443,7 @@
     modals.forEach(function (modal) {
       var mz = zIndexOf(modal, 0);
       var hasBackdrop = false;
-      qsa('body *').forEach(function (el) {
+      ctx.elements.forEach(function (el) {
         if (hasBackdrop || el === modal || modal.contains(el) || !isVisible(el)) return;
         var r = el.getBoundingClientRect();
         if (r.width < vw * 0.9 || r.height < vh * 0.9) return;
@@ -1401,7 +1470,6 @@
 
   // ------------------------------ helpers ------------------------------
   function qsa(sel, root2) { return Array.prototype.slice.call((root2 || document).querySelectorAll(sel)); }
-  function area(el) { var r = el.getBoundingClientRect(); return r.width * r.height; }
   function hasOwnText(el) {
     for (var i = 0; i < el.childNodes.length; i++) {
       var c = el.childNodes[i];
@@ -1497,6 +1565,13 @@
     var dy = Math.max(0, Math.max(a.top - b.bottom, b.top - a.bottom));
     if (dx > 0 && dy > 0) return Math.sqrt(dx * dx + dy * dy);
     return dx + dy; // adjacent on one axis
+  }
+  function insideHorizontalScroller(el) {
+    for (var parent = el.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+      var style = getComputedStyle(parent);
+      if (/(auto|scroll)/.test(style.overflowX) && parent.scrollWidth > parent.clientWidth + 1) return true;
+    }
+    return false;
   }
   function rectOf(el) { var r = el.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; }
   function round2(x) { return Math.round(x * 100) / 100; }

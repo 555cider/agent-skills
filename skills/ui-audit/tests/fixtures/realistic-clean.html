@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>anonymized realistic controls</title>
+<style>
+  *{box-sizing:border-box} body{margin:0;padding:32px;background:#fff;color:#111;font:16px/1.5 system-ui}.skip{position:absolute;left:8px;top:8px}
+  .eyebrow{font-weight:700}.hero-actions,.status-tabs,.filters-row{display:flex;gap:8px}.hero-actions a,.status-tabs button,.filters-row button{min-height:44px;padding:8px 16px;border:1px solid #555;background:#fff;color:#111}
+  .primary{background:#111!important;color:#fff!important}.audit-group{margin-top:32px}.audit-group>.solo{display:block;width:96px;min-height:44px;margin-bottom:12px}
+</style></head><body>
+  <a class="skip" href="#main">Skip</a><main id="main"><p class="eyebrow"><strong>Workspace overview</strong></p><h1>Review current activity</h1>
+  <div class="hero-actions"><a class="primary" href="#start"><span>Start now</span></a><a href="#learn"><span>Learn more</span></a></div>
+  <div class="status-tabs" role="tablist" aria-label="status"><button role="tab" aria-selected="true">All</button><button role="tab">New</button><button role="tab">Open</button><button role="tab">Paused</button><button role="tab">Done</button></div>
+  <div class="audit-group" data-ui-audit-control-group><button class="solo">Sort</button><div class="filters-row"><button>Owner</button><button>Date</button></div></div>
+  </main>
+</body></html>

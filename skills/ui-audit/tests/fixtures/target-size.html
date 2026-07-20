@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>target size spacing</title>
+<style>
+  *{box-sizing:border-box} body{margin:0;padding:32px;font:16px/1.5 system-ui;background:#fff;color:#111}
+  section{display:flex;margin:0 0 48px}.target{width:20px;height:20px;padding:0;border:1px solid #111;background:#eee;color:#111}
+  .pass{gap:4px}.fail{gap:2px}.safe{width:24px;height:24px}.inline{display:inline}.far{margin-top:48px}
+</style></head><body>
+  <section class="pass" aria-label="spacing exception passes"><button id="pass-a" class="target">A</button><button id="pass-b" class="target">B</button></section>
+  <section class="fail" aria-label="spacing exception fails"><button id="fail-a" class="target">C</button><button id="fail-b" class="target">D</button></section>
+  <p class="far">Read the <a id="inline-link" class="inline" href="#details">details</a> before continuing.</p>
+  <button id="explicit-exempt" class="target far" data-ui-audit-target-exempt="true">E</button>
+  <button id="safe-target" class="safe far">Safe</button>
+</body></html>
