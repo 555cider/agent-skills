@@ -40,6 +40,19 @@ function textPrompt(output) {
     .join("\n")
 }
 
+function messageText(message) {
+  if (!message || typeof message !== "object") return ""
+  if (typeof message.content === "string") return message.content
+  if (typeof message.text === "string") return message.text
+  if (Array.isArray(message.content)) {
+    return message.content
+      .filter((part) => part && part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("\n")
+  }
+  return ""
+}
+
 export const AgentMemoryPlugin = async ({ directory }) => ({
   "chat.message": async (input, output) => {
     const prompt = textPrompt(output)
@@ -52,6 +65,8 @@ export const AgentMemoryPlugin = async ({ directory }) => ({
       event_id: output?.message?.id,
     })
     if (!recalled.context) return
+    // Mutate the parts array in place: OpenCode keeps its own reference, so
+    // reassigning output.parts would be silently ignored.
     output.parts.push({
       id: `agent-memory-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       sessionID: output.message.sessionID,
@@ -74,23 +89,39 @@ export const AgentMemoryPlugin = async ({ directory }) => ({
     })
   },
 
-  "message.updated": async (input, output) => {
-    const message = output?.message || input?.message || output || input
-    if (message?.role && message.role !== "assistant") return
-    invoke("assistant_stop", {
-      cwd: directory,
-      session_id: message?.sessionID || input?.sessionID,
-      event_id: message?.id || input?.messageID,
-      last_assistant_message: message?.content || message?.text || output?.text || "",
-    }, 15000)
-  },
-
-  "session.idle": async (input) => {
-    invoke("session_end", {
-      ...input,
-      cwd: directory,
-      session_id: input?.sessionID || input?.id,
-      event_id: input?.eventID || input?.id,
-    }, 15000)
+  // message.updated and session.idle are event-bus types, not top-level
+  // hooks; they only arrive through the generic `event` hook.
+  event: async ({ event }) => {
+    if (!event || typeof event !== "object") return
+    const properties = event.properties || {}
+    if (event.type === "message.updated") {
+      const message = properties.info || properties.message || properties
+      if (message?.role && message.role !== "assistant") return
+      // Streaming updates fire repeatedly; capture only the completed state
+      // so event-id dedupe does not pin an empty early snapshot.
+      if (message?.time && !message.time.completed) return
+      invoke(
+        "assistant_stop",
+        {
+          cwd: directory,
+          session_id: message?.sessionID || properties?.sessionID,
+          event_id: message?.id || properties?.messageID,
+          last_assistant_message: messageText(message),
+        },
+        15000,
+      )
+      return
+    }
+    if (event.type === "session.idle") {
+      invoke(
+        "session_end",
+        {
+          cwd: directory,
+          session_id: properties?.sessionID || properties?.id,
+          event_id: properties?.sessionID || properties?.id,
+        },
+        15000,
+      )
+    }
   },
 })

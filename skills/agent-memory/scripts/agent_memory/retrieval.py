@@ -26,10 +26,36 @@ from .util import (
 )
 
 
-MAINTENANCE_RE = re.compile(
-    r"(?i)\b(?:forget|remove from memory|delete memory|do not use|don't use|never use|stop using|no longer|instead of)\b"
-    r"|기억.*(?:삭제|잊)|잊어|메모리.*삭제|쓰지\s*마|사용하지|이제.*말고|대신"
+# Maintenance mode suppresses actionable memory, so a false positive silently
+# hides relevant records. Change words like "대신/instead of" alone are common
+# in ordinary coding questions; they only signal maintenance when combined
+# with a durability marker, while explicit memory operations always do.
+MAINTENANCE_OPS_RE = re.compile(
+    r"(?i)\bforget\b"
+    r"|remove .{0,24}from memory"
+    r"|delete .{0,24}memor"
+    r"|update .{0,40}\b(?:memory|memories|decision|preference|constraint)\b"
+    r"|기억.{0,8}(?:삭제|지워|잊)"
+    r"|잊어"
+    r"|메모리.{0,8}(?:삭제|업데이트|정리|수정)"
+    r"|(?:기억|메모리|결정).{0,20}(?:바꿔|변경|업데이트|정정)"
 )
+MAINTENANCE_CHANGE_RE = re.compile(
+    r"(?i)\bdo not use\b|\bdon'?t use\b|\bnever use\b|\bstop using\b|\bno longer\b|\binstead of\b"
+    r"|대신|말고|쓰지\s*마|사용하지\s*마"
+)
+MAINTENANCE_DURABLE_RE = re.compile(
+    r"(?i)\bfrom now on\b|\bgoing forward\b|\banymore\b|이제부터|이제는|이제\b|앞으로"
+)
+
+TRUNCATED_MIN_TOKENS = 160
+
+
+def is_maintenance_prompt(prompt: str) -> bool:
+    return bool(
+        MAINTENANCE_OPS_RE.search(prompt)
+        or (MAINTENANCE_CHANGE_RE.search(prompt) and MAINTENANCE_DURABLE_RE.search(prompt))
+    )
 
 
 def _chunks(values: Sequence[str], size: int = 500) -> Iterable[Sequence[str]]:
@@ -225,7 +251,7 @@ class Retriever:
         exclude_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         started = datetime.now(UTC)
-        mode = "maintenance" if MAINTENANCE_RE.search(prompt) else "recall"
+        mode = "maintenance" if is_maintenance_prompt(prompt) else "recall"
         query_id = f"qry_{uuid.uuid4().hex[:24]}"
         lexical = self._lexical(prompt)
         trigram = [] if lexical else self._trigram(prompt)
@@ -303,6 +329,7 @@ class Retriever:
                 {
                     "score": round(score, 8),
                     "stale": stale,
+                    "truncated": False,
                     "actionable": record["state"] == "active" and mode == "recall",
                 }
             )
@@ -321,6 +348,24 @@ class Retriever:
                 continue
             cost = rough_tokens(record["statement"] + " " + " ".join(record["conditions"])) + 20
             if consumed + cost > token_budget:
+                remaining = token_budget - consumed
+                if cost > token_budget and len(items) < limit and remaining >= TRUNCATED_MIN_TOKENS:
+                    # A record that can never fit the budget still surfaces as
+                    # a truncated head with a pointer instead of silently
+                    # vanishing from every packet.
+                    allowed_bytes = max(0, (remaining - 24) * 4)
+                    head = (
+                        record["statement"]
+                        .encode("utf-8")[:allowed_bytes]
+                        .decode("utf-8", errors="ignore")
+                        .rstrip()
+                    )
+                    view["statement"] = head + " …"
+                    view["truncated"] = True
+                    consumed += remaining
+                    items.append(view)
+                    if len(items) >= limit:
+                        break
                 continue
             consumed += cost
             items.append(view)
@@ -328,7 +373,7 @@ class Retriever:
                 break
 
         material = bool(items or conflicts)
-        context = self.render_context(mode, items, conflicts) if material else ""
+        context = self.render_context(mode, items, conflicts, query_id) if material else ""
         elapsed_ms = (datetime.now(UTC) - started).total_seconds() * 1000
         packet = {
             "schema": PACKET_SCHEMA,
@@ -372,9 +417,15 @@ class Retriever:
 
     @staticmethod
     def render_context(
-        mode: str, items: Sequence[dict[str, Any]], conflicts: Sequence[dict[str, Any]]
+        mode: str,
+        items: Sequence[dict[str, Any]],
+        conflicts: Sequence[dict[str, Any]],
+        query_id: str = "",
     ) -> str:
-        lines = [f'<agent-memory schema="{PACKET_SCHEMA}" mode="{mode}">']
+        opening = f'<agent-memory schema="{PACKET_SCHEMA}" mode="{mode}"'
+        if query_id:
+            opening += f' query-id="{query_id}"'
+        lines = [opening + ">"]
         if mode == "maintenance":
             lines.append(
                 "The current prompt changes or removes prior memory. Treat the current prompt as authoritative; the records below are non-actionable maintenance matches."
@@ -388,10 +439,18 @@ class Retriever:
             lines.append(f"- [{item['id']} | {' | '.join(markers)}] {item['statement']}")
             if item.get("conditions"):
                 lines.append("  Conditions: " + "; ".join(item["conditions"]))
+            if item.get("truncated"):
+                lines.append(
+                    f"  (truncated — full record: agent-memory review show {item['id']})"
+                )
         for item in conflicts:
             lines.append(
                 f"- [NON-ACTIONABLE {item['id']} | {item['state']}] {item['statement']} ({item['reason']})"
             )
         lines.append("Mention memory only if it materially changes your action or decision.")
+        if query_id and items:
+            lines.append(
+                f"Record actual use with: agent-memory feedback {query_id} <memory-id> --used|--unused"
+            )
         lines.append("</agent-memory>")
         return "\n".join(lines)

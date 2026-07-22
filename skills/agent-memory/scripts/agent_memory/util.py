@@ -110,6 +110,18 @@ def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+WORD_TOKEN_RE = re.compile(r"[\w가-힣][\w가-힣.+/-]*")
+
+
+def word_tokens(text: str) -> list[str]:
+    """Raw word tokens only — no concept or alias expansion.
+
+    Destructive matching (forget) must use this instead of semantic_tokens:
+    alias expansion makes unrelated statements share many tokens.
+    """
+    return WORD_TOKEN_RE.findall(normalize_text(text))
+
+
 CONCEPTS: dict[str, tuple[str, ...]] = {
     "verify": ("verify", "verification", "validate", "check", "test", "검증", "테스트", "확인"),
     "targeted": ("targeted", "narrow", "focused", "minimal", "선별", "좁은", "최소", "필요한"),
@@ -129,7 +141,7 @@ CONCEPTS: dict[str, tuple[str, ...]] = {
 
 def semantic_tokens(text: str) -> list[str]:
     normalized = normalize_text(text)
-    raw_tokens = re.findall(r"[\w가-힣][\w가-힣.+/-]*", normalized)
+    raw_tokens = WORD_TOKEN_RE.findall(normalized)
     ordered: list[str] = []
 
     def add(value: str) -> None:

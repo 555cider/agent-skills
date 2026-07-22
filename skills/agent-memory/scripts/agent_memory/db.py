@@ -359,7 +359,7 @@ class Database:
         row = self.conn.execute("PRAGMA quick_check").fetchone()
         return str(row[0]) if row else "unknown"
 
-    def rebuild_indexes(self) -> int:
+    def rebuild_indexes(self, embedding_model: str | None = None) -> int:
         if self.fts5:
             self.conn.execute("DELETE FROM memory_fts")
         if self.trigram:
@@ -377,4 +377,27 @@ class Database:
                 json.loads(row["path_globs_json"]),
                 semantic_tokens(row["statement"]),
             )
+        if self.vector:
+            # The vector table is an index over memory_embeddings, so a late
+            # sqlite-vec install or a reindex must be able to reconstruct it.
+            self.conn.execute("DELETE FROM memory_vec")
+            self.conn.execute("DELETE FROM memory_vector_map")
+            sql = "SELECT memory_id,vector_blob FROM memory_embeddings WHERE dimensions=?"
+            params: tuple[Any, ...] = (VECTOR_DIMENSIONS,)
+            if embedding_model:
+                sql += " AND model=?"
+                params += (embedding_model,)
+            for row in self.conn.execute(sql, params).fetchall():
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO memory_vector_map(memory_id) VALUES(?)",
+                    (row["memory_id"],),
+                )
+                rowid = self.conn.execute(
+                    "SELECT rowid FROM memory_vector_map WHERE memory_id=?",
+                    (row["memory_id"],),
+                ).fetchone()[0]
+                self.conn.execute(
+                    "INSERT INTO memory_vec(rowid,embedding) VALUES(?,?)",
+                    (rowid, row["vector_blob"]),
+                )
         return len(rows)

@@ -43,6 +43,7 @@ from .util import (
     stable_json,
     utc_after,
     utc_now,
+    word_tokens,
 )
 
 
@@ -100,6 +101,55 @@ def remote_event(event: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+def _transcript_last_assistant(path_value: Any) -> str:
+    """Best-effort final assistant text from a harness transcript tail.
+
+    Claude Code's SessionEnd hook carries no message text, only
+    ``transcript_path``; without this the handoff channel stays empty.
+    """
+
+    try:
+        raw_path = str(path_value or "").strip()
+        if not raw_path:
+            return ""
+        path = Path(raw_path)
+        if not path.is_file():
+            return ""
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 262_144))
+            text = handle.read().decode("utf-8", errors="replace")
+        for line in reversed(text.splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            message = entry.get("message") if isinstance(entry.get("message"), dict) else entry
+            if message.get("role") != "assistant" and entry.get("type") != "assistant":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+            if isinstance(content, list):
+                parts = [
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ]
+                joined = "\n".join(part for part in parts if part)
+                if joined.strip():
+                    return joined
+        return ""
+    except Exception:
+        return ""
+
+
 class MemoryService:
     def __init__(self, db: Database, provider: Provider | None = None) -> None:
         self.db = db
@@ -130,7 +180,20 @@ class MemoryService:
 
     @staticmethod
     def _event_id(data: dict[str, Any], session_id: str, kind: str, payload: dict[str, Any]) -> str:
-        for key in ("event_id", "eventID", "tool_use_id", "toolUseID", "call_id", "callID", "id", "hook_id", "hookId"):
+        for key in (
+            "event_id",
+            "eventID",
+            "prompt_id",
+            "promptId",
+            "promptID",
+            "tool_use_id",
+            "toolUseID",
+            "call_id",
+            "callID",
+            "id",
+            "hook_id",
+            "hookId",
+        ):
             value = data.get(key)
             if value:
                 identity = stable_json(
@@ -161,15 +224,10 @@ class MemoryService:
 
     @staticmethod
     def _exit_status(data: dict[str, Any], response: Any) -> int | None:
-        values: list[Any] = [
-            data.get("exit_status"),
-            data.get("exit_code"),
-            data.get("status"),
-        ]
+        keys = ("exit_status", "exit_code", "exitCode", "returncode", "status")
+        values: list[Any] = [data.get(key) for key in keys]
         if isinstance(response, dict):
-            values.extend(
-                [response.get("exit_status"), response.get("exit_code"), response.get("status")]
-            )
+            values.extend(response.get(key) for key in keys)
         for value in values:
             if isinstance(value, bool):
                 continue
@@ -200,7 +258,15 @@ class MemoryService:
             return {"assistant_response": result.value}, list(result.findings)
         if kind == "tool_completed":
             tool_input = data.get("tool_input") or data.get("input") or {}
-            response = data.get("tool_response") or data.get("output") or data.get("result") or ""
+            # Claude Code delivers the result as tool_output; Codex/OpenCode
+            # variants use tool_response/output/result.
+            response = (
+                data.get("tool_response")
+                or data.get("tool_output")
+                or data.get("output")
+                or data.get("result")
+                or ""
+            )
             command = ""
             if isinstance(tool_input, dict):
                 command = str(
@@ -227,6 +293,10 @@ class MemoryService:
             return dict(redacted), findings
         if kind == "session_end":
             message = data.get("last_assistant_message") or data.get("summary") or ""
+            if isinstance(message, dict):
+                message = message.get("content") or message.get("text") or ""
+            if not str(message).strip():
+                message = _transcript_last_assistant(data.get("transcript_path"))
             result = redact_text(head_tail(str(message), MAX_EVENT_TEXT))
             return {"assistant_response": result.value}, list(result.findings)
         redacted, findings = redact_value(data.get("payload") or {})
@@ -294,11 +364,23 @@ class MemoryService:
 
         immediate: list[str] = []
         forgotten: list[str] = []
+        forget_skipped = 0
         if inserted and kind == "user_prompt":
             prompt = str(payload.get("prompt", ""))
             forget_query = self.explicit_forget_query(prompt)
             if forget_query:
-                forgotten = self.forget(query=forget_query, project=project)
+                scope_rows = self.db.conn.execute(
+                    "SELECT * FROM memories WHERE scope='global' OR repo_key=?", (project,)
+                ).fetchall()
+                targets = self._forget_matches(scope_rows, forget_query)
+                if 0 < len(targets) <= 2:
+                    for row in targets:
+                        forgotten.extend(self.forget(project=project, memory_id=str(row["id"])))
+                else:
+                    # An ambiguous mass-forget is never honored automatically.
+                    # Maintenance-mode recall surfaces the matches so a
+                    # targeted forget by id can follow.
+                    forget_skipped = len(targets)
             for candidate in self.explicit_candidates(prompt):
                 candidate.source_event_ids = [event_id]
                 for item in candidate.evidence:
@@ -314,6 +396,7 @@ class MemoryService:
             "redactions": sorted(set(findings)),
             "immediate_memories": immediate,
             "forgotten": forgotten,
+            "forget_skipped": forget_skipped,
         }
 
     # ------------------------------------------------------------- extraction
@@ -343,12 +426,26 @@ class MemoryService:
             if match:
                 statement = match.group(1).strip().rstrip(".")
                 break
-        if not statement and re.search(
-            r"(?i)\b(?:from now on|no longer|anymore)\b|앞으로|이제부터", prompt
-        ):
-            # A durable correction is explicit even when the user does not use
-            # the word "remember".
-            statement = prompt.strip().rstrip(".")
+        if not statement:
+            compact = prompt.strip()
+            durable = re.search(
+                r"(?i)\b(?:from now on|no longer|anymore)\b|앞으로|이제부터", compact
+            )
+            directive = re.search(
+                r"(?i)\b(?:always|never|use|prefer|stop|don'?t|do not)\b"
+                r"|말고|쓰지|하지\s*마|써\s*줘|써라|금지|유지",
+                compact,
+            )
+            question = re.search(
+                r"(?i)\?|\bwhy\b|\bwhat\b|\bhow\b|\bexplain\b|설명|알려|어떻게|무엇|왜",
+                compact,
+            )
+            # A durable correction is explicit even without the word
+            # "remember", but only when it is short and imperative — an
+            # incidental "앞으로"/"from now on" in a long task prompt or a
+            # question must not become a permanent memory of the whole prompt.
+            if durable and directive and not question and len(compact) <= 400:
+                statement = compact.rstrip(".")[:500]
         if not statement:
             return []
         normalized = normalize_text(statement)
@@ -746,6 +843,41 @@ class MemoryService:
             row = self.db.conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
             return record_from_row(self.db, row)
 
+    @staticmethod
+    def _forget_matches(rows: Sequence[sqlite3.Row], query: str) -> list[sqlite3.Row]:
+        """Precision-first forget matching on raw tokens only.
+
+        Concept/alias expansion is banned here: with it, any statement sharing
+        one verify-ish word matched any other, and a single broad query could
+        hard-delete most of the store.
+        """
+
+        needle = normalize_text(query or "")
+        if not needle:
+            return []
+        needle_tokens = [token for token in word_tokens(needle) if len(token) >= 2]
+
+        def hit(left: str, right: str) -> bool:
+            if left == right:
+                return True
+            return (len(left) >= 3 and right.startswith(left)) or (
+                len(right) >= 3 and left.startswith(right)
+            )
+
+        matched: list[sqlite3.Row] = []
+        for row in rows:
+            statement = normalize_text(row["statement"])
+            if needle in statement or statement in needle:
+                matched.append(row)
+                continue
+            tokens = word_tokens(statement)
+            hits = sum(
+                1 for token in needle_tokens if any(hit(token, other) for other in tokens)
+            )
+            if len(needle_tokens) >= 2 and hits >= 2 and hits / len(needle_tokens) >= 0.6:
+                matched.append(row)
+        return matched
+
     def forget(
         self,
         *,
@@ -753,24 +885,22 @@ class MemoryService:
         memory_id: str | None = None,
         query: str | None = None,
         all_projects: bool = False,
+        allow_bulk: bool = False,
     ) -> list[str]:
         if not memory_id and not (query or "").strip():
             raise MemoryError("forget requires a memory id or query")
         if memory_id:
             rows = self.db.conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchall()
         else:
-            needle = normalize_text(query or "")
             scope_sql = "1=1" if all_projects else "(scope='global' OR repo_key=?)"
             params: tuple[Any, ...] = () if all_projects else (project,)
             candidates = self.db.conn.execute(f"SELECT * FROM memories WHERE {scope_sql}", params).fetchall()
-            rows = [
-                row
-                for row in candidates
-                if needle in normalize_text(row["statement"])
-                or normalize_text(row["statement"]) in needle
-                or bool(set(semantic_tokens(needle)) & set(semantic_tokens(row["statement"])))
-                and len(set(semantic_tokens(needle)) & set(semantic_tokens(row["statement"]))) >= 2
-            ]
+            rows = self._forget_matches(candidates, query or "")
+            if len(rows) > 5 and not allow_bulk:
+                raise MemoryError(
+                    f"forget query matched {len(rows)} memories; use --id per record, "
+                    "a more distinctive query, or --all-matches to confirm bulk deletion"
+                )
         removed: list[str] = []
         with self.db.transaction(immediate=True):
             for row in rows:
@@ -958,17 +1088,6 @@ class MemoryService:
             if memory:
                 created.append(memory)
 
-        if created and not isinstance(self.provider, NullProvider):
-            try:
-                vectors = self.provider.embed([item["statement"] for item in created])
-                for item, vector in zip(created, vectors, strict=False):
-                    self.db.put_embedding(item["id"], self.provider.embedding_model, vector)
-            except ProviderError as exc:
-                # Embeddings are an optimization. FTS/trigram remains authoritative.
-                self.db.set_meta(
-                    "last_embedding_error",
-                    redact_text(f"{type(exc).__name__}: {exc}"[:2000]).value[:1000],
-                )
         if provider_error:
             # Local candidates have already been safely deduplicated. Retrying
             # lets the optional provider contribute later without losing work.
@@ -979,11 +1098,48 @@ class MemoryService:
         )
         return {"events": len(events), "created": [item["id"] for item in created]}
 
+    def embed_missing(self, *, limit: int = 64) -> int:
+        """Embed active/provisional records that lack a current-model vector.
+
+        Runs in the background worker so explicit remembers and historical
+        records are covered, not only worker-created candidates. Embeddings
+        stay an optimization: any failure is recorded and recall falls back to
+        FTS/trigram.
+        """
+
+        if isinstance(self.provider, NullProvider):
+            return 0
+        model = self.provider.embedding_model or ""
+        rows = self.db.conn.execute(
+            "SELECT m.id,m.statement FROM memories AS m "
+            "LEFT JOIN memory_embeddings AS e ON e.memory_id=m.id "
+            "WHERE m.state IN ('active','provisional') "
+            "AND (e.memory_id IS NULL OR e.model!=?) "
+            "ORDER BY m.updated_at DESC LIMIT ?",
+            (model, limit),
+        ).fetchall()
+        if not rows:
+            return 0
+        try:
+            vectors = self.provider.embed([str(row["statement"]) for row in rows])
+        except ProviderError as exc:
+            self.db.set_meta(
+                "last_embedding_error",
+                redact_text(f"{type(exc).__name__}: {exc}"[:2000]).value[:1000],
+            )
+            return 0
+        stored = 0
+        for row, vector in zip(rows, vectors, strict=False):
+            if vector:
+                self.db.put_embedding(str(row["id"]), model, vector)
+                stored += 1
+        return stored
+
     def worker_once(self, *, max_jobs: int = 8) -> dict[str, Any]:
         processed: list[dict[str, Any]] = []
         with self.worker_lock() as acquired:
             if not acquired:
-                return {"acquired": False, "processed": []}
+                return {"acquired": False, "processed": [], "embedded": 0}
             for _ in range(max_jobs):
                 job = self.lease_job()
                 if not job:
@@ -998,7 +1154,8 @@ class MemoryService:
                 except Exception as exc:
                     state = self._fail_job(job, exc)
                     processed.append({"id": job["id"], "state": state, "error": str(exc)})
-        return {"acquired": True, "processed": processed}
+            embedded = self.embed_missing()
+        return {"acquired": True, "processed": processed, "embedded": embedded}
 
     # -------------------------------------------------------------- lifecycle
     def review_list(self, project: str, *, state: str | None = None) -> list[dict[str, Any]]:

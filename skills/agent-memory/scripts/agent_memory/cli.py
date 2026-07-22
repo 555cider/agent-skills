@@ -158,6 +158,7 @@ def command_forget(args: argparse.Namespace) -> int:
             memory_id=args.id,
             query=args.query,
             all_projects=args.all_projects,
+            allow_bulk=args.all_matches,
         )
         output = {"removed": removed, "total": len(removed), "tombstone_days": 7}
         _emit(output, args.format)
@@ -316,6 +317,22 @@ def command_doctor(args: argparse.Namespace) -> int:
                 "trigram": db.trigram,
                 "sqlite_vec": db.vector,
                 "last_embedding_error": db.get_meta("last_embedding_error"),
+                "embeddings": {
+                    "stored": db.conn.execute(
+                        "SELECT count(*) FROM memory_embeddings"
+                    ).fetchone()[0],
+                    "active_missing": db.conn.execute(
+                        "SELECT count(*) FROM memories AS m "
+                        "LEFT JOIN memory_embeddings AS e ON e.memory_id=m.id "
+                        "WHERE m.state IN ('active','provisional') AND e.memory_id IS NULL"
+                    ).fetchone()[0],
+                    "models": [
+                        row[0]
+                        for row in db.conn.execute(
+                            "SELECT DISTINCT model FROM memory_embeddings ORDER BY model"
+                        )
+                    ],
+                },
             },
             "provider": _provider_status(),
             "last_provider_error": db.get_meta("last_provider_error"),
@@ -479,6 +496,11 @@ def build_parser() -> argparse.ArgumentParser:
     forget.add_argument("--id")
     forget.add_argument("--cwd")
     forget.add_argument("--all-projects", action="store_true")
+    forget.add_argument(
+        "--all-matches",
+        action="store_true",
+        help="Confirm deleting more than five query matches at once",
+    )
     _format(forget)
     forget.set_defaults(func=command_forget)
 

@@ -326,14 +326,58 @@ def integrate(
     }
 
 
+def _managed_hook_commands(text: str) -> list[str]:
+    try:
+        value = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    hooks = value.get("hooks") if isinstance(value, dict) else None
+    if not isinstance(hooks, dict):
+        return []
+    commands: list[str] = []
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not _is_managed_entry(entry):
+                continue
+            for item in entry.get("hooks", []):
+                command = str(item.get("command", "")) if isinstance(item, dict) else ""
+                if command:
+                    commands.append(command)
+    return commands
+
+
+def _stale_command(command: str) -> bool:
+    """A managed hook whose python or script path no longer exists is dead.
+
+    This happened in the field: an integrate run from a sandboxed skill copy
+    left real configs pointing into a temp directory.
+    """
+
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return True
+    if len(parts) < 2:
+        return True
+    return not (Path(parts[0]).exists() and Path(parts[1]).exists())
+
+
 def integration_status(user_home: Path | None = None) -> dict[str, Any]:
     paths = integration_paths(user_home)
     status: dict[str, Any] = {}
     for name, path in paths.items():
         text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        managed = INTEGRATION_MARKER in text or OPENCODE_MARKER in text
+        stale = False
+        if managed and name in {"claude", "codex_hooks"}:
+            commands = _managed_hook_commands(text)
+            stale = any(_stale_command(command) for command in commands)
         status[name] = {
             "path": str(path),
             "exists": path.exists(),
-            "managed": INTEGRATION_MARKER in text or OPENCODE_MARKER in text,
+            "managed": managed,
+            "stale": stale,
         }
     return {"adapters": status, "conflicts": known_conflicts(list(paths.values()))}

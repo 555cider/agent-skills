@@ -38,7 +38,10 @@ contents, or raw tool output. Do not convert a repository into memory records.
 
 ## Recall before acting
 
-Use the exact current request as the prompt:
+When the harness hook already injected an `<agent-memory …>` packet for the
+current prompt, use that packet directly — do not run `recall` again for the
+same prompt. Its `query-id` attribute is the feedback key. Otherwise use the
+exact current request as the prompt:
 
 ```bash
 agent-memory recall --cwd "$PWD" --prompt "<current request>" --format json
@@ -81,6 +84,11 @@ Add `--condition harness=codex` or `--path-glob 'frontend/**'` when applicabilit
 is conditional. Use `--replaces <id>` for an explicit correction with known
 lineage.
 
+Keep each statement one focused fact, well under ~500 tokens. Split a playbook
+into separate targeted records: recall injects at most ~1,200 tokens, and an
+oversized record only ever appears truncated with a `review show` pointer.
+Long documents belong in the repository; remember a pointer to them instead.
+
 Explicit remember requests become active. Inferred preferences and
 assistant-only claims remain provisional. A procedure or caveat becomes active
 automatically only when local command/test evidence proves it. Conflicting
@@ -100,6 +108,12 @@ Forget deletes the current record, immutable revisions, evidence, relations,
 and embedding. A contentless HMAC tombstone blocks automatic rehydration for
 seven days. A later explicit `remember` overrides the tombstone. Never replace a
 forget request with a note saying to forget.
+
+Query matching is precision-first (raw statement tokens, no concept aliases).
+A query matching more than five records fails until rerun with `--all-matches`;
+confirm with the user before bulk deletion. A forget phrase observed in a
+prompt hook is honored only when at most two records match — broader matches
+surface as non-actionable maintenance context for a targeted forget by id.
 
 ## Review uncertain memory
 
@@ -144,8 +158,10 @@ the work, record it:
 agent-memory feedback <query-id> <memory-id> --used --outcome helpful
 ```
 
-Use `--unused` when the exposed record was irrelevant. Never fabricate
-feedback for a record that was not in that query packet.
+The query id is the `query-id` attribute of the injected `<agent-memory …>`
+packet (also `query_id` in JSON output). Use `--unused` when the exposed record
+was irrelevant. Never fabricate feedback for a record that was not in that
+query packet.
 
 ## Operations
 
