@@ -20,6 +20,13 @@ current prompt
   -> <=8 record / ~1200 token packet
 ```
 
+Maintenance mode requires an explicit memory operation, or a change word
+("instead of", "대신") combined with a durability marker ("from now on",
+"이제"); a change word alone never suppresses recall. A record whose statement
+alone exceeds the token budget is injected truncated with a pointer rather
+than dropped. After queued jobs, the worker embeds active records missing a
+current-model vector when a provider is configured.
+
 SQLite at `~/.agents/memory/agent-memory.sqlite3` is authoritative. WAL,
 foreign keys, `busy_timeout`, and `secure_delete` are enabled. FTS5, trigram,
 and vector tables are indexes, not alternate stores.
@@ -61,6 +68,11 @@ but retained for possible verification.
   from processing the same lease.
 - Duplicate semantic events are idempotent by normalized event id.
 - Exact-content memory dedupe makes worker retries safe.
+- Forget matches raw statement tokens only; a query matching more than five
+  records requires explicit bulk confirmation, and hook-observed forgets apply
+  only to at most two matches.
+- `doctor`/`integrate` status marks a managed hook stale when its python or
+  script path no longer exists.
 
 The worker never mutates harness configuration. Integration changes are a
 separate dry-run/apply operation with backups.

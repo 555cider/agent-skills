@@ -13,8 +13,11 @@ timestamps, compressed payload, payload digest, and redaction findings.
 |---|---|---|---|
 | user prompt + recall | `UserPromptSubmit` | `UserPromptSubmit` | `chat.message` |
 | completed tool | `PostToolUse` | `PostToolUse` | `tool.execute.after` |
-| assistant final | `Stop` | `Stop` | `message.updated` |
-| session end | `SessionEnd` | stop is terminal signal | `session.idle` |
+| assistant final | `Stop` | `Stop` | `message.updated` via `event` hook |
+| session end | `SessionEnd` | stop is terminal signal | `session.idle` via `event` hook |
+
+OpenCode exposes `message.updated` and `session.idle` only as event-bus types
+on the generic `event` hook, not as top-level plugin hooks.
 
 Adapters pass the native JSON object to:
 
@@ -23,16 +26,21 @@ agent-memory hook --harness <harness> --event <normalized-kind>
 ```
 
 The hook tolerates unknown native fields. Event ids are derived from native
-event/tool/message ids plus session and kind; duplicate deliveries use
-`INSERT OR IGNORE`.
+event/tool/message/prompt ids (`prompt_id` identifies a Claude Stop turn) plus
+session and kind; duplicate deliveries use `INSERT OR IGNORE`.
 
 ## Stored payloads
 
 - `user_prompt`: redacted prompt, at most 32 KiB.
 - `assistant_stop`: redacted final response, at most 32 KiB.
 - `tool_completed`: tool name, redacted command, numeric exit status, and a
-  redacted 8 KiB head/tail of output for local evidence only.
-- `session_end`: redacted final/handoff summary, at most 32 KiB.
+  redacted 8 KiB head/tail of output for local evidence only. The result is
+  read from `tool_response`/`tool_output`/`output`/`result` (Claude Code sends
+  `tool_output`); exit status accepts `exit_status`/`exit_code`/`exitCode`/
+  `returncode`/`status`.
+- `session_end`: redacted final/handoff summary, at most 32 KiB. When the
+  native event carries no text (Claude Code), the final assistant message is
+  read from the tail of `transcript_path`.
 
 Prompts, assistant finals, and tool events expire after seven days. Session-end
 events expire after fourteen days.

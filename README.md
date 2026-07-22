@@ -126,8 +126,11 @@ export AGENT_MEMORY_PROVIDER_COMMAND='/absolute/path/to/provider'
 The JSON stdin/stdout protocol is documented in
 [references/providers.md](references/providers.md). Set
 `AGENT_MEMORY_SEMANTIC_RECALL=1` only when online/query-time embeddings are an
-acceptable latency and privacy tradeoff. Without it, stored embeddings remain
-an optional consolidation aid and recall stays local.
+acceptable latency and privacy tradeoff. Without it, stored embeddings are kept
+but unused and recall stays fully local. When a provider is configured, the
+background worker embeds new and historical active records — explicit
+remembers included. After changing `AGENT_MEMORY_EMBEDDING_MODEL`, run
+`agent-memory reindex` to rebuild the vector index.
 
 ## Repository policy
 

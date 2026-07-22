@@ -31,6 +31,13 @@ absolute paths, credentials, email, phone number, or the compressed journal.
 `AGENT_MEMORY_SEMANTIC_RECALL=1` opts into query-time embeddings. Without it,
 prompt hooks remain entirely local even when extraction uses a provider.
 
+Embeddings are produced by the background worker, which backfills every
+active/provisional record missing a current-model vector — explicit remembers
+included. The sqlite-vec index is fixed at 1,536 dimensions; vectors with
+other dimensions are stored but not indexed. After changing
+`AGENT_MEMORY_EMBEDDING_MODEL`, run `agent-memory reindex` so the vector index
+is rebuilt from stored embeddings.
+
 ## Command provider
 
 ```bash

@@ -28,6 +28,7 @@ forget [QUERY]
   --id ID
   --cwd PATH
   --all-projects
+  --all-matches              confirm deleting >5 query matches
 
 recall [PROMPT]
   --prompt TEXT
@@ -60,7 +61,10 @@ integrate --mode shadow|primary|off --harness all|claude|codex|opencode
 ```
 
 Statements/prompts may come from stdin when omitted. `forget --all-projects`
-is intentionally explicit. `integrate` is dry-run unless `--apply` is present.
+is intentionally explicit. Query-based forget matches raw statement tokens
+only (no concept aliases) and exits 1 when more than five records match
+unless `--all-matches` confirms the bulk deletion. `integrate` is dry-run
+unless `--apply` is present.
 
 ## Internal commands
 

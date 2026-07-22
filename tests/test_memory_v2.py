@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import sqlite3
 import sys
 from pathlib import Path
@@ -612,7 +613,8 @@ def test_auto_activation_precision_gate(tmp_path):
 def test_command_provider_rejects_malformed_protocol(tmp_path, monkeypatch):
     program = tmp_path / "provider.py"
     program.write_text("print('not json')\n", encoding="utf-8")
-    provider = CommandProvider(f"{sys.executable} {program}")
+    # shlex.split is POSIX: unquoted Windows paths lose their backslashes.
+    provider = CommandProvider(f"{shlex.quote(sys.executable)} {shlex.quote(str(program))}")
     with pytest.raises(ProviderError, match="malformed JSON"):
         provider.extract([], "repo")
 
@@ -713,7 +715,9 @@ def test_retrieval_feedback_requires_actual_exposure(memory):
 
 def test_golden_bilingual_paraphrase_hit_at_five(memory):
     db, service, project = memory
-    cases = json.loads((Path(__file__).with_name("golden_retrieval.json")).read_text())
+    cases = json.loads(
+        (Path(__file__).with_name("golden_retrieval.json")).read_text(encoding="utf-8")
+    )
     ids = []
     for case in cases:
         ids.append(service.create_memory(candidate(case["memory"]), project=project)["id"])

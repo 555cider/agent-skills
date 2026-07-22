@@ -65,9 +65,11 @@ path, and condition filtering.
 matching old records appear under `conflicts` with `actionable=false`.
 
 Each returned item includes record identity, statement, state, authority,
-confidence, revision, evidence, retrieval score, `stale`, and `actionable`.
-The rendered `context` is bounded to eight records and roughly 1,200 tokens by
-default.
+confidence, revision, evidence, retrieval score, `stale`, `truncated`, and
+`actionable`. The rendered `context` is bounded to eight records and roughly
+1,200 tokens by default; its opening tag carries `query-id`. A record whose
+statement alone exceeds the budget is injected as a truncated head with
+`truncated=true` and a `review show` pointer instead of being dropped.
 
 Every exposed item creates a feedback target keyed by `query_id` and memory id.
 Exposure does not set `used`; only `feedback --used` does.
@@ -80,7 +82,8 @@ Exposure does not set `used`; only `feedback --used` does.
   and relations.
 - `policy trust list`: `repo_key`, `memory_kind`, `granted_at` rows.
 - `session`: `session_id`, `harness`, `repo_key`, `paused`.
-- `worker --once`: `acquired` and per-job `processed` results.
+- `worker --once`: `acquired`, per-job `processed` results, and `embedded`
+  (records backfilled with embeddings when a provider is configured).
 - `doctor`: DB integrity/version/WAL, retrieval backends, provider, queue,
   memory states, trust, integrations, conflicts, and v1 artifact detection.
 - `export`: `agent-memory.export.v2`; raw event payloads are excluded.

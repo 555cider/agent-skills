@@ -48,5 +48,15 @@
     "memory": "Prefer local memory over an external service for private work context.",
     "query": "개인 작업 기억은 원격 서비스와 로컬 중 어디를 선호하지?",
     "expected": true
+  },
+  {
+    "memory": "워크트리 정리 함정: git worktree remove --force 는 금지한다. 워크트리의 node_modules junction 을 관통 삭제해 메인 node_modules 까지 파괴할 수 있으므로, 먼저 junction 을 해제한 뒤 git worktree remove 를 사용한다.",
+    "query": "워크트리 정리할 때 주의할 점 알려줘",
+    "expected": true
+  },
+  {
+    "memory": "Dialog 컴포넌트의 DialogContent 는 max-w-[calc(100%-2rem)] 과 sm:max-w-lg 로 최대 너비가 제한되므로 넓은 콘텐츠는 별도 클래스로 확장한다.",
+    "query": "Dialog max-width 어디서 제한되는지 확인해줘",
+    "expected": true
   }
 ]
