@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,10 +54,16 @@ def _hook_command(harness: str, event: str) -> str:
         skill_root / ".venv" / "Scripts" / "python.exe",
     ]
     python = next((path for path in candidates if path.exists()), Path(sys.executable))
-    return " ".join(
-        shlex.quote(str(item))
+    args = [
+        str(item)
         for item in (python, script, "hook", "--harness", harness, "--event", event)
-    )
+    ]
+    if sys.platform == "win32":
+        # Codex may invoke hooks through cmd.exe or Git Bash. Always quoting
+        # Windows paths preserves backslashes in both shells.
+        paths = " ".join(f'"{item}"' for item in args[:2])
+        return f"{paths} {subprocess.list2cmdline(args[2:])}"
+    return shlex.join(args)
 
 
 def _managed_entry(harness: str, event: str, timeout: int) -> dict[str, Any]:

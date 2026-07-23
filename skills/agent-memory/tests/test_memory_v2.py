@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import agent_memory.integration as integration_module
 from agent_memory.constants import RECORD_SCHEMA
 from agent_memory.cli import _open
 from agent_memory.db import Database
@@ -24,6 +25,21 @@ from agent_memory.providers import (
 from agent_memory.retrieval import Retriever
 from agent_memory.service import MemoryService, remote_event
 from agent_memory.util import repo_key, utc_now
+
+
+def test_windows_hook_command_quotes_paths_for_cmd_and_bash(monkeypatch):
+    monkeypatch.setattr(integration_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        integration_module,
+        "__file__",
+        str(Path("C:/Program Files/agent-memory/scripts/agent_memory/integration.py")),
+    )
+
+    command = integration_module._hook_command("codex", "user_prompt")
+
+    assert "'" not in command
+    assert command.startswith('"')
+    assert '"C:\\Program Files\\agent-memory\\scripts\\memory.py"' in command
 
 
 def candidate(statement: str, **overrides):
