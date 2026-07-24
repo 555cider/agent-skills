@@ -190,17 +190,21 @@ remove_path() {
 }
 
 remove_agent_memory_launcher() {
-  local launcher="$HOME/.local/bin/agent-memory"
-  if [ ! -e "$launcher" ] && [ ! -L "$launcher" ]; then
-    printf '  -        %s (not present)\n' "$launcher"
-    return 0
-  fi
-  if [ ! -f "$launcher" ] || ! grep -qF 'agent-memory-managed-launcher' "$launcher"; then
-    printf '  SKIP %s (not managed by this installer)\n' "$launcher" >&2
-    return 1
-  fi
-  rm -f -- "$launcher"
-  printf '  removed  %s\n' "$launcher"
+  local status=0 launcher
+  for launcher in "$HOME/.local/bin/agent-memory" "$HOME/.local/bin/agent-memory.cmd"; do
+    if [ ! -e "$launcher" ] && [ ! -L "$launcher" ]; then
+      printf '  -        %s (not present)\n' "$launcher"
+      continue
+    fi
+    if [ ! -f "$launcher" ] || ! grep -qF 'agent-memory-managed-launcher' "$launcher"; then
+      printf '  SKIP %s (not managed by this installer)\n' "$launcher" >&2
+      status=1
+      continue
+    fi
+    rm -f -- "$launcher"
+    printf '  removed  %s\n' "$launcher"
+  done
+  return "$status"
 }
 
 errors=0

@@ -348,6 +348,13 @@ test_agent_memory_shadow_one_command_setup() {
   [ -f "$home/.codex/hooks.json" ] || fail "expected Codex hooks after shadow setup"
   [ -f "$home/.config/opencode/plugins/agent-memory.js" ] || fail "expected OpenCode plugin after shadow setup"
   [ -x "$home/.local/bin/agent-memory" ] || fail "expected executable agent-memory launcher"
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      [ -f "$home/.local/bin/agent-memory.cmd" ] || fail "expected agent-memory.cmd shim on Windows"
+      grep -qF 'agent-memory-managed-launcher' "$home/.local/bin/agent-memory.cmd" ||
+        fail "expected managed marker in agent-memory.cmd shim"
+      ;;
+  esac
   HOME="$home" "$home/.local/bin/agent-memory" doctor --format json >"$WORK/shadow-doctor.json"
   python3 - "$home" <<'PY'
 import json

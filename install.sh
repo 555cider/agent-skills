@@ -430,6 +430,23 @@ install_agent_memory_launcher() {
   cp "$source" "$launcher"
   chmod +x "$launcher"
   printf '  +    %s\n' "$launcher"
+  if [ "$IS_WINDOWS" = 1 ]; then
+    # PowerShell/cmd cannot execute the extensionless bash launcher: they
+    # ShellExecute it, which opens the "select an app" dialog. A .cmd shim
+    # shadows it for native Windows shells (PATHEXT wins over no extension).
+    local shim_source="$AGENTS_DIR/agent-memory/bin/agent-memory.cmd"
+    local shim="$bin_dir/agent-memory.cmd"
+    if [ -f "$shim_source" ]; then
+      if [ -e "$shim" ] && ! grep -qF 'agent-memory-managed-launcher' "$shim"; then
+        printf '  WARN %s exists and is not managed by this installer — skipping\n' "$shim" >&2
+      else
+        cp "$shim_source" "$shim"
+        printf '  +    %s\n' "$shim"
+      fi
+    else
+      printf '  WARN agent-memory Windows shim source is missing: %s\n' "$shim_source" >&2
+    fi
+  fi
   case ":$PATH:" in
     *":$bin_dir:"*) : ;;
     *) printf '  note add %s to PATH to run `agent-memory` directly\n' "$bin_dir" ;;
