@@ -67,6 +67,9 @@ The audit sees boxes, not a workflow. Judge whether the screen reads as a compos
   scattered.
 - **[visual]** Card-inside-card, duplicate frames, decorative wrappers around
   already-framed controls — sections that look like accidental containers. `Polish`.
+- **[visual]** Remove lines, fills, shadows, and animation that do not establish
+  grouping, hierarchy, state, or affordance. Decorative treatment that competes with
+  the task adds cognitive load. `Polish`; `Risk` when it obscures the workflow.
 
 ## Visual hierarchy & emphasis  *([visual])*
 
@@ -77,6 +80,27 @@ The audit sees boxes, not a workflow. Judge whether the screen reads as a compos
   weight on the same surface. Pick one. `Risk` on a primary workflow, else `Polish`.
 - **[visual]** Emphasis spent on the wrong target (hero-scale type on a label, loud color
   on a rarely-used control). `Polish`.
+- **[visual]** Run a squint/thumbnail test on the existing screenshot: reduce detail
+  until copy is unreadable. The primary task and action should remain identifiable;
+  several equally loud regions or a disappearing CTA is `Risk`.
+
+## Typography & reading flow  *([hybrid]/[visual])*
+
+- **[auto]** Long centered/justified prose and explicit body line-height below `1.5`
+  are optional `bodyTextAlignment` / `bodyTextLineHeight` advisories. A line-height
+  recommendation is not itself a WCAG AA failure.
+- **[visual]** Prefer a small, role-based type system. One legible sans-serif is a safe
+  default, not a universal requirement; a deliberate display/serif face may support
+  brand and hierarchy without becoming drift.
+- **[visual]** Judge lowercase/x-height and thin weights at the actual smallest body
+  size and in the rendered language. Small text that passes contrast can still be hard
+  to read; reserve unusually light/heavy weights for large display text.
+- **[visual]** Prefer sentence case for multi-word controls and body copy, while
+  preserving acronyms, identifiers, proper names, short eyebrows, and brand casing.
+  Avoid arbitrary weight proliferation; use `designSystemDrift` as the candidate, not
+  a rule that every product must use exactly regular and bold.
+- **[visual]** Pure black text is not automatically a defect. Judge tonal hierarchy and
+  reading comfort, but never lower foreground contrast merely to make text look softer.
 
 ## Density appropriateness  *([visual])*
 
@@ -100,8 +124,10 @@ The audit sees boxes, not a workflow. Judge whether the screen reads as a compos
   baselines, mixed-size elements that align by box but not by eye, ragged right edges in
   a column that should align. `Polish`.
 - **[visual]** Grouping / gestalt: related controls separated, unrelated ones crowded;
-  inconsistent gaps that imply the wrong grouping. `Polish`; `Risk` when grouping
-  miscommunicates which fields/actions belong together.
+  inconsistent gaps that imply the wrong grouping. Within-group proximity should be
+  visibly tighter than between-group spacing; prefer spacing/alignment before adding
+  another container. `Polish`; `Risk` when grouping miscommunicates which
+  fields/actions belong together.
 - **[visual]** Rhythm breaks across repeated items (uneven internal padding, one card
   taller for no reason) even when each item individually passes. `Polish`.
 
@@ -143,6 +169,9 @@ states are *meaningfully distinct* is judgment.
   icons for one meaning forces relearning. `Polish`; `Risk` when it misleads.
 - **[visual]** Same icon reused for different meanings in nearby menus/toolbars without
   disambiguating label/tooltip. `Risk`.
+- **[visual]** Mixed filled and outlined icon families should not imply selection by
+  accident. Use a consistent stroke/corner/visual-weight language; reserve fill changes
+  for an explicit selected/current state. `Polish`; `Risk` when state is ambiguous.
 
 ## System & brand coherence  *([visual]/[hybrid])*
 
@@ -164,6 +193,13 @@ states are *meaningfully distinct* is judgment.
   state affordance, so users won't find it. `Risk`; `Fail` if required for a primary flow.
 - **[visual]** Static-looks-clickable: plain text or decoration styled like a button/link
   with no action behind it. `Risk`. (Distinct from contrast, which the audit handles.)
+- **[visual]** Similar-looking elements should perform similar actions, and different
+  behavior should not borrow the same button/link treatment. Reserve accent color for
+  interaction, brand, or semantic state; non-interactive colored text must not masquerade
+  as a link.
+- **[hybrid]** Do not use color alone for selected/error/success/status meaning. Pair it
+  with text, shape, icon, underline, or pattern. `inlineLinkAffordance` measures the
+  common prose-link case; confirm other state semantics here.
 - **[visual]** Hover/focus/active/selected affordance that resizes the component or relies
   on a color-only shift that vanishes in one theme. `Polish`–`Risk`.
 

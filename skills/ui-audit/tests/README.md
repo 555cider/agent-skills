@@ -23,6 +23,7 @@ contract checks measured findings and review advisories independently.
 | `adaptations.html` | 200% zoom and 320px reflow | overflow appears only in adaptation cells; internal table scroll passes |
 | `state-mock.html` | CDP Fetch forcing | empty/error/loading each records a real interception |
 | `realistic-clean.html` | anonymized app-shell patterns | CTA pair, text descendants, skip link, and valid status tabs stay quiet |
+| `newcases.html` | broad polish plus logic-driven UI guidance | non-text contrast, inline-link affordance, long-body alignment/line-height, and their precision guards |
 | `clean.html` | a well-built version of the same screens | **nothing** (zero findings) |
 
 `expected.json` uses `mustHit`, `mustNotHit`, `mustAdvise`, and `mustNotAdvise`, plus

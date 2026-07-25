@@ -160,6 +160,8 @@ for fixture in expected:
     }
     if fixture.get("stateSetups"):
         config["stateSetups"] = fixture["stateSetups"]
+    if fixture.get("auditConfig"):
+        config["auditConfig"] = fixture["auditConfig"]
     cfg_path = work / (file_name + ".json")
     cfg_path.write_text(json.dumps(config), encoding="utf-8")
     run_env = os.environ.copy()
