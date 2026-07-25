@@ -36,7 +36,7 @@ Use the user's language in reports. Group results by failure mode, not discovery
    - `advisories.json`: `required` or `optional` review signals.
    - `coverage.json`: exact matrix, state proof, probe counts, rule coverage, suppression, and timings.
 4. Resolve Fail findings and required advisories. Apply `baseline` only to an intentionally accepted `rule + selector`; do not use it to hide unverified coverage.
-5. Apply `references/scrutiny-checklist.md` to composition, density, microcopy, brand coherence, and other subjective residue.
+5. Apply `references/scrutiny-checklist.md` to composition, thumbnail/squint hierarchy, purposeful color, typography, microcopy, brand coherence, and other subjective residue.
 6. Report the verified matrix, findings, advisories, and any unverified cells.
 
 ## Matrix and deterministic state setup
@@ -135,6 +135,7 @@ When adding a failure mode, put deterministic measurement in code and add `mustH
 - Treating an installed mock as proof when its interception count is zero.
 - Running only the normal desktop cell and skipping 200% zoom or 320px reflow.
 - Treating optional advisory volume as confirmed defects.
+- Treating a typography recommendation such as 1.5 body line-height or one sans-serif family as a WCAG failure.
 - Suppressing broad selectors before investigating a shared-component root cause.
 - Claiming a modal trap from DOM structure without trusted forward and reverse Tab input.
 - Evaluating `audit.js` after navigation and assuming CLS was measured; install `__uiAuditInstallCLS()` on the new document as the runner does.

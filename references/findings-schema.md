@@ -31,6 +31,8 @@
   "hoverProbe": { "maxTargets": 80, "settleMs": 0, "maxWaitMs": 250, "denseGapPx": 12 },
   "baseline": [{ "rule": "effectiveContrast", "selector": "#known" }],
   "auditConfig": {
+    "contrast": { "normal": 4.5, "large": 3.0, "nonText": 3.0, "colorCue": 3.0 },
+    "polish": { "bodyTextMinChars": 40, "bodyTextMinLines": 3, "bodyLineHeight": 1.5 },
     "whitelist": [".third-party"],
     "maxFindingsPerRule": 60,
     "maxPolish": 15
@@ -98,6 +100,10 @@ Advisories use the same evidence shape and add `review`:
 - `optional`: Polish heuristic that does not affect the exit code.
 
 `confidence` values are `auto-measured`, `needs-visual`, and `visual-judgment`. `needs-visual` and non-Polish `visual-judgment` signals are required advisories; Polish signals are optional advisories.
+
+Rule identifiers are extensible within schema v2. Adding a detector changes
+`coverage.rulesRun` and may add signals without changing the document shape or
+schema version.
 
 ## `findings.json`
 

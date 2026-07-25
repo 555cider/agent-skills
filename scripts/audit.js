@@ -70,13 +70,24 @@
 
   // -------------------------------- defaults --------------------------------
   var DEFAULTS = {
-    contrast: { normal: 4.5, large: 3.0, washedOut: 1.3, placeholderFail: 3.0 },
+    contrast: { normal: 4.5, large: 3.0, washedOut: 1.3, placeholderFail: 3.0, nonText: 3.0, colorCue: 3.0 },
     tap: { fail: 24, risk: 44, crowdGap: 8 },     // CSS px (WCAG 2.5.8 = 24, comfortable = 44)
     overflowTolerancePx: 1,
     collapsePx: 3,
     cls: { risk: 0.1, fail: 0.25 },
     mediaAspectTolerance: 0.05,
-    polish: { maxRadii: 4, maxShadows: 4, maxAccentHues: 6, maxFontPairs: 10, lineLenMin: 45, lineLenMax: 95, tinyTextPx: 11 },
+    polish: {
+      maxRadii: 4,
+      maxShadows: 4,
+      maxAccentHues: 6,
+      maxFontPairs: 10,
+      lineLenMin: 45,
+      lineLenMax: 95,
+      tinyTextPx: 11,
+      bodyTextMinChars: 40,
+      bodyTextMinLines: 3,
+      bodyLineHeight: 1.5
+    },
     layout: {
       loneNarrowWidth: 180,
       maxButtonsInRow: 4,
@@ -101,6 +112,8 @@
   var RULES = [
     ruleDef('effectiveContrast', ruleContrast, 'document', 'contrast', 'WCAG 1.4.3'),
     ruleDef('placeholderContrast', rulePlaceholder, 'document', 'contrast', 'WCAG 1.4.3'),
+    ruleDef('nonTextContrast', ruleNonTextContrast, 'document', 'contrast', 'WCAG 1.4.11'),
+    ruleDef('inlineLinkAffordance', ruleInlineLinkAffordance, 'document', 'affordance'),
     ruleDef('horizontalOverflow', ruleHOverflow, 'document', 'layout', 'WCAG 1.4.10'),
     ruleDef('offViewport', ruleOffViewport, 'document', 'layout'),
     ruleDef('stickyOverlapContent', ruleStickyOverlap, 'viewport', 'layout'),
@@ -124,6 +137,8 @@
     ruleDef('orphanedControlRow', ruleOrphanedControlRow, 'document', 'heuristic'),
     ruleDef('inconsistentSiblingsSpacing', ruleInconsistentSpacing, 'document', 'heuristic'),
     ruleDef('textLineHeightOverlap', ruleTextLineHeightOverlap, 'document', 'typography'),
+    ruleDef('bodyTextAlignment', ruleBodyTextAlignment, 'document', 'typography'),
+    ruleDef('bodyTextLineHeight', ruleBodyTextLineHeight, 'document', 'typography'),
     ruleDef('emptyInteractiveTarget', ruleEmptyInteractiveTarget, 'document', 'accessibility', 'WCAG 4.1.2'),
     ruleDef('misalignedRowItems', ruleMisalignedRowItems, 'document', 'heuristic'),
     ruleDef('accidentalFlexWrap', ruleAccidentalFlexWrap, 'document', 'heuristic'),
@@ -366,6 +381,110 @@
         'Placeholder "' + (el.getAttribute('placeholder') || '').slice(0, 30) + '" contrast ' + round2(ratio) + ':1 below 4.5:1.',
         { ratio: round2(ratio), fg: rgbStr(fgOnBg), bg: rgbStr(bg.rgb) }, { min: cfg.contrast.normal }, rectOf(el),
         'Darken/lighten placeholder text; placeholders are not a substitute for a visible label.'));
+    });
+  }
+
+  function ruleNonTextContrast(ctx) {
+    var min = Number(ctx.cfg.contrast.nonText || 3);
+    var fieldSelector = 'textarea,select,' +
+      'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset])' +
+      ':not([type=image]):not([type=range]):not([type=color]):not([type=file])';
+
+    qsa(fieldSelector).forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      var cs = getComputedStyle(el);
+      var type = (el.getAttribute('type') || '').toLowerCase();
+      var appearance = cs.appearance || cs.webkitAppearance || '';
+      if ((type === 'checkbox' || type === 'radio') && appearance !== 'none') return;
+
+      var adjacent = effectiveBg(el.parentElement || document.body);
+      var cues = boundaryContrastCues(cs, adjacent.rgb);
+      var best = cues.reduce(function (current, cue) {
+        return !current || cue.ratio > current.ratio ? cue : current;
+      }, null);
+      var complex = adjacent.indeterminate ||
+        (cs.backgroundImage && cs.backgroundImage !== 'none') ||
+        (cs.borderImageSource && cs.borderImageSource !== 'none') ||
+        (cs.boxShadow && cs.boxShadow !== 'none') ||
+        (cs.filter && cs.filter !== 'none');
+      if (best && best.ratio >= min) return;
+
+      var confidence = complex ? 'needs-visual' : 'auto-measured';
+      var finding = mk('nonTextContrast', confidence === 'auto-measured' ? 'Fail' : 'Risk', confidence, cssPath(el),
+        'Form control boundary has no confirmed visual cue at or above ' + min + ':1 against its adjacent background.',
+        {
+          bestCue: best ? best.kind : 'none',
+          bestRatio: best ? round2(best.ratio) : 1,
+          cues: contrastEvidence(cues, 6),
+          backgroundIndeterminateReason: adjacent.reason || null
+        },
+        { min: min }, rectOf(el),
+        'Raise a required border, underline, or fill cue to at least ' + min + ':1; keep complex effects only when pixel review proves the boundary remains visible.');
+      ctx.findings.push(finding);
+    });
+
+    qsa('button,a[href],[role=button],[role=link]').forEach(function (control) {
+      if (!isVisible(control) || isExempt(control)) return;
+      if (/[\p{L}\p{N}]/u.test((control.innerText || '').trim())) return;
+      var hasSvg = qsa('svg', control).some(isVisible);
+      var symbolText = (control.innerText || '').trim();
+      if (!hasSvg && !symbolText) return;
+
+      var surface = effectiveBg(control);
+      var paints = iconContrastPaints(control, surface.rgb);
+      if (!paints.length) return;
+      var low = paints.filter(function (paint) { return paint.ratio < min; });
+      if (!low.length && !surface.indeterminate) return;
+
+      var simple = paints.length === 1 && !surface.indeterminate;
+      ctx.findings.push(mk('nonTextContrast', simple ? 'Fail' : 'Risk', simple ? 'auto-measured' : 'needs-visual', cssPath(control),
+        'Icon-only control has no confirmed icon paint at or above ' + min + ':1 against its immediate surface.',
+        {
+          paints: contrastEvidence(paints, 8),
+          backgroundIndeterminateReason: surface.reason || null
+        },
+        { min: min }, rectOf(control),
+        'Increase the required icon or state indicator contrast to at least ' + min + ':1; pixel-check multi-color icons and icons over imagery.'));
+    });
+  }
+
+  function ruleInlineLinkAffordance(ctx) {
+    var min = Number(ctx.cfg.contrast.colorCue || 3);
+    qsa('a[href]').forEach(function (link) {
+      if (!isVisible(link) || isExempt(link)) return;
+      if (link.closest('nav,[role=navigation],[role=menu],[role=toolbar],[role=tablist],button,[role=button],h1,h2,h3,h4,h5,h6')) return;
+      var prose = link.closest('p,li,dd,dt,blockquote,figcaption');
+      if (!prose) return;
+      var peer = surroundingTextElement(prose, link);
+      if (!peer || hasPersistentLinkCue(link, peer)) return;
+
+      var linkColor = renderedForeground(link);
+      var peerColor = renderedForeground(peer);
+      if (!linkColor || !peerColor) return;
+      var ratio = contrast(linkColor, peerColor);
+      var sameColor = rgbDistance(linkColor, peerColor) < 1;
+      var message;
+      var finding;
+
+      if (sameColor) {
+        message = 'Inline link has no persistent non-color cue and looks the same as surrounding text.';
+        finding = mk('inlineLinkAffordance', 'Risk', 'visual-judgment', cssPath(link), message,
+          { linkVsText: round2(ratio), sameColor: true }, { colorCueMin: min }, rectOf(link),
+          'Underline the link or add another persistent non-color cue that distinguishes it from prose.');
+      } else if (ratio < min) {
+        message = 'Inline link is distinguished only by color, but its color differs from surrounding text by only ' + round2(ratio) + ':1.';
+        finding = mk('inlineLinkAffordance', 'Fail', 'auto-measured', cssPath(link), message,
+          { linkVsText: round2(ratio), sameColor: false }, { colorCueMin: min }, rectOf(link),
+          'Add a persistent underline or other non-color cue; do not rely on a sub-' + min + ':1 text-color difference.');
+        finding.standard = 'WCAG 1.4.1';
+      } else {
+        message = 'Inline link relies on a ' + round2(ratio) + ':1 color difference alone; verify a non-color cue appears on hover and keyboard focus.';
+        finding = mk('inlineLinkAffordance', 'Risk', 'visual-judgment', cssPath(link), message,
+          { linkVsText: round2(ratio), sameColor: false }, { colorCueMin: min }, rectOf(link),
+          'Prefer a persistent underline; otherwise prove a non-color cue on both hover and keyboard focus.');
+        finding.standard = 'WCAG 1.4.1';
+      }
+      ctx.findings.push(finding);
     });
   }
 
@@ -1210,6 +1329,35 @@
     });
   }
 
+  function ruleBodyTextAlignment(ctx) {
+    bodyTextCandidates(ctx).forEach(function (candidate) {
+      var align = candidate.style.textAlign;
+      if (align !== 'center' && align !== 'justify') return;
+      ctx.findings.push(mk('bodyTextAlignment', 'Polish', 'auto-measured', cssPath(candidate.el),
+        'Long-form text spans ' + candidate.lines + ' rendered lines with ' + align + ' alignment, which weakens a stable reading edge.',
+        { textAlign: align, lines: candidate.lines, chars: candidate.chars }, {}, rectOf(candidate.el),
+        'Use logical start alignment for long-form text; reserve centered alignment for short headings or compact copy.'));
+    });
+  }
+
+  function ruleBodyTextLineHeight(ctx) {
+    var min = Number((ctx.cfg.polish && ctx.cfg.polish.bodyLineHeight) || 1.5);
+    bodyTextCandidates(ctx).forEach(function (candidate) {
+      var lineHeight = candidate.style.lineHeight;
+      if (lineHeight === 'normal') return;
+      var lineHeightPx = parseFloat(lineHeight);
+      var fontSize = parseFloat(candidate.style.fontSize);
+      if (!Number.isFinite(lineHeightPx) || !Number.isFinite(fontSize) || fontSize <= 0) return;
+      var ratio = lineHeightPx / fontSize;
+      if (ratio < 0.95 || ratio >= min) return;
+      ctx.findings.push(mk('bodyTextLineHeight', 'Polish', 'auto-measured', cssPath(candidate.el),
+        'Long-form text uses a ' + round2(ratio) + ' line-height ratio, below the ' + min + ' readability guideline.',
+        { lineHeightRatio: round2(ratio), lineHeightPx: round2(lineHeightPx), fontSizePx: round2(fontSize), lines: candidate.lines, chars: candidate.chars },
+        { recommendedMin: min }, rectOf(candidate.el),
+        'Increase long-form body line-height toward ' + min + '; treat this as readability guidance, not a WCAG AA conformance failure.'));
+    });
+  }
+
   function ruleEmptyInteractiveTarget(ctx) {
     qsa('button, a[href], [role=button]').forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
@@ -1476,6 +1624,123 @@
       if (c.nodeType === 3 && c.textContent.trim()) return true;
     }
     return false;
+  }
+  function boundaryContrastCues(cs, adjacent) {
+    var cues = [];
+    var fill = colorAgainst(cs.backgroundColor, adjacent);
+    if (fill) cues.push({ kind: 'background', ratio: contrast(fill, adjacent), color: rgbStr(fill) });
+    ['Top', 'Right', 'Bottom', 'Left'].forEach(function (side) {
+      var width = parseFloat(cs['border' + side + 'Width']) || 0;
+      var style = cs['border' + side + 'Style'];
+      if (width < 1 || style === 'none' || style === 'hidden') return;
+      var paint = colorAgainst(cs['border' + side + 'Color'], adjacent);
+      if (paint) cues.push({ kind: 'border' + side, ratio: contrast(paint, adjacent), color: rgbStr(paint), width: width });
+    });
+    var outlineWidth = parseFloat(cs.outlineWidth) || 0;
+    if (outlineWidth >= 1 && cs.outlineStyle !== 'none' && cs.outlineStyle !== 'hidden' && cs.outlineStyle !== 'auto') {
+      var outline = colorAgainst(cs.outlineColor, adjacent);
+      if (outline) cues.push({ kind: 'outline', ratio: contrast(outline, adjacent), color: rgbStr(outline), width: outlineWidth });
+    }
+    return cues;
+  }
+  function iconContrastPaints(control, surface) {
+    var paints = {};
+    var symbol = (control.innerText || '').trim();
+    if (symbol && !/[\p{L}\p{N}]/u.test(symbol)) add(getComputedStyle(control).color, 1, 'symbol');
+    qsa('svg,svg *', control).forEach(function (node) {
+      if (!isVisible(node)) return;
+      var cs = getComputedStyle(node);
+      add(cs.fill, parseFloat(cs.fillOpacity) || 1, 'fill');
+      if ((parseFloat(cs.strokeWidth) || 0) > 0) add(cs.stroke, parseFloat(cs.strokeOpacity) || 1, 'stroke');
+    });
+    return Object.keys(paints).map(function (key) { return paints[key]; });
+
+    function add(value, opacity, kind) {
+      if (!value || value === 'none') return;
+      var parsed = parseColor(value);
+      if (!parsed) return;
+      parsed[3] *= opacity;
+      if (parsed[3] <= 0.05) return;
+      var rgb = parsed[3] < 1 ? composite(parsed, surface) : parsed.slice(0, 3);
+      var key = rgb.map(function (channel) { return Math.round(channel); }).join(',');
+      if (!paints[key]) paints[key] = { kind: kind, color: rgbStr(rgb), ratio: contrast(rgb, surface) };
+    }
+  }
+  function contrastEvidence(items, max) {
+    return items.slice(0, max).map(function (item) {
+      var evidence = {};
+      Object.keys(item).forEach(function (key) { evidence[key] = key === 'ratio' ? round2(item[key]) : item[key]; });
+      return evidence;
+    });
+  }
+  function surroundingTextElement(container, excluded) {
+    var walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (node) {
+        if (excluded.contains(node)) return NodeFilter.FILTER_REJECT;
+        if (!/[\p{L}\p{N}]/u.test(node.textContent || '')) return NodeFilter.FILTER_REJECT;
+        var parent = node.parentElement;
+        return parent && isVisible(parent) && !isExempt(parent) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
+    });
+    var node = walker.nextNode();
+    return node ? node.parentElement : null;
+  }
+  function hasPersistentLinkCue(link, peer) {
+    var cs = getComputedStyle(link);
+    var peerStyle = getComputedStyle(peer);
+    if (cs.textDecorationLine && cs.textDecorationLine !== 'none') return true;
+    if (qsa('svg,img', link).some(isVisible)) return true;
+    if (Math.abs((parseInt(cs.fontWeight, 10) || 400) - (parseInt(peerStyle.fontWeight, 10) || 400)) >= 100) return true;
+    if (cs.fontStyle !== peerStyle.fontStyle) return true;
+    var peerBg = effectiveBg(peer).rgb;
+    var linkBg = colorAgainst(cs.backgroundColor, peerBg);
+    if (linkBg && contrast(linkBg, peerBg) > 1.1) return true;
+    return ['Top', 'Right', 'Bottom', 'Left'].some(function (side) {
+      var width = parseFloat(cs['border' + side + 'Width']) || 0;
+      return width >= 1 && cs['border' + side + 'Style'] !== 'none' && cs['border' + side + 'Style'] !== 'hidden';
+    });
+  }
+  function renderedForeground(el) {
+    var color = parseColor(getComputedStyle(el).color);
+    if (!color) return null;
+    var bg = effectiveBg(el).rgb;
+    return color[3] < 1 ? composite(color, bg) : color.slice(0, 3);
+  }
+  function rgbDistance(a, b) {
+    var dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+  function colorAgainst(value, background) {
+    var parsed = parseColor(value);
+    if (!parsed || parsed[3] <= 0.05) return null;
+    return parsed[3] < 1 ? composite(parsed, background) : parsed.slice(0, 3);
+  }
+  function bodyTextCandidates(ctx) {
+    if (ctx.bodyTextCandidates) return ctx.bodyTextCandidates;
+    var cfg = ctx.cfg.polish || {};
+    var minChars = Number(cfg.bodyTextMinChars || 40);
+    var minLines = Number(cfg.bodyTextMinLines || 3);
+    ctx.bodyTextCandidates = qsa('p,li,dd,dt,blockquote').map(function (el) {
+      if (!isVisible(el) || isExempt(el) || el.closest('nav,[role=navigation],[role=menu],[role=toolbar],form,table,pre,code')) return null;
+      var text = (el.innerText || el.textContent || '').trim();
+      var chars = Array.from(text).filter(function (char) { return /[\p{L}\p{N}]/u.test(char); }).length;
+      if (chars < minChars) return null;
+      var lines = renderedTextLines(el);
+      if (lines < minLines) return null;
+      return { el: el, style: getComputedStyle(el), chars: chars, lines: lines };
+    }).filter(Boolean);
+    return ctx.bodyTextCandidates;
+  }
+  function renderedTextLines(el) {
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    var tops = [];
+    Array.prototype.forEach.call(range.getClientRects(), function (rect) {
+      if (rect.width < 1 || rect.height < 1) return;
+      if (!tops.some(function (top) { return Math.abs(top - rect.top) < 2; })) tops.push(rect.top);
+    });
+    if (range.detach) range.detach();
+    return tops.length;
   }
   function isVisible(el) {
     if (!el || el.nodeType !== 1) return false;

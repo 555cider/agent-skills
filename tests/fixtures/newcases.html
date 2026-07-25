@@ -20,6 +20,93 @@
       width: 800px;
       font-size: 16px;
     }
+    .guideline-cases {
+      width: 340px;
+      margin-top: 24px;
+      padding: 16px;
+      border: 1px solid #767676;
+    }
+    .guideline-cases input {
+      display: block;
+      width: 100%;
+      min-height: 36px;
+      margin: 8px 0;
+      background: #fff;
+      color: #111;
+    }
+    #low-contrast-control {
+      border: 1px solid #ccc;
+    }
+    #good-contrast-control {
+      border: 1px solid #767676;
+    }
+    .icon-control {
+      width: 44px;
+      height: 44px;
+      margin-right: 8px;
+      border: 1px solid #767676;
+      background: #fff;
+    }
+    .icon-control svg {
+      width: 20px;
+      height: 20px;
+    }
+    #low-contrast-icon svg {
+      fill: #bbb;
+    }
+    #good-contrast-icon svg {
+      fill: #555;
+    }
+    #complex-contrast-icon {
+      background-image: linear-gradient(90deg, #fff, #777);
+    }
+    #complex-contrast-icon svg {
+      fill: #aaa;
+    }
+    .prose-links {
+      color: #111;
+      line-height: 1.5;
+    }
+    .prose-links a {
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    #low-color-link {
+      color: #555;
+    }
+    #strong-color-link {
+      color: #767676;
+    }
+    #same-color-link {
+      color: #111;
+    }
+    #underlined-link {
+      color: #555;
+      text-decoration: underline;
+    }
+    #strong-color-link:hover,
+    #strong-color-link:focus {
+      text-decoration: underline;
+    }
+    .body-copy {
+      width: 250px;
+      font-size: 16px;
+    }
+    #centered-body {
+      line-height: 1.5;
+      text-align: center;
+    }
+    #tight-body {
+      line-height: 1.2;
+      text-align: left;
+    }
+    #good-body {
+      line-height: 1.5;
+      text-align: left;
+    }
+    #short-centered {
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -101,8 +188,45 @@
   <div id="no-cursor-button" role="button" tabindex="0" style="cursor:default;width:120px;min-height:44px;padding:10px;border:1px solid #333;">Click me</div>
 
   <!-- rule 15: missingModalBackdrop -->
-  <div role="dialog" id="no-backdrop-modal" style="position: fixed; z-index: 9999; width: 300px; height: 200px; left: 50%; top: 50%; transform: translate(-50%, -50%); background: white;">
+  <div role="dialog" id="no-backdrop-modal" style="position: fixed; z-index: 9999; width: 180px; height: 100px; right: 10px; top: 10px; background: white;">
     Modal with no backdrop
   </div>
+
+  <section class="guideline-cases" aria-label="logic-driven UI guideline cases">
+    <!-- rule 16: nonTextContrast -->
+    <label for="low-contrast-control">Low-contrast field</label>
+    <input id="low-contrast-control" value="Boundary below three to one">
+    <label for="good-contrast-control">Good-contrast field</label>
+    <input id="good-contrast-control" value="Boundary above three to one">
+    <button class="icon-control" id="low-contrast-icon" aria-label="Low contrast icon">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11h18v2H3z"></path></svg>
+    </button>
+    <button class="icon-control" id="good-contrast-icon" aria-label="Good contrast icon">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11h18v2H3z"></path></svg>
+    </button>
+    <button class="icon-control" id="complex-contrast-icon" aria-label="Complex contrast icon">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11h18v2H3z"></path></svg>
+    </button>
+
+    <!-- rule 17: inlineLinkAffordance -->
+    <p class="prose-links">
+      Review the <a id="low-color-link" href="#low">low colour link</a>, the
+      <a id="strong-color-link" href="#strong">strong colour-only link</a>, the
+      <a id="same-color-link" href="#same">static-looking link</a>, and the
+      <a id="underlined-link" href="#underlined">underlined link</a> in this paragraph.
+    </p>
+
+    <!-- rules 18-19: bodyTextAlignment / bodyTextLineHeight -->
+    <p class="body-copy" id="centered-body">
+      This centered paragraph is deliberately long enough to render across several lines, so the audit can distinguish difficult long-form alignment from a short centered heading.
+    </p>
+    <p class="body-copy" id="tight-body">
+      This paragraph uses a deliberately tight but non-overlapping line height across several rendered lines, making it an optional readability advisory rather than a conformance failure.
+    </p>
+    <p class="body-copy" id="good-body">
+      This paragraph uses logical start alignment and a one-point-five line height across several rendered lines, so it should remain outside the readability advisory channel.
+    </p>
+    <p id="short-centered">Short centered note.</p>
+  </section>
 </body>
 </html>

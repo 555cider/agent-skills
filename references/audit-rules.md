@@ -35,6 +35,36 @@ Text legibility vs the real rendered background.
 - **Method:** `getComputedStyle(input, '::placeholder').color` vs the input's effective bg.
 - Placeholders are not labels; low-contrast placeholder text is at most `Risk`, `Fail` if `< 3.0`.
 
+## nonTextContrast — `Fail` / required advisory — measured candidate
+Required control boundaries and icon-only control graphics (WCAG 1.4.11).
+- **Form controls:** inspect visible text fields, textareas, selects, and custom
+  `appearance:none` checkboxes/radios. Compare every non-zero solid border, outline,
+  and fill against the adjacent rendered background. At least one required cue must
+  reach `3:1`; compare the unrounded ratio and round only report evidence.
+- **Icon-only controls:** when a button/link has no visible letter or number, compare
+  its symbol or SVG fill/stroke paints with the immediate control surface. A single
+  solid paint below `3:1` is an auto-measured `Fail`.
+- **Review fallback:** gradients, images, filters, border images, shadows, indeterminate
+  backgrounds, or multiple icon paints with a low-contrast part become
+  `Risk/needs-visual`, not an invented failure.
+- **FP guards:** disabled/inactive controls and browser-painted native checkboxes/radios
+  are exempt. Labeled controls skip icon testing because the icon is not the only
+  visible identifier.
+
+## inlineLinkAffordance — `Fail` / required advisory
+Prose links that have no persistent non-color cue.
+- **Method:** inspect inline anchors inside paragraphs, list items, descriptions,
+  blockquotes, and captions only when surrounding non-link text exists. Underlines,
+  visible borders/backgrounds/icons, or a font weight/style difference are persistent
+  cues and pass.
+- **Color-only failure:** if link and surrounding text colors differ by `<3:1`, emit
+  `Fail/auto-measured` with WCAG 1.4.1 evidence.
+- **Required review:** a color-only link at `≥3:1` must prove a non-color cue on hover
+  and keyboard focus. A link that looks identical to prose is a usability
+  `Risk/visual-judgment`, not mislabeled as a color-use conformance failure.
+- **FP guards:** exclude navigation, menus, toolbars, tablists, button-like ancestors,
+  and headings.
+
 ## horizontalOverflow — `Fail` — auto-measured
 - **Method:** `documentElement.scrollWidth > clientWidth + tol`. Offenders = visible
   elements whose `rect.right > viewport + tol` and that are not inside an `overflow-x:auto/scroll`
@@ -199,6 +229,23 @@ Segmented/tab/radio groups where the wrong item looks active.
 - **Method:** Scans text-containing elements to check if computed `line-height` is smaller than computed `font-size * 0.95`.
 - **Threshold:** computed `lineHeight < fontSize * 0.95`.
 - **FP guards:** ignores elements with `lineHeight === 'normal'`; ignores hidden/exempt elements.
+
+## bodyTextAlignment — optional advisory — auto-measured
+- **Method:** inspect prose elements with at least `40` letters/numbers and `3`
+  rendered line boxes. Centered or justified long-form text emits `Polish`.
+- **FP guards:** short centered copy, headings, navigation, forms, tables, and code
+  are excluded. Recommend logical-start alignment rather than assuming every
+  writing system reads left-to-right.
+
+## bodyTextLineHeight — optional advisory — auto-measured
+- **Method:** on the same long-form candidates, calculate explicit computed
+  `line-height / font-size`.
+- **Threshold:** ratios from `0.95` through `<1.5` emit `Polish`. Ratios `<0.95`
+  remain the stronger `textLineHeightOverlap` Risk; `normal` is skipped because
+  CSSOM does not expose a reliable numeric used value.
+- This is readability guidance, not a WCAG AA failure. WCAG text-spacing
+  conformance requires content to survive user overrides, not every authored
+  paragraph to start at `1.5`.
 
 ## emptyInteractiveTarget — `Fail` — auto-measured
 - **Method:** Finds visible interactive elements (`button`, `a`, `[role=button]`) with zero text content, no visible child images/SVGs, and no accessible name (`aria-label`, `title`).

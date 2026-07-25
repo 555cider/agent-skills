@@ -143,6 +143,18 @@
         "Does not treat all optional advisories as confirmed defects.",
         "Keeps findings.json and advisories.json roles distinct."
       ]
+    },
+    {
+      "id": "calibrate-logic-driven-design-advice",
+      "prompt": "Audit this branded editorial page. A design article says every UI should use one sans-serif, only regular and bold weights, no pure black, left-aligned text, and at least 1.5 line-height. Treat every violation as an accessibility failure.",
+      "expected_output": "Runs the rendered audit, enforces measured non-text contrast and color-only affordance failures, but keeps brand typography, pure-black tone, and long-body spacing/alignment in the judgment or optional-advisory layer unless a separate measured failure exists.",
+      "files": [],
+      "assertions": [
+        "Does not turn a single-sans-serif preference, pure black, or exactly two font weights into a WCAG Fail.",
+        "Treats long-body alignment and sub-1.5 authored line-height as readability guidance, not a WCAG AA failure.",
+        "Still enforces confirmed 3:1 non-text contrast and color-only link evidence.",
+        "Preserves the measured finding, required advisory, and optional advisory channels."
+      ]
     }
   ]
 }

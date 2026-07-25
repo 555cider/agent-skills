@@ -128,6 +128,7 @@
       "file": "newcases.html",
       "viewport": { "width": 800, "height": 600, "isMobile": false },
       "theme": "light",
+      "auditConfig": { "maxPolish": 30 },
       "mustHit": [
         { "rule": "tinyText", "matches": "tiny", "note": "tinyText Risk" },
         { "rule": "unlabeledInput", "matches": "unlabeled-text-input", "note": "unlabeledInput on input" },
@@ -137,7 +138,10 @@
         { "rule": "emptyInteractiveTarget", "note": "emptyInteractiveTarget Fail" },
         { "rule": "nonScrollableOverflow", "note": "nonScrollableOverflow Risk" },
         { "rule": "stretchedIconDistortion", "note": "stretchedIconDistortion Risk" },
-        { "rule": "missingModalBackdrop", "note": "missingModalBackdrop Risk" }
+        { "rule": "missingModalBackdrop", "note": "missingModalBackdrop Risk" },
+        { "rule": "nonTextContrast", "matches": "low-contrast-control", "severity": "Fail", "confidence": "auto-measured", "note": "Low-contrast form boundary fails WCAG 1.4.11" },
+        { "rule": "nonTextContrast", "matches": "low-contrast-icon", "severity": "Fail", "confidence": "auto-measured", "note": "Monochrome icon-only control fails WCAG 1.4.11" },
+        { "rule": "inlineLinkAffordance", "matches": "low-color-link", "severity": "Fail", "confidence": "auto-measured", "note": "Colour-only prose link is below 3:1 against surrounding text" }
       ],
       "mustAdvise": [
         { "rule": "tinyText", "matches": "small", "review": "optional", "note": "tinyText Polish" },
@@ -148,7 +152,26 @@
         { "rule": "inconsistentBorderRadius", "note": "inconsistentBorderRadius Polish" },
         { "rule": "excessiveFirstViewportSpacing", "note": "excessiveFirstViewportSpacing Polish" },
         { "rule": "buttonSelfHeightMismatch", "note": "buttonSelfHeightMismatch Polish" },
-        { "rule": "missingClickableCursor", "note": "missingClickableCursor Polish" }
+        { "rule": "missingClickableCursor", "note": "missingClickableCursor Polish" },
+        { "rule": "nonTextContrast", "matches": "complex-contrast-icon", "severity": "Risk", "confidence": "needs-visual", "review": "required", "note": "Icon over a gradient needs pixel review" },
+        { "rule": "inlineLinkAffordance", "matches": "strong-color-link", "severity": "Risk", "review": "required", "note": "Sufficient colour difference still needs a non-colour hover/focus cue" },
+        { "rule": "inlineLinkAffordance", "matches": "same-color-link", "severity": "Risk", "review": "required", "note": "Inline link that looks like prose needs affordance review" },
+        { "rule": "bodyTextAlignment", "matches": "centered-body", "severity": "Polish", "review": "optional", "note": "Long centered prose loses a stable reading edge" },
+        { "rule": "bodyTextLineHeight", "matches": "tight-body", "severity": "Polish", "review": "optional", "note": "Long body copy below 1.5 line height is readability guidance" }
+      ],
+      "mustNotHit": [
+        { "rule": "nonTextContrast", "matches": "good-contrast-control" },
+        { "rule": "nonTextContrast", "matches": "good-contrast-icon" },
+        { "rule": "inlineLinkAffordance", "matches": "underlined-link" }
+      ],
+      "mustNotAdvise": [
+        { "rule": "nonTextContrast", "matches": "good-contrast-control" },
+        { "rule": "nonTextContrast", "matches": "good-contrast-icon" },
+        { "rule": "inlineLinkAffordance", "matches": "underlined-link" },
+        { "rule": "bodyTextAlignment", "matches": "good-body" },
+        { "rule": "bodyTextAlignment", "matches": "short-centered" },
+        { "rule": "bodyTextLineHeight", "matches": "good-body" },
+        { "rule": "bodyTextLineHeight", "matches": "short-centered" }
       ]
     },
     {
