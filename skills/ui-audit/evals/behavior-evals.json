@@ -69,14 +69,28 @@
     },
     {
       "id": "prove-data-rich-nested-scroll-state",
-      "prompt": "The request detail has a populated result-review card below the fold inside .request-detail-scroll. The default screenshot and DOM already contain realistic result data. Audit whether the actual result-review decision state is ready on mobile and desktop.",
-      "expected_output": "Does not treat populated DOM or document top/bottom coverage as proof. Uses the real result-review CTA through stateSetups, requires visible post-action content, inspects the resulting screenshots, and leaves the cell unverified if the product state cannot be driven deterministically.",
+      "prompt": "The request detail has a populated result-review card below the fold inside .request-detail-scroll. Our current fixture has one short warning, but production can return several long localized blockers, null metrics, and technical limitations. Audit whether the actual result-review decision state is ready on mobile and desktop.",
+      "expected_output": "Does not treat populated DOM, a short fixture, or document top/bottom coverage as proof. Builds a credible high-density fixture from the current API contract, uses the real result-review CTA through stateSetups, requires visible post-action content, inspects the resulting screenshots, and leaves the cell unverified if either content density or product-state reachability cannot be proved.",
       "files": [],
       "assertions": [
         "Explains that document top/bottom positions do not exercise an independent scroll container.",
+        "Uses representative maximum item counts, long supported localized strings, and meaningful null or mixed values instead of a one-item populated fixture.",
         "Uses a unique structured click action for the real result-review CTA and a visible expectation inside the decision state.",
         "Inspects post-action screenshots in addition to setupDriver/stateSetup proof.",
-        "Reports the state as unverified rather than using arbitrary JavaScript or DOM presence when the action cannot be reproduced."
+        "Reports the state as unverified rather than using arbitrary JavaScript or DOM presence when density or the action cannot be reproduced."
+      ]
+    },
+    {
+      "id": "prove-async-mutation-pending-feedback",
+      "prompt": "Rejecting a result sends POST /api/runs/42/reject. The button appears unchanged until the request finishes, so operators can click repeatedly or leave. Audit this interaction instead of checking only the final rejected state.",
+      "expected_output": "Holds the exact reject POST, drives the real reject button, requires immediate visible status and a single-flight busy or disabled state, inspects the pending screenshot, and separately covers success, retryable failure, and duplicate-submission behavior.",
+      "files": [],
+      "assertions": [
+        "Uses a hold:true stateMock for the exact mutation endpoint and a structured click action.",
+        "Requires visible pending feedback such as role=status plus a disabled or aria-busy action state.",
+        "Does not accept the later rerender or success toast as proof of pending feedback.",
+        "Requires separate success and retryable error states.",
+        "Uses a functional interaction test, not visual inference, to prove repeated activation sends only one request."
       ]
     },
     {
