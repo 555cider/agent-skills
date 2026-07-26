@@ -68,6 +68,18 @@
       ]
     },
     {
+      "id": "prove-data-rich-nested-scroll-state",
+      "prompt": "The request detail has a populated result-review card below the fold inside .request-detail-scroll. The default screenshot and DOM already contain realistic result data. Audit whether the actual result-review decision state is ready on mobile and desktop.",
+      "expected_output": "Does not treat populated DOM or document top/bottom coverage as proof. Uses the real result-review CTA through stateSetups, requires visible post-action content, inspects the resulting screenshots, and leaves the cell unverified if the product state cannot be driven deterministically.",
+      "files": [],
+      "assertions": [
+        "Explains that document top/bottom positions do not exercise an independent scroll container.",
+        "Uses a unique structured click action for the real result-review CTA and a visible expectation inside the decision state.",
+        "Inspects post-action screenshots in addition to setupDriver/stateSetup proof.",
+        "Reports the state as unverified rather than using arbitrary JavaScript or DOM presence when the action cannot be reproduced."
+      ]
+    },
+    {
       "id": "detect-obscured-keyboard-focus",
       "prompt": "Tab through this page and check whether the cookie banner completely hides any focused controls near the bottom.",
       "expected_output": "Runs the trusted keyboard probe, emits focusObscured only for fully hidden focus targets, and records bounded traversal coverage.",

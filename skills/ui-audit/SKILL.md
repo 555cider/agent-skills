@@ -72,6 +72,13 @@ Configured or fallback mocks count as coverage only when CDP Fetch actually inte
 
 Structured actions support `click`, `fill`, `press`, `hover`, `check`, and `selectOption`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
 
+A populated fixture proves only that data reached the DOM. It does not prove a decision or action state that sits below the fold in an independently scrolling pane. Document `top`/`bottom` positions scroll the document, not nested scroll containers. For those surfaces:
+
+- drive the real primary product action through `stateSetups`;
+- require a visible post-action expectation inside the target state;
+- inspect the post-action screenshots as well as setup proof; and
+- leave the cell unverified when no deterministic product action can reach the state instead of using arbitrary page JavaScript or DOM presence as proof.
+
 ## Adaptability and exemptions
 
 - `zoom-200` halves the desktop CSS viewport and doubles its scale, then reruns layout, target, and keyboard checks.
@@ -139,3 +146,4 @@ When adding a failure mode, put deterministic measurement in code and add `mustH
 - Suppressing broad selectors before investigating a shared-component root cause.
 - Claiming a modal trap from DOM structure without trusted forward and reverse Tab input.
 - Evaluating `audit.js` after navigation and assuming CLS was measured; install `__uiAuditInstallCLS()` on the new document as the runner does.
+- Treating document top/bottom coverage or a populated DOM fixture as proof that a nested-scroll decision state was reached.
