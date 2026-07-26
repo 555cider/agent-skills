@@ -1,6 +1,6 @@
 ---
 name: ui-audit
-description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots. Run it for visual QA, responsive or zoom/reflow checks, contrast and overflow defects, keyboard focus/focus-ring review, target sizing, modal containment, hover affordance, or any claim that a rendered screen is done. It measures the live DOM first and separates confirmed defects from visual-review advisories.
+description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots. Run it for visual QA, responsive or zoom/reflow checks, contrast and overflow defects, keyboard focus/focus-ring review, target sizing, modal containment, async action feedback, hover affordance, or any claim that a rendered screen is done. It measures the live DOM first and separates confirmed defects from visual-review advisories.
 license: MIT
 compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium browser with rendered DOM access.
 ---
@@ -78,6 +78,18 @@ A populated fixture proves only that data reached the DOM. It does not prove a d
 - require a visible post-action expectation inside the target state;
 - inspect the post-action screenshots as well as setup proof; and
 - leave the cell unverified when no deterministic product action can reach the state instead of using arbitrary page JavaScript or DOM presence as proof.
+
+Data presence also does not prove data density. For variable-length fields, lists, tables, and server messages, include a credible high-density fixture derived from the current API or domain contract: representative maximum item counts, longest supported localized strings, and meaningful null or mixed values. A short one-item fixture cannot verify wrapping, prioritization, disclosure, or action reachability for a dense state. Treat interaction reachability and content density as separate matrix requirements; prove both when the surface has both risks.
+
+The final response also does not prove asynchronous mutation feedback. For an in-scope control that writes remotely or can remain pending beyond the next paint, audit the transition as separate states:
+
+- use `stateMocks` with `hold: true` on the exact mutation request and drive the real control through `stateSetups`;
+- require immediate visible progress text plus a disabled, inert, or otherwise proven single-flight control state, using selectors such as `[disabled][aria-busy="true"]` and `[role="status"]`;
+- inspect the held-request screenshot instead of treating a later rerender or success toast as pending-state proof;
+- exercise success and retryable error recovery separately; and
+- add a functional interaction test for request count when repeated activation could duplicate work, because the visual audit does not replace idempotency or submission tests.
+
+Leave the pending cell unverified when the mutation cannot be held deterministically or the expected busy state does not appear.
 
 ## Adaptability and exemptions
 

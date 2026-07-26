@@ -518,7 +518,35 @@ else
   fail "Python compatibility shim delegates to Node" "shim contract failed"
 fi
 
-PROFILES_AFTER="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"
+# ---- the usage contract requires both reachable and realistically dense states ----
+SKILL_DOC="$HERE/../SKILL.md"
+if grep -qF "Data presence also does not prove data density." "$SKILL_DOC"; then
+  pass "skill distinguishes populated DOM from data density"
+else
+  fail "skill distinguishes populated DOM from data density" "missing density-proof contract"
+fi
+if grep -qF "Treat interaction reachability and content density as separate matrix requirements" "$SKILL_DOC"; then
+  pass "skill requires independent reachability and density proof"
+else
+  fail "skill requires independent reachability and density proof" "missing orthogonal state requirements"
+fi
+if grep -qF "The final response also does not prove asynchronous mutation feedback." "$SKILL_DOC"; then
+  pass "skill distinguishes final state from mutation pending feedback"
+else
+  fail "skill distinguishes final state from mutation pending feedback" "missing async mutation contract"
+fi
+if grep -qF "add a functional interaction test for request count" "$SKILL_DOC"; then
+  pass "skill requires functional duplicate-submission proof"
+else
+  fail "skill requires functional duplicate-submission proof" "missing single-flight test contract"
+fi
+
+PROFILES_AFTER=""
+for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+  PROFILES_AFTER="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"
+  [ "$PROFILES_AFTER" = "$PROFILES_BEFORE" ] && break
+  sleep 0.1
+done
 if [ "$PROFILES_AFTER" = "$PROFILES_BEFORE" ]; then
   pass "Chrome temporary profiles are removed"
 else
