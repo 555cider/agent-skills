@@ -5,10 +5,9 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 from datetime import UTC, datetime
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any, Sequence
 
 from .util import MemoryError, atomic_write
@@ -17,6 +16,7 @@ from .util import user_home as default_user_home
 
 INTEGRATION_MARKER = "agent-memory-v2-managed"
 LEGACY_INTEGRATION_MARKER = "agent-memory-managed"
+MANAGED_LAUNCHER_MARKER = "agent-memory-managed-launcher"
 OPENCODE_MARKER = "AGENT_MEMORY_OPENCODE_ADAPTER_V2"
 KNOWN_CONFLICT_TOKENS = ("remember-codex-bridge", "remember@")
 HOOK_EVENTS: dict[str, tuple[tuple[str, str, int], ...]] = {
@@ -48,28 +48,18 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _hook_command(harness: str, event: str) -> str:
     if sys.platform == "win32":
-        # Keep Windows path semantics explicit so generated hooks are stable
-        # even when this branch is exercised by cross-platform tooling/tests.
-        skill_root = PureWindowsPath(__file__).parents[2]
-        fallback_python = PureWindowsPath(sys.executable)
-    else:
-        skill_root = Path(__file__).resolve().parents[2]
-        fallback_python = Path(sys.executable)
+        return f"agent-memory hook --harness {harness} --event {event}"
+    skill_root = Path(__file__).resolve().parents[2]
     script = skill_root / "scripts" / "memory.py"
     candidates = [
         skill_root / ".venv" / "bin" / "python",
         skill_root / ".venv" / "Scripts" / "python.exe",
     ]
-    python = next((path for path in candidates if os.path.exists(path)), fallback_python)
+    python = next((path for path in candidates if path.exists()), Path(sys.executable))
     args = [
         str(item)
         for item in (python, script, "hook", "--harness", harness, "--event", event)
     ]
-    if sys.platform == "win32":
-        # Codex may invoke hooks through cmd.exe or Git Bash. Always quoting
-        # Windows paths preserves backslashes in both shells.
-        paths = " ".join(f'"{item}"' for item in args[:2])
-        return f"{paths} {subprocess.list2cmdline(args[2:])}"
     return shlex.join(args)
 
 
@@ -96,8 +86,22 @@ def _is_managed_entry(value: Any) -> bool:
             marker in str(item.get("statusMessage", ""))
             for marker in (INTEGRATION_MARKER, LEGACY_INTEGRATION_MARKER)
         )
-        and "memory.py" in str(item.get("command", ""))
+        and _is_agent_memory_hook_command(str(item.get("command", "")))
         for item in value["hooks"]
+    )
+
+
+def _is_agent_memory_hook_command(command: str) -> bool:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    if len(parts) >= 2 and parts[0] == "agent-memory":
+        return parts[1] == "hook"
+    return (
+        len(parts) >= 3
+        and parts[1].replace("\\", "/").rsplit("/", 1)[-1] == "memory.py"
+        and parts[2] == "hook"
     )
 
 
@@ -267,6 +271,18 @@ def integration_paths(user_home: Path | None = None) -> dict[str, Path]:
     }
 
 
+def _managed_launcher_path() -> Path | None:
+    resolved = shutil.which("agent-memory")
+    if not resolved:
+        return None
+    path = Path(resolved)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return path if MANAGED_LAUNCHER_MARKER in text else None
+
+
 def integrate(
     *,
     memory_home: Path,
@@ -281,6 +297,17 @@ def integrate(
     if harness not in {"all", "claude", "codex", "opencode"}:
         raise MemoryError(f"invalid harness: {harness}")
     selected = ["claude", "codex", "opencode"] if harness == "all" else [harness]
+    enabled = mode != "off"
+    if (
+        apply
+        and enabled
+        and sys.platform == "win32"
+        and "codex" in selected
+        and _managed_launcher_path() is None
+    ):
+        raise MemoryError(
+            "cannot apply Windows Codex hooks: managed agent-memory launcher is not on PATH"
+        )
     paths = integration_paths(user_home)
     conflict_list = known_conflicts(list(paths.values()))
     blocked = mode == "primary" and bool(conflict_list) and not disable_known_conflicts
@@ -288,7 +315,6 @@ def integrate(
         raise MemoryError(
             "known memory integration conflict found; review doctor output and rerun with --disable-known-conflicts"
         )
-    enabled = mode != "off"
     planned: dict[Path, str | None] = {}
     if "claude" in selected:
         value = merge_hooks(_read_json(paths["claude"]), "claude", enabled)
@@ -373,6 +399,8 @@ def _stale_command(command: str) -> bool:
         parts = shlex.split(command)
     except ValueError:
         return True
+    if len(parts) >= 2 and parts[0] == "agent-memory":
+        return _managed_launcher_path() is None
     if len(parts) < 2:
         return True
     return not (Path(parts[0]).exists() and Path(parts[1]).exists())

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import shutil
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,24 +30,172 @@ from agent_memory.service import MemoryService, remote_event
 from agent_memory.util import repo_key, utc_now
 
 
-def test_windows_hook_command_quotes_paths_for_cmd_and_bash(monkeypatch):
+def test_windows_hook_command_uses_launcher(monkeypatch):
     monkeypatch.setattr(integration_module.sys, "platform", "win32")
-    monkeypatch.setattr(integration_module.sys, "executable", "C:/Python/python.exe")
-    monkeypatch.setattr(integration_module.os.path, "exists", lambda _path: False)
-    monkeypatch.setattr(
-        integration_module,
-        "__file__",
-        str(Path("C:/Program Files/agent-memory/scripts/agent_memory/integration.py")),
-    )
 
     command = integration_module._hook_command("codex", "user_prompt")
 
-    assert "'" not in command
-    assert command == (
-        '"C:\\Python\\python.exe" '
-        '"C:\\Program Files\\agent-memory\\scripts\\memory.py" '
-        "hook --harness codex --event user_prompt"
+    assert command == "agent-memory hook --harness codex --event user_prompt"
+
+
+def test_managed_entry_recognizes_legacy_and_launcher_commands_only():
+    legacy = {
+        "hooks": [
+            {
+                "command": "python3 memory.py hook --harness codex",
+                "statusMessage": "Agent Memory (agent-memory-managed)",
+            }
+        ]
+    }
+    launcher = {
+        "hooks": [
+            {
+                "command": "agent-memory hook --harness codex --event user_prompt",
+                "statusMessage": "Agent Memory v2 (agent-memory-v2-managed)",
+            }
+        ]
+    }
+    unrelated = {
+        "hooks": [
+            {
+                "command": "agent-memory remember --harness codex",
+                "statusMessage": "Agent Memory v2 (agent-memory-v2-managed)",
+            }
+        ]
+    }
+
+    assert integration_module._is_managed_entry(legacy)
+    assert integration_module._is_managed_entry(launcher)
+    assert not integration_module._is_managed_entry(unrelated)
+
+
+def test_stale_launcher_command_resolves_through_path(tmp_path, monkeypatch):
+    command = "agent-memory hook --harness codex --event user_prompt"
+    launcher = tmp_path / "agent-memory.cmd"
+    launcher.write_text("agent-memory-managed-launcher", encoding="utf-8")
+    monkeypatch.setattr(
+        integration_module.shutil, "which", lambda name: str(launcher)
     )
+    assert not integration_module._stale_command(command)
+
+    launcher.write_text("other", encoding="utf-8")
+    assert integration_module._stale_command(command)
+
+    monkeypatch.setattr(integration_module.shutil, "which", lambda name: None)
+    assert integration_module._stale_command(command)
+
+
+def test_stale_legacy_command_still_checks_interpreter_and_script_paths(tmp_path):
+    python = tmp_path / "python"
+    script = tmp_path / "memory.py"
+    python.touch()
+    script.touch()
+    command = f"{shlex.quote(str(python))} {shlex.quote(str(script))} hook"
+
+    assert not integration_module._stale_command(command)
+    script.unlink()
+    assert integration_module._stale_command(command)
+
+
+def test_windows_launcher_hooks_merge_idempotently(monkeypatch):
+    monkeypatch.setattr(integration_module.sys, "platform", "win32")
+
+    once = merge_hooks({}, "codex", True)
+    twice = merge_hooks(once, "codex", True)
+
+    assert twice == once
+
+
+def test_windows_enabled_codex_integration_requires_managed_launcher_before_writes(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    monkeypatch.setattr(integration_module.sys, "platform", "win32")
+    monkeypatch.setattr(integration_module.shutil, "which", lambda name: None)
+
+    with pytest.raises(
+        integration_module.MemoryError, match="managed agent-memory launcher is not on PATH"
+    ):
+        integrate(
+            memory_home=tmp_path / "memory",
+            mode="shadow",
+            harness="codex",
+            apply=True,
+            user_home=home,
+        )
+
+    assert not (home / ".codex" / "hooks.json").exists()
+    assert not (tmp_path / "memory" / "backups").exists()
+
+
+def test_windows_codex_dry_run_and_off_do_not_require_launcher(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(integration_module.sys, "platform", "win32")
+    monkeypatch.setattr(integration_module.shutil, "which", lambda name: None)
+
+    dry_run = integrate(
+        memory_home=tmp_path / "memory",
+        mode="shadow",
+        harness="codex",
+        apply=False,
+        user_home=home,
+    )
+    off = integrate(
+        memory_home=tmp_path / "memory",
+        mode="off",
+        harness="codex",
+        apply=True,
+        user_home=home,
+    )
+
+    assert dry_run["changes"]
+    assert off["applied"] is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows shell coverage")
+def test_windows_launcher_hook_runs_in_available_shells(tmp_path):
+    launcher_dir = tmp_path / "launcher"
+    launcher_dir.mkdir()
+    script = Path(__file__).resolve().parents[1] / "scripts" / "memory.py"
+    cmd_launcher = launcher_dir / "agent-memory.cmd"
+    cmd_launcher.write_text(
+        "@echo off\r\n\"%AM_TEST_PYTHON%\" \"%AM_TEST_MEMORY_SCRIPT%\" %*\r\n",
+        encoding="utf-8",
+    )
+    bash_launcher = launcher_dir / "agent-memory"
+    bash_launcher.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec \"$(cygpath -u \"$AM_TEST_PYTHON\")\" "
+        "\"$(cygpath -u \"$AM_TEST_MEMORY_SCRIPT\")\" \"$@\"\n",
+        encoding="utf-8",
+    )
+    bash_launcher.chmod(0o755)
+
+    env = os.environ.copy()
+    env["AGENT_MEMORY_HOME"] = str(tmp_path / "memory")
+    env["AM_TEST_PYTHON"] = sys.executable
+    env["AM_TEST_MEMORY_SCRIPT"] = str(script)
+    env["PATH"] = str(launcher_dir) + os.pathsep + env.get("PATH", "")
+    command = integration_module._hook_command("codex", "user_prompt")
+    payload = json.dumps({"event": "user_prompt", "cwd": str(tmp_path), "prompt": "hello"})
+
+    shell_commands = [
+        ["powershell.exe", "-NoProfile", "-Command", command],
+        ["cmd.exe", "/d", "/s", "/c", command],
+    ]
+    if bash := shutil.which("bash.exe"):
+        shell_commands.append([bash, "-lc", command])
+    for shell_command in shell_commands:
+        result = subprocess.run(
+            shell_command,
+            input=payload,
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {}
 
 
 def candidate(statement: str, **overrides):
@@ -640,7 +791,8 @@ def test_command_provider_rejects_malformed_protocol(tmp_path, monkeypatch):
         provider.extract([], "repo")
 
 
-def test_harness_event_parity_and_safe_integration(tmp_path):
+def test_harness_event_parity_and_safe_integration(tmp_path, monkeypatch):
+    monkeypatch.setattr(integration_module.sys, "platform", "linux")
     claude = {name for name, _, _ in HOOK_EVENTS["claude"]}
     codex = {name for name, _, _ in HOOK_EVENTS["codex"]}
     assert {"UserPromptSubmit", "PostToolUse", "Stop"} <= claude & codex

@@ -342,7 +342,7 @@ test_agent_memory_shadow_one_command_setup() {
     '[plugins."remember-codex-bridge@personal"]' \
     'enabled = true' >"$home/.codex/config.toml"
 
-  HOME="$home" "$INSTALL" --local agent-memory --shadow >"$out" 2>"$err"
+  HOME="$home" PATH="$home/.local/bin:$PATH" "$INSTALL" --local agent-memory --shadow >"$out" 2>"$err"
 
   [ -f "$home/.claude/settings.json" ] || fail "expected Claude settings after shadow setup"
   [ -f "$home/.codex/hooks.json" ] || fail "expected Codex hooks after shadow setup"
@@ -373,6 +373,38 @@ PY
   grep -F "integration applied and self-check passed" "$out" >/dev/null || fail "expected successful shadow setup"
 }
 
+test_agent_memory_shadow_requires_windows_launcher_on_path() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) ;;
+    *) return ;;
+  esac
+
+  local home="$WORK/shadow-missing-launcher-home"
+  local out="$WORK/shadow-missing-launcher.out"
+  local err="$WORK/shadow-missing-launcher.err"
+  local clean_path=""
+  local path_entry
+
+  mkdir -p "$home/.codex"
+  while IFS= read -r path_entry; do
+    [ -n "$path_entry" ] || continue
+    if [ -f "$path_entry/agent-memory" ] && grep -qF 'agent-memory-managed-launcher' "$path_entry/agent-memory"; then
+      continue
+    fi
+    if [ -f "$path_entry/agent-memory.cmd" ] && grep -qF 'agent-memory-managed-launcher' "$path_entry/agent-memory.cmd"; then
+      continue
+    fi
+    clean_path="${clean_path:+$clean_path:}$path_entry"
+  done < <(printf '%s' "$PATH" | tr ':' '\n')
+
+  if HOME="$home" PATH="$clean_path" "$INSTALL" --local agent-memory --shadow >"$out" 2>"$err"; then
+    fail "expected Windows shadow setup without a launcher on PATH to fail"
+  fi
+  grep -F "managed agent-memory launcher is not on PATH" "$err" >/dev/null ||
+    fail "expected a clear managed-launcher PATH error"
+  [ ! -e "$home/.codex/hooks.json" ] || fail "expected no Codex hooks to be written"
+}
+
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
 test_default_fallback_does_not_overwrite_mismatched_plain_directory
 test_local_install_overwrites_dirty_managed_clone
@@ -383,5 +415,6 @@ test_uninstall_all_removes_agent_memory_local_fallback_install
 test_uninstall_preserves_clone_without_upstream
 test_directory_without_skill_md_is_not_a_skill
 test_agent_memory_shadow_one_command_setup
+test_agent_memory_shadow_requires_windows_launcher_on_path
 
 echo "install tests passed"
