@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Sequence
 
 from .util import MemoryError, atomic_write
@@ -47,13 +47,20 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _hook_command(harness: str, event: str) -> str:
-    skill_root = Path(__file__).resolve().parents[2]
+    if sys.platform == "win32":
+        # Keep Windows path semantics explicit so generated hooks are stable
+        # even when this branch is exercised by cross-platform tooling/tests.
+        skill_root = PureWindowsPath(__file__).parents[2]
+        fallback_python = PureWindowsPath(sys.executable)
+    else:
+        skill_root = Path(__file__).resolve().parents[2]
+        fallback_python = Path(sys.executable)
     script = skill_root / "scripts" / "memory.py"
     candidates = [
         skill_root / ".venv" / "bin" / "python",
         skill_root / ".venv" / "Scripts" / "python.exe",
     ]
-    python = next((path for path in candidates if path.exists()), Path(sys.executable))
+    python = next((path for path in candidates if os.path.exists(path)), fallback_python)
     args = [
         str(item)
         for item in (python, script, "hook", "--harness", harness, "--event", event)
