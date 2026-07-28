@@ -29,6 +29,8 @@ from agent_memory.util import repo_key, utc_now
 
 def test_windows_hook_command_quotes_paths_for_cmd_and_bash(monkeypatch):
     monkeypatch.setattr(integration_module.sys, "platform", "win32")
+    monkeypatch.setattr(integration_module.sys, "executable", "C:/Python/python.exe")
+    monkeypatch.setattr(integration_module.os.path, "exists", lambda _path: False)
     monkeypatch.setattr(
         integration_module,
         "__file__",
@@ -38,8 +40,11 @@ def test_windows_hook_command_quotes_paths_for_cmd_and_bash(monkeypatch):
     command = integration_module._hook_command("codex", "user_prompt")
 
     assert "'" not in command
-    assert command.startswith('"')
-    assert '"C:\\Program Files\\agent-memory\\scripts\\memory.py"' in command
+    assert command == (
+        '"C:\\Python\\python.exe" '
+        '"C:\\Program Files\\agent-memory\\scripts\\memory.py" '
+        "hook --harness codex --event user_prompt"
+    )
 
 
 def candidate(statement: str, **overrides):
