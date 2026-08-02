@@ -26,6 +26,11 @@ argv here.
 - Reviewers sharing a backing model give weaker signal when paired
   (e.g. `codex` + `opencode` if opencode is configured to a GPT-family
   model). Mix vendors when in doubt.
+- The wrapper detects only exact effective overlap: same CLI plus the same
+  model after adapter normalization, or same CLI with both models omitted. It emits
+  `reviewer_backend_overlap`; effort variants in that group count as one
+  signal during synthesis. It deliberately does not infer cross-CLI model
+  families.
 - Self-review (`--reviewer=0` or naming the host CLI) is a deliberate
   fresh-context pass against the same CLI. Signal is weaker than a
   cross-vendor review when models overlap — treat it like any other
