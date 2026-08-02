@@ -2,15 +2,22 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "DOM Picker v2 event",
   "type": "object",
-  "required": ["protocolVersion", "event", "payload"],
+  "required": ["protocolVersion", "protocolRevision", "event", "payload"],
   "properties": {
     "protocolVersion": { "const": 2 },
+    "protocolRevision": { "const": 1 },
     "event": {
       "type": "string",
       "enum": [
         "ready",
         "runtime_ready",
+        "queue",
+        "claim",
+        "request_status",
+        "cancel_request",
+        "selection_command",
         "targets",
+        "candidates",
         "navigation",
         "pick",
         "request",
@@ -26,6 +33,11 @@
       ]
     },
     "sessionId": { "type": "string" },
+    "capabilities": {
+      "type": "array",
+      "items": { "enum": ["durable-fifo", "status-sync", "cancel-request", "frame-selection-v2"] },
+      "uniqueItems": true
+    },
     "target": { "$ref": "#/definitions/target" },
     "payload": { "type": "object" }
   },
@@ -68,7 +80,11 @@
         "rect": { "type": "object" },
         "computedStyle": { "type": "object" },
         "metrics": { "type": "object" },
-        "sourceHints": { "type": "object" }
+        "sourceHints": { "type": "object" },
+        "frameId": { "type": "string" },
+        "canWiden": { "type": "boolean" },
+        "canNarrow": { "type": "boolean" },
+        "scopeTrail": { "type": "array", "items": { "type": "object" } }
       },
       "additionalProperties": true
     },
@@ -78,6 +94,7 @@
       "properties": {
         "requestId": { "type": "string" },
         "instruction": { "type": "string", "minLength": 1 },
+        "queueSequence": { "type": "integer", "minimum": 1 },
         "picks": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/pick" } },
         "provenance": {
           "type": "object",
@@ -89,7 +106,53 @@
           },
           "additionalProperties": true
         },
-        "artifacts": { "type": "object" }
+        "artifacts": {
+          "type": "object",
+          "properties": {
+            "directory": { "type": ["string", "null"] },
+            "beforeScreenshot": { "type": ["string", "null"] },
+            "beforeTargetCrops": { "type": "array", "items": { "type": ["string", "null"] } },
+            "pickerHidden": { "type": "boolean" },
+            "cropPadding": { "const": 24 }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "requestState": {
+      "enum": [
+        "queued",
+        "claimed",
+        "locating",
+        "editing",
+        "verifying",
+        "cancel_requested",
+        "applied_verified",
+        "no_change",
+        "cancelled",
+        "review_required",
+        "blocked"
+      ]
+    },
+    "requestStatus": {
+      "type": "object",
+      "required": ["state", "message"],
+      "properties": {
+        "state": { "$ref": "#/definitions/requestState" },
+        "message": { "type": "string", "maxLength": 240 },
+        "resultPath": { "type": ["string", "null"] },
+        "cancellation": {
+          "type": "object",
+          "required": ["requested", "changesRemain", "rollbackCompleted"],
+          "properties": {
+            "requested": { "const": true },
+            "changesRemain": { "const": false },
+            "rollbackCompleted": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "additionalProperties": true
     }

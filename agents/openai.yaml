@@ -1,4 +1,4 @@
 interface:
   display_name: "DOM Picker"
   short_description: "Map a picked UI element to source, fix it, and verify the render."
-  default_prompt: "Use $dom-picker for a concrete visible element in a running web app. Prefer its isolated Chromium session, persist trusted picker requests, locate the owning frontend source, apply only a high-confidence authorized minimal edit, and verify the same target after render before reporting success."
+  default_prompt: "Use $dom-picker for a concrete visible element in a running web app. Prefer its isolated Chromium session, use its bounded finder instead of guessing an unknown selector, enqueue chat-driven snapshots in the live session, claim the oldest durable request, publish coarse lifecycle status, honor cancellation safely, locate the owning frontend source, apply only a high-confidence authorized minimal edit, and verify the same target identity with clean render evidence before reporting success."

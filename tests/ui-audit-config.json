@@ -1,0 +1,31 @@
+{
+  "routes": ["/"],
+  "viewports": [
+    { "name": "mobile", "width": 390, "height": 844, "isMobile": true, "dpr": 2 },
+    { "name": "desktop", "width": 1280, "height": 900, "isMobile": false, "dpr": 1 }
+  ],
+  "themes": ["light", "dark"],
+  "states": ["default"],
+  "adaptations": ["zoom-200", "reflow-320"],
+  "workers": 2,
+  "scrollPositions": ["top"],
+  "settleMs": 500,
+  "waitForSelector": "dom-picker-v2-host .dp-panel:not(.dp-hidden)",
+  "stateMocks": {},
+  "stateSetups": {},
+  "themeInitScripts": {},
+  "keyboardProbe": { "maxSteps": 80, "settleMs": 0 },
+  "hoverProbe": { "maxTargets": 40, "settleMs": 0, "maxWaitMs": 250, "denseGapPx": 12 },
+  "baseline": [],
+  "auditConfig": {
+    "contrast": { "normal": 4.5, "large": 3, "nonText": 3, "colorCue": 3 },
+    "tap": { "fail": 24, "risk": 44, "crowdGap": 8 },
+    "cls": { "risk": 0.1, "fail": 0.25 },
+    "polish": { "bodyTextMinChars": 40, "bodyTextMinLines": 3, "bodyLineHeight": 1.5 },
+    "layout": { "loneNarrowWidth": 180, "maxButtonsInRow": 4 },
+    "authedNavWords": ["my", "account", "profile", "mypage", "마이", "계정", "프로필", "내정보"],
+    "whitelist": [],
+    "maxFindingsPerRule": 60,
+    "maxPolish": 15
+  }
+}

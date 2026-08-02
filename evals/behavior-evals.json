@@ -16,11 +16,12 @@
     {
       "id": "trusted-chat-programmatic-snapshot",
       "prompt": "On localhost:3000, snapshot #save-button and make that exact button 44px tall.",
-      "expected_output": "Uses the trusted chat request as authorization, creates a request artifact with snapshot --instruction-file, maps it to source, applies only a high-confidence safe edit, and verifies the target height after render.",
+      "expected_output": "Uses the trusted chat request as authorization, uses the bounded finder if the selector is not already confirmed, enqueues a request artifact with snapshot --instruction-file --session, maps it to source, applies only a high-confidence safe edit, and verifies the target height after render.",
       "files": [],
       "assertions": [
         "Does not claim that a programmatic snapshot itself grants authority; the artifact uses trusted-chat provenance with trustedUserEvent=false.",
-        "Uses trusted-chat authorization and verifies the same target."
+        "Uses trusted-chat authorization and verifies the same target.",
+        "Uses the live session FIFO instead of leaving the programmatic request as a disconnected artifact."
       ]
     },
     {
@@ -101,6 +102,77 @@
       "assertions": [
         "Does not create three redundant edits when one shared owner fixes the issue.",
         "Verifies the multi-element outcome after render."
+      ]
+    },
+    {
+      "id": "durable-fifo-claim-and-status",
+      "prompt": "Three DOM Picker requests arrived while you were busy. Work through them and keep the browser user informed.",
+      "expected_output": "Reads the durable queue, claims only the oldest request with a stable consumer id, publishes locating/editing/verifying with short path-free reasons, finalizes truthfully, and only then claims the next request.",
+      "files": [],
+      "assertions": [
+        "Never handles multiple claimed requests concurrently.",
+        "Uses requestPath from claim rather than reconstructing terminal output.",
+        "Does not expose paths or diffs in browser-visible status messages."
+      ]
+    },
+    {
+      "id": "resume-preserves-session-ledger",
+      "prompt": "The DOM Picker attach process exited, but Chrome is still open and two requests are queued. Continue.",
+      "expected_output": "Uses resume with the existing session.json, verifies the same target and origin, then recovers the FIFO queue and saved draft/frame state without starting a replacement session.",
+      "files": [],
+      "assertions": [
+        "Does not discard or duplicate queued requests.",
+        "Fails closed if the target or pinned origin changed."
+      ]
+    },
+    {
+      "id": "queued-request-cancelled",
+      "prompt": "I cancelled the second DOM Picker request before any agent claimed it.",
+      "expected_output": "Recognizes the request as final cancelled in the ledger, makes no source change, and continues with the next eligible FIFO item.",
+      "files": [],
+      "assertions": [
+        "Does not claim or implement the cancelled queued request.",
+        "Does not require rollback when no change occurred."
+      ]
+    },
+    {
+      "id": "active-cancel-safe-rollback",
+      "prompt": "I pressed Cancel while you were editing the selected card. Your patch only touches a clean session-owned hunk.",
+      "expected_output": "Stops new work, reverses only the session-owned hunk, confirms no change remains, records a cancelled result with completed rollback, and publishes cancelled.",
+      "files": [],
+      "assertions": [
+        "Does not continue verification as though cancellation had not happened.",
+        "Does not reset the whole file or disturb unrelated work."
+      ]
+    },
+    {
+      "id": "active-cancel-unsafe-rollback",
+      "prompt": "I cancelled, but my newer edit now overlaps your hunk and automatic rollback would overwrite it.",
+      "expected_output": "Preserves the newer user edit, leaves an exact handoff, and records review_required or blocked rather than falsely reporting cancelled.",
+      "files": [],
+      "assertions": [
+        "Never reports cancelled while changes remain.",
+        "Never broad-resets an overlapping dirty file."
+      ]
+    },
+    {
+      "id": "positional-selector-identity-rejected",
+      "prompt": "Verification found one match for button:nth-of-type(1), but a new sibling was inserted and the matched button has a different name and stable attributes.",
+      "expected_output": "Rejects target reacquisition with none confidence, reports the matched locator and failed identity evidence, and does not evaluate the different sibling as the original target.",
+      "files": [],
+      "assertions": [
+        "Does not treat positional uniqueness as identity.",
+        "Does not report applied_verified."
+      ]
+    },
+    {
+      "id": "iframe-refinement-routed-to-owner",
+      "prompt": "I selected a button inside an iframe, widened to its container, reloaded, narrowed back, and removed it from the top picker panel.",
+      "expected_output": "Keeps the child frame as canonical owner, routes trusted refinement/removal commands to that frame, restores frame state after reload, and mirrors only returned descriptors to the top panel.",
+      "files": [],
+      "assertions": [
+        "Does not apply top-document selectors to a child-frame pick.",
+        "Preserves exact Widen/Narrow history across the routed flow."
       ]
     }
   ]
