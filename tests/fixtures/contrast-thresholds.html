@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Contrast threshold regression</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 32px; color: #111; background: #fff; font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 680px; }
+    label { display: block; margin-top: 20px; color: #111; }
+    input { display: block; width: 100%; min-height: 52px; margin-top: 6px; padding: 10px 12px; color: #111; background: #fff; border: 2px solid #333; border-radius: 6px; }
+    #large-text-fail { color: #999; font-size: 24px; }
+    #normal-placeholder::placeholder { color: #888; opacity: 1; }
+    #large-placeholder-pass { font-size: 24px; }
+    #large-placeholder-pass::placeholder { color: #888; opacity: 1; }
+    #pseudo-alpha-normal::placeholder { color: #000; opacity: .5; }
+    #pseudo-alpha-large { font-size: 24px; }
+    #pseudo-alpha-large::placeholder { color: #000; opacity: .5; }
+    #own-opacity-text { color: #000; opacity: .5; }
+    #ancestor-opacity { opacity: .5; }
+    #ancestor-opacity-text { color: #000; }
+    #filtered-text { color: #000; filter: brightness(.8); }
+    #blended-text { color: #000; mix-blend-mode: multiply; }
+    #masked-text { color: #000; mask-image: linear-gradient(90deg, #000, transparent); }
+    #inset-shadow-text { color: #000; background: #fff; box-shadow: inset 0 0 0 100vmax #666; }
+    #inset-shadow-placeholder { background: #fff; box-shadow: inset 0 0 0 100vmax #666; }
+    #inset-shadow-placeholder::placeholder { color: #000; opacity: 1; }
+    #outer-shadow-text { color: #000; background: #fff; box-shadow: 0 8px 24px rgb(0 0 0 / .25); }
+    #filled-placeholder::placeholder,
+    #date-placeholder::placeholder { color: #000; opacity: .5; }
+    #complex-text { color: #777; padding: 12px; background: linear-gradient(90deg, #fff, #eee); }
+    #complex-placeholder { background: linear-gradient(90deg, #fff, #eee); }
+    #complex-placeholder::placeholder { color: #888; opacity: 1; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Contrast thresholds</h1>
+    <p id="large-text-fail">Large text below three to one must fail.</p>
+
+    <label for="normal-placeholder">Normal placeholder below four point five to one</label>
+    <input id="normal-placeholder" placeholder="Normal placeholder must fail">
+
+    <label for="large-placeholder-pass">Large placeholder above three to one</label>
+    <input id="large-placeholder-pass" placeholder="Large placeholder passes">
+
+    <label for="pseudo-alpha-normal">Default placeholder opacity must be composited</label>
+    <input id="pseudo-alpha-normal" placeholder="Normal opacity placeholder must fail">
+
+    <label for="pseudo-alpha-large">Large default-opacity placeholder above three to one</label>
+    <input id="pseudo-alpha-large" placeholder="Large opacity placeholder passes">
+
+    <p id="own-opacity-text">Element opacity makes text contrast require pixel review.</p>
+    <div id="ancestor-opacity">
+      <p id="ancestor-opacity-text">Ancestor opacity makes text contrast require pixel review.</p>
+    </div>
+    <p id="filtered-text">Filtered text contrast requires pixel review.</p>
+    <p id="blended-text">Blended text contrast requires pixel review.</p>
+    <p id="masked-text">Masked text contrast requires pixel review.</p>
+    <p id="inset-shadow-text">Inset-shadow text contrast requires pixel review.</p>
+    <p id="outer-shadow-text">An outer shadow does not change this text backdrop.</p>
+
+    <label for="inset-shadow-placeholder">Inset-shadow placeholder background</label>
+    <input id="inset-shadow-placeholder" placeholder="Inset shadow needs review">
+
+    <label for="filled-placeholder">Populated input hides its placeholder</label>
+    <input id="filled-placeholder" value="Saved value" placeholder="Hidden placeholder must not be audited">
+
+    <label for="date-placeholder">Date input does not render placeholder text</label>
+    <input id="date-placeholder" type="date" tabindex="-1" placeholder="Unsupported placeholder must not be audited">
+
+    <p id="complex-text">Complex text background needs pixel review.</p>
+    <label for="complex-placeholder">Complex placeholder background</label>
+    <input id="complex-placeholder" placeholder="Complex placeholder needs review">
+  </main>
+</body>
+</html>

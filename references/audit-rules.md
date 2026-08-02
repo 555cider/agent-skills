@@ -5,7 +5,7 @@ method, the threshold→severity mapping, confidence, and the false-positive gua
 Keep this in sync with `audit.js`. When you add a measurable failure mode, add the rule
 to `audit.js` AND an entry here; taste-only modes go in `scrutiny-checklist.md` instead.
 
-Global exemptions (applied by every rule via `isExempt`/`isVisible`): `display:none`,
+Common exemptions (applied by rules through `isExempt`/`isVisible` as appropriate): `display:none`,
 `visibility:hidden`, `opacity<0.05`, `[aria-hidden=true]`, `[inert]`, `[hidden]`,
 `[disabled]`/`[aria-disabled=true]`, and the sr-only/visually-hidden 1px-clip pattern.
 `whitelist` selectors and `baseline` (rule+selector) entries are dropped from output.
@@ -22,18 +22,31 @@ Text legibility vs the real rendered background.
 - **Method:** TreeWalker over text nodes (skips emoji/symbol-only runs via `\p{L}\p{N}`).
   fg = computed `color`; bg resolved by walking ancestors and compositing translucent
   layers (src-over) until an opaque layer is reached (white fallback). WCAG relative
-  luminance → ratio `(L1+.05)/(L2+.05)`.
+  luminance uses the current sRGB cutoff `0.04045`, then ratio `(L1+.05)/(L2+.05)`.
 - **Threshold:** `< 4.5:1` normal text, `< 3.0:1` large text (`≥24px`, or `≥18.66px` bold).
-  Normal-size failures are `Fail`; large-text failures `Risk` unless `< 1.3:1` (washed-out) → `Fail`.
-- **needs-visual fallback:** if any ancestor has a `background-image`/gradient or
-  `backdrop-filter`, the bg is *indeterminate* → emit `Risk/needs-visual` (pixel-confirm)
-  unless the ratio vs the resolved layer is already `< 1.3`.
+  A determinate-background result below either applicable threshold is `Fail`.
+- **needs-visual fallback:** a `background-image`/gradient or `backdrop-filter`, or
+  element/ancestor opacity (`0.05`–`<1`), filter, blend mode, inset box-shadow, or mask makes the final
+  paint chain *indeterminate* → emit `Risk/needs-visual` for required pixel
+  confirmation rather than claiming a composited ratio CSSOM cannot prove.
 - **FP guards:** emoji/symbol-only text skipped; disabled/aria-hidden exempt; brand fixes
   cited for known social buttons (Kakao `#191919/#FEE500`, Naver `#FFFFFF/#03C75A`).
 
-## placeholderContrast — `Fail`(<3.0) / `Risk`(<4.5) — auto-measured
-- **Method:** `getComputedStyle(input, '::placeholder').color` vs the input's effective bg.
-- Placeholders are not labels; low-contrast placeholder text is at most `Risk`, `Fail` if `< 3.0`.
+## placeholderContrast — `Fail` / required advisory
+- **Method:** inspect only a non-empty placeholder while the control matches
+  `:placeholder-shown`, then read `getComputedStyle(input, '::placeholder')` color,
+  opacity, size, and weight vs the input's effective background. Multiply the parsed
+  color alpha by the clamped computed pseudo-element opacity before src-over compositing.
+- **Threshold:** `<4.5:1` for normal placeholder text; `<3.0:1` when it is large
+  (`≥24px`, or `≥18.66px` bold). A determinate result below the applicable threshold
+  is `Fail`. Placeholders are still not a substitute for labels.
+- **needs-visual fallback:** gradient/image/backdrop-filter backgrounds and
+  element/ancestor filter, opacity, blend, inset box-shadow, or mask paint chains remain
+  `Risk/needs-visual` required review instead of an invented pixel ratio. The
+  placeholder pseudo-element's own simple opacity is measured, not deferred.
+- **FP guards:** populated controls, empty placeholder attributes, and control types
+  that do not currently render placeholder text are skipped; an outer box-shadow does
+  not make the interior text backdrop indeterminate.
 
 ## nonTextContrast — `Fail` / required advisory — measured candidate
 Required control boundaries and icon-only control graphics (WCAG 1.4.11).
@@ -139,6 +152,18 @@ Segmented/tab/radio groups where the wrong item looks active.
 - **Method:** `<img>` with `complete && naturalWidth===0` and a src → broken `Fail`.
   Rendered-vs-natural aspect ratio differs `> 5%` with `object-fit:fill/unset` → distortion `Risk`.
   Rendered CSS px × dpr `> 1.5× naturalWidth` → upscale-blur `Risk`.
+
+## uninspectedSurface — required advisory — needs-visual
+- **Method:** report every rendered, non-zero visible `iframe`, `canvas`, `object`,
+  `embed`, and light-DOM host with an open `shadowRoot`.
+- **Boundary:** the detector deliberately does not recurse into shadow roots, frames,
+  or pixel-backed/plugin surfaces. A checked light-DOM rule manifest therefore cannot
+  be presented as inspection of their contents.
+- **Exemption:** only a non-empty `data-ui-audit-surface-exempt="<reason>"` on the exact
+  surface suppresses this rule. An empty attribute does not. Global whitelist and
+  rule+selector baseline suppression remain available and observable in coverage.
+- **Resolution:** separately inspect the live rendered surface, including keyboard and
+  accessible alternatives where applicable, or record why equivalent evidence exists.
 
 ## focusTrapLeak — `Risk` candidate / `Fail` after trusted input
 - **Structural phase:** for the topmost visible `[role=dialog][aria-modal=true]` or

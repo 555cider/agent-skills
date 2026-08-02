@@ -55,9 +55,9 @@ Copy `scripts/audit-config.default.json` and narrow it to the surface under revi
   "adaptations": ["zoom-200", "reflow-320"],
   "workers": 2,
   "stateMocks": {
-    "empty": [{ "pattern": "**/api/items", "body": [] }],
-    "error": [{ "pattern": "**/api/items", "status": 500, "body": { "error": "forced" } }],
-    "loading": [{ "pattern": "**/api/items", "hold": true }]
+    "empty": [{ "pattern": "**/api/items", "method": "GET", "minMatches": 1, "body": [] }],
+    "error": [{ "pattern": "**/api/items", "method": "GET", "status": 500, "body": { "error": "forced" } }],
+    "loading": [{ "pattern": "**/api/items", "method": "GET", "hold": true }]
   },
   "stateSetups": {
     "dialog-open": {
@@ -68,7 +68,9 @@ Copy `scripts/audit-config.default.json` and narrow it to the surface under revi
 }
 ```
 
-Configured or fallback mocks count as coverage only when CDP Fetch actually intercepts a request. An unmatched mock produces `not-forced`. If an explicit network mock and structured setup are both configured, both must succeed.
+`routes`, `viewports`, `themes`, `states`, and `scrollPositions` must each be non-empty and valid. `light` and `dark` use media emulation; every other theme name requires a non-empty matching `themeInitScripts.<theme>` driver. Invalid configuration exits 2 before Chrome starts.
+
+Configured or fallback mocks count as coverage only when CDP Fetch actually intercepts the declared request. `method` defaults to `any`; `minMatches` defaults to `1`. Every explicit rule must independently reach its minimum, including rules declared for `default`; one matching rule cannot make unmatched siblings green. Inspect `coverage.matrix[].stateMock.rules[]` for `pattern`, `method`, `minMatches`, `matches`, `held`, and per-rule `status`. The flat `interceptions` count remains an aggregate compatibility field. If an explicit network mock and structured setup are both configured, both must succeed.
 
 Structured actions support `click`, `fill`, `press`, `hover`, `check`, and `selectOption`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
 
@@ -97,6 +99,9 @@ Leave the pending cell unverified when the mutation cannot be held deterministic
 - `reflow-320` uses a 320 CSS-px desktop viewport and fails page-level horizontal scrolling. An intentionally two-dimensional surface must scroll internally or use `data-ui-audit-reflow-exempt="true"` with a documented reason.
 - Target size is checked in every pointer-capable layout. A target below 24×24 CSS px fails only when the WCAG spacing exception also fails. Inline text links are exempt; essential/equivalent cases may use `data-ui-audit-target-exempt="true"` or a whitelist entry.
 - The 24–44px mobile comfort range is an optional advisory, not a conformance failure.
+- The detector intentionally does not recurse into open shadow roots or inspect pixels/semantics inside `iframe`, `canvas`, `object`, or `embed`. Every visible such surface produces a required `uninspectedSurface` advisory. Resolve it with separate rendered evidence, or add `data-ui-audit-surface-exempt="<reason>"` to that exact host only when equivalent evidence already exists; an empty reason does not exempt it.
+
+WCAG text contrast is a confirmed `Fail` below 4.5:1 for normal text or 3:1 for large text, including currently rendered placeholder text. Audit placeholders only while `:placeholder-shown`, and composite computed `::placeholder` opacity into its foreground alpha. A gradient, image, element/ancestor opacity, filter, blend mode, mask, inset shadow, backdrop filter, or otherwise indeterminate paint chain remains a required visual advisory because CSSOM cannot prove the final composited pixels.
 
 ## Output and completion gate
 
@@ -105,7 +110,7 @@ Each signal retains `rule`, `severity`, `confidence`, `category`, selector, meas
 The runner exits non-zero when:
 
 - any matrix cell is not `checked`;
-- any rule was skipped or trusted probe was incomplete;
+- any entry in `ruleCoverage[]` omits a required `rulesExpected`/`rulesRun`/`rulesSkipped` array, has an empty expected manifest, misses an expected rule in that exact scroll report, reports a skipped rule, or a trusted probe was incomplete;
 - an un-baselined `Fail` remains; or
 - a `required` advisory remains unresolved.
 
@@ -135,6 +140,7 @@ Not verified: <cells/rules, or none>
 ## Files
 
 - `scripts/audit.js`: DOM/CSSOM/geometry detector and finding/advisory classifier.
+- `scripts/rule-coverage.mjs`: per-report rule-manifest completeness validator.
 - `scripts/keyboard-probe.js`, `pointer-probe.js`: trusted-input planning and evidence helpers.
 - `scripts/audit-chrome.mjs`: canonical Node/CDP runner, network mocks, adaptations, concurrency, and v2 outputs.
 - `references/audit-rules.md`: exact rules, thresholds, and false-positive guards.
@@ -152,6 +158,11 @@ When adding a failure mode, put deterministic measurement in code and add `mustH
 ## Common mistakes
 
 - Treating an installed mock as proof when its interception count is zero.
+- Treating one matched mock rule as proof for every declared endpoint or ignoring the request method/minimum count.
+- Treating a zero-cell matrix, a custom theme without a driver, or a cell with zero reported rules as successful coverage.
+- Unioning rule names across scroll positions so a top report masks a missing rule in a later viewport report.
+- Auditing placeholder styles on a populated or unsupported control where placeholder text is not rendered.
+- Treating light-DOM coverage as inspection of shadow-root, frame, canvas, object, or embed contents.
 - Running only the normal desktop cell and skipping 200% zoom or 320px reflow.
 - Treating optional advisory volume as confirmed defects.
 - Treating a typography recommendation such as 1.5 body line-height or one sans-serif family as a WCAG failure.
