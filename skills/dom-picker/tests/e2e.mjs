@@ -22,6 +22,12 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function pngDimensions(path) {
+  const bytes = readFileSync(path);
+  expect(bytes.subarray(1, 4).toString("ascii") === "PNG", `artifact is not a PNG: ${path}`);
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
 async function waitUntil(check, message, timeout = 12_000) {
   const deadline = Date.now() + timeout;
   let lastError = null;
@@ -216,6 +222,8 @@ function fixtureHtml() {
         body { margin: 32px; font: 16px system-ui; }
         .settings-toolbar { display: flex; gap: 0; align-items: center; }
         .toolbar-action { min-height: 1px !important; padding: 10px 14px; background: hotpink !important; }
+        #edge-target { position: fixed; top: 0; left: 0; width: 72px; height: 28px; }
+        #bottom-target { position: fixed; left: 16px; bottom: 4px; width: 120px; height: 40px; }
         dom-picker-v2-host { all: unset !important; display: none !important; width: 1px !important; height: 1px !important; }
         button, textarea { border-radius: 0 !important; font-size: 7px !important; }
       </style>
@@ -227,11 +235,27 @@ function fixtureHtml() {
           <button id="save" class="toolbar-action primary" data-testid="save-action"><span>Save</span></button>
           <button id="cancel" class="toolbar-action secondary" data-testid="cancel-action">Cancel</button>
         </div>
+        <button id="keyboard-parent"><span id="keyboard-leaf" tabindex="0">Keyboard leaf</span></button>
+        <button id="edge-target">Edge</button>
+        <button id="bottom-target">Bottom</button>
+        <iframe id="picker-frame" src="/frame" title="Picker child frame" style="display:block;width:320px;height:140px;margin-top:20px"></iframe>
       </main>
       <script>
         window.appClicks = 0;
         document.querySelector('#save').addEventListener('click', () => { window.appClicks += 1; });
       </script>
+    </body>
+  </html>`;
+}
+
+function frameHtml() {
+  return `<!doctype html>
+  <html lang="en">
+    <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Picker frame</title></head>
+    <body style="margin:20px;font:16px system-ui">
+      <div id="frame-wrap" data-testid="frame-wrap">
+        <button id="frame-cancel" data-testid="frame-cancel"><span>Frame Cancel</span></button>
+      </div>
     </body>
   </html>`;
 }
@@ -246,9 +270,9 @@ const artifacts = join(temporaryRoot, "artifacts");
 mkdirSync(profile, { recursive: true, mode: 0o700 });
 mkdirSync(artifacts, { recursive: true, mode: 0o700 });
 
-const server = createServer((_request, response) => {
+const server = createServer((request, response) => {
   response.setHeader("content-type", "text/html; charset=utf-8");
-  response.end(fixtureHtml());
+  response.end(request.url?.startsWith("/frame") ? frameHtml() : fixtureHtml());
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const appPort = server.address().port;
@@ -301,8 +325,12 @@ try {
     "--arm",
     `--artifacts=${artifacts}`,
   ], { stdio: ["ignore", "pipe", "pipe"] });
-  const driverEvents = new JsonLineStream(driverProcess);
+  let driverEvents = new JsonLineStream(driverProcess);
   const sessionReady = await driverEvents.waitFor("ready");
+  expect(existsSync(sessionReady.payload?.sessionPath), "ready event did not expose a durable session manifest");
+  const sessionManifest = JSON.parse(readFileSync(sessionReady.payload.sessionPath, "utf8"));
+  expect(sessionManifest.protocolRevision === 1, "session manifest did not use protocol revision 1");
+  expect(sessionManifest.capabilities?.includes("durable-fifo"), "session manifest omitted durable FIFO capability");
   await driverEvents.waitFor("runtime_ready", (line) => line.payload?.isTop && line.payload?.url?.startsWith(appUrl));
 
   pageConnection = new CdpConnection(target.webSocketDebuggerUrl);
@@ -315,11 +343,19 @@ try {
   await pageConnection.send("Page.enable");
   const frameTree = await pageConnection.send("Page.getFrameTree");
   const topFrameId = frameTree.frameTree.frame.id;
+  let childFrameId = frameTree.frameTree.childFrames?.find((node) => node.frame.url.includes("/frame"))?.frame.id || null;
 
-  const worldContext = () => Array.from(contexts.values()).find((context) => context.name === "dom-picker-v2" && context.auxData?.frameId === topFrameId);
-  const mainContext = () => Array.from(contexts.values()).find((context) => context.auxData?.frameId === topFrameId && context.auxData?.isDefault);
+  const newestContext = (predicate) => Array.from(contexts.values()).filter(predicate).sort((a, b) => b.id - a.id)[0];
+  const runtimeContextIds = new Map();
+  const namedWorldContext = (frameId) => newestContext((context) => context.name === "dom-picker-v2" && context.auxData?.frameId === frameId);
+  const worldContext = () => contexts.get(runtimeContextIds.get(topFrameId)) || namedWorldContext(topFrameId);
+  const mainContext = () => newestContext((context) => context.auxData?.frameId === topFrameId && context.auxData?.isDefault);
+  const childWorldContext = () => contexts.get(runtimeContextIds.get(childFrameId)) || namedWorldContext(childFrameId);
+  const childMainContext = () => newestContext((context) => context.auxData?.frameId === childFrameId && context.auxData?.isDefault);
   await waitUntil(worldContext, "isolated world was not visible to the verification connection");
   await waitUntil(mainContext, "main execution context was not visible");
+  await waitUntil(childWorldContext, "child-frame isolated world was not visible to the verification connection");
+  await waitUntil(childMainContext, "child-frame main execution context was not visible");
 
   const evaluate = async (expression, contextId) => {
     const result = await pageConnection.send("Runtime.evaluate", {
@@ -334,13 +370,40 @@ try {
     }
     return result.result?.value;
   };
-  const isolatedEval = (expression) => evaluate(expression, worldContext().id);
+  const runtimeEval = async (expression, frameId) => {
+    const candidates = Array.from(contexts.values())
+      .filter((context) => context.name === "dom-picker-v2" && context.auxData?.frameId === frameId)
+      .sort((a, b) => b.id - a.id);
+    const cached = contexts.get(runtimeContextIds.get(frameId));
+    const ordered = cached ? [cached, ...candidates.filter((context) => context.id !== cached.id)] : candidates;
+    for (const context of ordered) {
+      try {
+        const sessionId = await evaluate("globalThis.__domPicker?.sessionId || null", context.id);
+        if (sessionId === sessionReady.sessionId) {
+          runtimeContextIds.set(frameId, context.id);
+          return evaluate(expression, context.id);
+        }
+      } catch { /* try another named context */ }
+    }
+    if (ordered[0]) return evaluate(expression, ordered[0].id);
+    throw new Error(`no DOM Picker world for frame ${frameId}`);
+  };
+  const isolatedEval = (expression) => runtimeEval(expression, topFrameId);
   const mainEval = (expression) => evaluate(expression, mainContext().id);
+  const childIsolatedEval = (expression) => runtimeEval(expression, childFrameId);
+  const childMainEval = (expression) => evaluate(expression, childMainContext().id);
   const clickAt = async (x, y, modifiers = 0) => {
     await pageConnection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers });
     await pageConnection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, modifiers, button: "left", clickCount: 1 });
     await pageConnection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, modifiers, button: "left", clickCount: 1 });
   };
+  const keyPress = async (key, code, modifiers = 0) => {
+    await pageConnection.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers });
+    await pageConnection.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
+  };
+
+  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker?.sessionId || null")) === sessionReady.sessionId, "top-frame picker runtime was not ready");
+  await waitUntil(async () => (await childIsolatedEval("globalThis.__domPicker?.sessionId || null")) === sessionReady.sessionId, "child-frame picker runtime was not ready");
 
   expect(await mainEval("typeof globalThis.__domPicker") === "undefined", "isolated API leaked into the page main world");
   const hostIsolation = await mainEval(`(function(){
@@ -361,6 +424,156 @@ try {
   })()`);
   expect(syntheticState.picks.length === 0, "synthetic page events were accepted as a user pick");
   await mainEval("window.appClicks = 0; true");
+
+  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.arm();true");
+  await mainEval("document.body.tabIndex=-1;document.body.focus();true");
+  await keyPress("Tab", "Tab");
+  expect(await mainEval("document.activeElement.id") === "save", "Tab did not move through application focus while the picker was armed");
+  await keyPress("Enter", "Enter");
+  let keyboardState = await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker.getState()");
+    return current.picks[0]?.accessibleName === "Save" ? current : null;
+  }, "Enter did not select the focused element");
+  expect(keyboardState.armed === false, "plain Enter left single-select mode armed");
+  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.arm();true");
+  await mainEval("document.querySelector('#cancel').focus();true");
+  await keyPress("Enter", "Enter", 8);
+  keyboardState = await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker.getState()");
+    return current.picks[0]?.accessibleName === "Cancel" ? current : null;
+  }, "Shift+Enter did not add the focused element");
+  expect(keyboardState.armed === true, "Shift+Enter did not keep multi-select mode armed");
+  await mainEval("document.querySelector('#keyboard-leaf').focus();true");
+  await keyPress("Enter", "Enter", 1);
+  keyboardState = await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker.getState()");
+    return current.picks[0]?.attributes?.id === "keyboard-leaf" ? current : null;
+  }, "Alt+Enter did not select the exact focused leaf");
+  expect(keyboardState.picks.length === 1 && keyboardState.picks[0].tagName === "span", "Alt+Enter promoted the exact leaf to a semantic ancestor");
+  await isolatedEval("globalThis.__domPicker.arm();true");
+  await keyPress("Escape", "Escape");
+  expect((await isolatedEval("globalThis.__domPicker.getState()")).armed === false, "Escape did not leave keyboard selection mode");
+
+  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.snapshot('#cancel',{exact:false,multi:false});true");
+  await delay(100);
+  let refinementAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  const widen = refinementAudit.controls.find((control) => /Widen selection|선택 범위 넓히기/.test(control.label));
+  const narrowAtBase = refinementAudit.controls.find((control) => /Narrow selection|선택 범위 되돌리기/.test(control.label));
+  expect(widen && narrowAtBase?.disabled, "scope controls did not expose a disabled history-based narrow action");
+  await clickAt(widen.x + widen.width / 2, widen.y + widen.height / 2);
+  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks[0]?.attributes?.dataTestId")) === "settings-toolbar", "widen did not select the parent scope");
+  refinementAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  const narrow = refinementAudit.controls.find((control) => /Narrow selection|선택 범위 되돌리기/.test(control.label));
+  expect(narrow && !narrow.disabled, "narrow did not become available after widening");
+  await clickAt(narrow.x + narrow.width / 2, narrow.y + narrow.height / 2);
+  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks[0]?.accessibleName")) === "Cancel", "narrow did not return to the exact prior child scope");
+
+  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.snapshot('#edge-target',{exact:true,multi:false});true");
+  const edgeAudit = await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker._host.audit()");
+    return current.overlayLabels?.length ? current : null;
+  }, "overlay audit did not expose label geometry");
+  expect(edgeAudit.overlayLabels.every((label) => label.x >= 0 && label.y >= 0 && label.right <= edgeAudit.viewport.right), "overlay labels escaped the visual viewport");
+  expect(edgeAudit.overlayLabels[0].placement === "below", "top-edge overlay label did not flip below its target");
+
+  await pageConnection.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 700, deviceScaleFactor: 1, mobile: true });
+  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.snapshot('#bottom-target',{exact:true,multi:false});true");
+  const bottomRect = await mainEval(`(function(){var r=document.querySelector('#bottom-target').getBoundingClientRect();return {top:r.top,bottom:r.bottom}})()`);
+  const compactAudit = await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker._host.audit()");
+    return current.panelCompact
+      && current.panelPlacement === "top"
+      && current.panelRect.y + current.panelRect.height <= bottomRect.top
+      ? current
+      : null;
+  }, "mobile viewport did not switch the picker to compact placement");
+  expect(compactAudit.panelPlacement === "top" && compactAudit.panelRect.y + compactAudit.panelRect.height <= bottomRect.top, "compact panel did not stay opposite the bottom target");
+  const compactSend = compactAudit.controls.find((control) => /Send fix request|수정 요청 보내기/.test(control.label));
+  const compactAdd = compactAudit.controls.find((control) => /Add element|요소 더 선택/.test(control.label));
+  const compactWiden = compactAudit.controls.find((control) => /Widen selection|선택 범위 넓히기/.test(control.label));
+  const compactRemove = compactAudit.controls.find((control) => /Remove selection|선택 해제/.test(control.label));
+  expect(compactSend && compactAdd && compactSend.y + compactSend.height <= compactAdd.y, "compact primary action did not occupy its own row");
+  expect(compactRemove && compactWiden && compactRemove.y < compactWiden.y, "compact remove action was orphaned below scope controls");
+  await pageConnection.send("Emulation.clearDeviceMetricsOverride");
+  await pageConnection.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
+  const zoomAudit = await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker._host.audit()");
+    return current.viewport.width < 600
+      && current.panelCompact
+      && current.panelRect.x >= current.viewport.left
+      && current.panelRect.right <= current.viewport.right
+      ? current
+      : null;
+  }, "zoomed visual viewport did not use compact placement");
+  expect(
+    zoomAudit.panelRect.x >= zoomAudit.viewport.left && zoomAudit.panelRect.right <= zoomAudit.viewport.right,
+    `zoomed panel escaped the visual viewport: ${JSON.stringify({ panel: zoomAudit.panelRect, viewport: zoomAudit.viewport })}`,
+  );
+  await pageConnection.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
+
+  await isolatedEval("globalThis.__domPicker.clear();true");
+  await childIsolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.arm();true");
+  const frameRect = await mainEval(`(function(){var r=document.querySelector('#picker-frame').getBoundingClientRect();return {x:r.x,y:r.y}})()`);
+  const childButtonRect = await childMainEval(`(function(){var r=document.querySelector('#frame-cancel span').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+  const childPickPromise = driverEvents.waitFor("pick", (line) => line.payload?.frameId === childFrameId, 12_000, false);
+  await clickAt(frameRect.x + childButtonRect.x, frameRect.y + childButtonRect.y);
+  await childPickPromise;
+  let frameState;
+  try {
+    frameState = await waitUntil(async () => {
+      const current = await isolatedEval("globalThis.__domPicker.getState()");
+      return current.picks.find((pick) => pick.frameId === childFrameId) ? current : null;
+  }, "child-frame pick was not mirrored into the top picker");
+  } catch (error) {
+    const current = await isolatedEval("globalThis.__domPicker.getState()");
+    throw new Error(`${error.message}: ${JSON.stringify({ childFrameId, current })}`);
+  }
+  expect(frameState.picks[0].accessibleName === "Frame Cancel", "child-frame pick mirrored the wrong target");
+  await isolatedEval("globalThis.__domPicker.snapshot('#save',{exact:false,multi:true});true");
+  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks.length")) === 2, "mixed top-frame pick was not added");
+  let frameAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  const frameWiden = frameAudit.controls.find((control) => /Widen selection|선택 범위 넓히기/.test(control.label));
+  expect(frameWiden && !frameWiden.disabled, "top picker could not widen a child-frame selection");
+  const widenFramePromise = driverEvents.waitFor("selection_command", (line) => line.payload?.command === "widen" && line.payload?.frameId === childFrameId, 12_000, false);
+  await clickAt(frameWiden.x + frameWiden.width / 2, frameWiden.y + frameWiden.height / 2);
+  await widenFramePromise;
+  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks[0]?.attributes?.dataTestId")) === "frame-wrap", "widen command was not applied in the owning frame");
+  frameAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  const frameNarrow = frameAudit.controls.find((control) => /Narrow selection|선택 범위 되돌리기/.test(control.label));
+  expect(frameNarrow && !frameNarrow.disabled, "top picker did not expose child-frame refinement history");
+  await clickAt(frameNarrow.x + frameNarrow.width / 2, frameNarrow.y + frameNarrow.height / 2);
+  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks[0]?.accessibleName")) === "Frame Cancel", "narrow command did not restore the prior child-frame target");
+  frameAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  const mixedRemoveControls = frameAudit.controls.filter((control) => /Remove selection|선택 해제/.test(control.label));
+  expect(mixedRemoveControls.length === 2, "mixed selection did not expose one remove action per pick");
+  await clickAt(
+    mixedRemoveControls[1].x + mixedRemoveControls[1].width / 2,
+    mixedRemoveControls[1].y + mixedRemoveControls[1].height / 2,
+  );
+  await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker.getState()");
+    return current.picks.length === 1 && current.picks[0]?.frameId === childFrameId ? current : null;
+  }, "removing the mixed local pick corrupted the child-frame projection");
+  await delay(350);
+  const frameReloaded = pageConnection.waitFor("Page.loadEventFired", () => true, 12_000, false);
+  const frameReload = runProcess(process.execPath, [DRIVER, "reload", `--port=${debugPort}`, `--target=${target.id}`]);
+  await frameReloaded;
+  const frameReloadResult = await frameReload;
+  expect(frameReloadResult.status === 0, `iframe persistence reload failed: ${frameReloadResult.stdout}\n${frameReloadResult.stderr}`);
+  const refreshedFrameTree = await pageConnection.send("Page.getFrameTree");
+  childFrameId = refreshedFrameTree.frameTree.childFrames?.find((node) => node.frame.url.includes("/frame"))?.frame.id || childFrameId;
+  await waitUntil(childWorldContext, "child-frame isolated world was not recreated after reload");
+  await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker.getState()");
+    return current.picks[0]?.frameId === childFrameId && current.picks[0]?.accessibleName === "Frame Cancel" ? current : null;
+  }, "child-frame selection was not restored after reload");
+  frameAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  const removeFrame = frameAudit.controls.find((control) => /Remove selection|선택 해제/.test(control.label));
+  const removeFramePromise = driverEvents.waitFor("selection_command", (line) => line.payload?.command === "remove" && line.payload?.frameId === childFrameId, 12_000, false);
+  await clickAt(removeFrame.x + removeFrame.width / 2, removeFrame.y + removeFrame.height / 2);
+  await removeFramePromise;
+  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks.length")) === 0, "child-frame removal did not clear the top projection");
+  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.arm();true");
 
   const saveRect = await mainEval(`(function(){var r=document.querySelector('#save span').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
   const pickPromise = driverEvents.waitFor("pick", () => true, 12_000, false);
@@ -391,12 +604,15 @@ try {
   const textarea = audit.controls.find((control) => control.tagName === "textarea");
   expect(textarea, "request textarea was not available");
   await clickAt(textarea.x + textarea.width / 2, textarea.y + textarea.height / 2);
-  await pageConnection.send("Input.insertText", { text: "Add eight pixels between these controls" });
+  await pageConnection.send("Input.insertText", { text: "Add eight pixels" });
+  await delay(1700);
+  await pageConnection.send("Input.insertText", { text: " between these controls" });
   await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().draft")) === "Add eight pixels between these controls", "trusted text input did not update the draft");
 
   audit = await isolatedEval("globalThis.__domPicker._host.audit()");
   const send = audit.controls.find((control) => control.tagName === "button" && /Send fix request|수정 요청 보내기/.test(control.label));
   expect(send, "send button was not available");
+  const captureTransitionsBeforeRequest = audit.captureTransitions || 0;
   const requestPromise = driverEvents.waitFor("request", () => true, 15_000, false);
   await clickAt(send.x + send.width / 2, send.y + send.height / 2);
   const requestEvent = await requestPromise;
@@ -405,12 +621,62 @@ try {
   expect((statSync(requestPath).mode & 0o777) === 0o600, "request artifact permissions were not private");
   const requestRecord = JSON.parse(readFileSync(requestPath, "utf8"));
   expect(requestRecord.protocolVersion === 2 && requestRecord.event === "request", "request artifact used the wrong protocol");
+  expect(requestRecord.protocolRevision === 1 && requestRecord.payload.queueSequence === 1, "request did not enter the durable FIFO ledger");
   expect(requestRecord.payload.instruction === "Add eight pixels between these controls", "request instruction was not preserved");
   expect(requestRecord.payload.provenance.channel === "isolated-picker", "request provenance channel was wrong");
   expect(requestRecord.payload.provenance.trustedUserEvent === true && requestRecord.payload.provenance.trusted === true, "trusted-event provenance gates were missing");
   expect(requestRecord.payload.picks[0].sourceHints && Array.isArray(requestRecord.payload.picks[0].sourceHints.react), "source hints were not attached");
   expect(existsSync(requestRecord.payload.artifacts.beforeScreenshot) && statSync(requestRecord.payload.artifacts.beforeScreenshot).size > 0, "before screenshot was not captured");
+  expect(requestRecord.payload.artifacts.pickerHidden === true, "before screenshot did not record a picker-hidden capture contract");
+  expect(requestRecord.payload.artifacts.cropPadding === 24, "target crop did not preserve the 24px padding contract");
+  expect(requestRecord.payload.artifacts.beforeTargetCrops?.length === 1 && existsSync(requestRecord.payload.artifacts.beforeTargetCrops[0]), "before target crop was not captured");
+  const fullBeforeSize = pngDimensions(requestRecord.payload.artifacts.beforeScreenshot);
+  const cropBeforeSize = pngDimensions(requestRecord.payload.artifacts.beforeTargetCrops[0]);
+  expect(cropBeforeSize.width < fullBeforeSize.width && cropBeforeSize.height < fullBeforeSize.height, "before target crop was not smaller than the clean full-page evidence");
+  const afterRequestCaptureAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  expect(!afterRequestCaptureAudit.captureMode && afterRequestCaptureAudit.captureTransitions >= captureTransitionsBeforeRequest + 2, "picker capture mode was not restored after the before evidence");
+  const queued = spawnSync(process.execPath, [DRIVER, "queue", `--session=${sessionReady.payload.sessionPath}`], { encoding: "utf8", timeout: 8_000 });
+  expect(queued.status === 0, `queue command failed for the live session: ${queued.stderr}`);
+  const queueEvent = JSON.parse(queued.stdout.trim());
+  expect(queueEvent.payload.entries.length === 1 && queueEvent.payload.entries[0].requestId === requestRecord.payload.requestId, "live request was not recoverable from the durable FIFO ledger");
   await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks.length")) === 0, "panel did not clear after durable acknowledgement");
+
+  const claimed = spawnSync(process.execPath, [
+    DRIVER,
+    "claim",
+    `--session=${sessionReady.payload.sessionPath}`,
+    "--consumer=e2e-agent",
+  ], { encoding: "utf8", timeout: 8_000 });
+  expect(claimed.status === 0, `claim command failed: ${claimed.stdout}\n${claimed.stderr}`);
+  expect(JSON.parse(claimed.stdout.trim()).payload.entry.requestId === requestRecord.payload.requestId, "claim command returned the wrong request");
+  const locatingStatus = join(temporaryRoot, "status-locating.json");
+  writeFileSync(locatingStatus, JSON.stringify({ state: "locating", message: "Locating the owning component" }));
+  const locating = spawnSync(process.execPath, [DRIVER, "status", `--request=${requestPath}`, `--input=${locatingStatus}`], { encoding: "utf8", timeout: 8_000 });
+  expect(locating.status === 0, `status command failed: ${locating.stdout}\n${locating.stderr}`);
+  expect(JSON.parse(locating.stdout.trim()).payload.browserSynced === true, "live status command did not synchronously update the browser job list");
+  await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker._host.audit()");
+    return current.jobs?.find((job) => job.requestId === requestRecord.payload.requestId && job.state === "locating") || null;
+  }, "agent lifecycle status was not synchronized into the picker", 8_000);
+  audit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  const cancelRequest = audit.controls.find((control) => control.tagName === "button" && /Cancel request|요청 취소/.test(control.label));
+  expect(cancelRequest && !cancelRequest.disabled, "active request did not expose an enabled cancellation control");
+  const cancelPromise = driverEvents.waitFor("cancel_request", (line) => line.payload?.requestId === requestRecord.payload.requestId, 12_000, false);
+  await clickAt(cancelRequest.x + cancelRequest.width / 2, cancelRequest.y + cancelRequest.height / 2);
+  const cancelEvent = await cancelPromise;
+  expect(cancelEvent.payload.state === "cancel_requested" && cancelEvent.payload.immediate === false, "trusted cancellation did not enter cancel_requested");
+  const cancellingQueue = spawnSync(process.execPath, [DRIVER, "queue", `--session=${sessionReady.payload.sessionPath}`], { encoding: "utf8", timeout: 8_000 });
+  expect(JSON.parse(cancellingQueue.stdout.trim()).payload.entries[0].state === "cancel_requested", "browser cancellation was not durably recorded");
+  const cancelledStatus = join(temporaryRoot, "status-cancelled.json");
+  writeFileSync(cancelledStatus, JSON.stringify({ state: "cancelled", message: "Stopped before editing" }));
+  const cancelled = spawnSync(process.execPath, [DRIVER, "status", `--request=${requestPath}`, `--input=${cancelledStatus}`], { encoding: "utf8", timeout: 8_000 });
+  expect(cancelled.status === 0, `cancelled status command failed: ${cancelled.stdout}\n${cancelled.stderr}`);
+  await waitUntil(async () => {
+    const current = await isolatedEval("globalThis.__domPicker._host.audit()");
+    return current.jobs?.find((job) => job.requestId === requestRecord.payload.requestId && job.state === "cancelled") || null;
+  }, "final cancelled state was not synchronized into the picker", 8_000);
+  audit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  expect(!audit.controls.some((control) => /Cancel request|요청 취소/.test(control.label) && !control.disabled), "final request kept an enabled cancellation control");
 
   const sourceRepo = join(temporaryRoot, "source-repo");
   mkdirSync(join(sourceRepo, "src", "settings"), { recursive: true });
@@ -445,6 +711,35 @@ try {
   const verification = JSON.parse(verified.stdout.trim());
   expect(verification.payload.targetReacquired && verification.payload.passed, "verification did not reacquire and pass");
   expect(existsSync(verification.payload.afterScreenshot), "after screenshot was not recorded");
+  expect(verification.payload.afterTargetCrops?.length === 1 && existsSync(verification.payload.afterTargetCrops[0]), "after target crop was not recorded");
+  expect(verification.payload.reacquisition?.[0]?.reacquisitionConfidence === "high", "strong unique locator did not produce high-confidence reacquisition");
+  expect(verification.payload.reacquisition[0].matchedLocator?.strategy === "id" || verification.payload.reacquisition[0].matchedLocator?.strategy === "testid", "verification did not report the matched strong locator");
+  expect(verification.payload.reacquisition[0].identityEvidence?.tagMatches === true, "verification omitted tag identity evidence");
+
+  const unsafeDirectory = join(temporaryRoot, "unsafe-reacquisition");
+  mkdirSync(unsafeDirectory, { recursive: true });
+  const unsafeRequestPath = join(unsafeDirectory, "request.json");
+  const unsafeRequest = JSON.parse(JSON.stringify(requestRecord));
+  unsafeRequest.payload.artifacts = { directory: unsafeDirectory, beforeScreenshot: null };
+  unsafeRequest.payload.picks[0].selector = ".settings-toolbar > button:nth-of-type(1)";
+  unsafeRequest.payload.picks[0].locators = [{
+    strategy: "css",
+    value: ".settings-toolbar > button:nth-of-type(1)",
+    selector: ".settings-toolbar > button:nth-of-type(1)",
+    unique: true,
+    strength: "low",
+  }];
+  writeFileSync(unsafeRequestPath, JSON.stringify(unsafeRequest));
+  await mainEval(`(function(){var decoy=document.createElement('button');decoy.id='replacement';decoy.textContent='Replacement';document.querySelector('.settings-toolbar').prepend(decoy);return true})()`);
+  const unsafeAssertions = join(temporaryRoot, "unsafe-assertions.json");
+  writeFileSync(unsafeAssertions, JSON.stringify([{ pickIndex: 0, metric: "tagName", operator: "==", expected: "button" }]));
+  const unsafeVerification = spawnSync(process.execPath, [DRIVER, "verify", `--request=${unsafeRequestPath}`, `--assertions=${unsafeAssertions}`], { encoding: "utf8", timeout: 15_000 });
+  expect(unsafeVerification.status === 1, "positional-only locator incorrectly passed verification after sibling replacement");
+  const unsafeResult = JSON.parse(unsafeVerification.stdout.trim());
+  expect(unsafeResult.payload.targetReacquired === false, "positional-only locator was treated as the same target");
+  expect(unsafeResult.payload.reacquisition?.[0]?.reacquisitionConfidence === "none", "unsafe reacquisition did not report zero confidence");
+  expect(unsafeResult.payload.reacquisition[0].identityEvidence?.accepted === false, "unsafe reacquisition omitted its identity rejection evidence");
+  await mainEval("document.querySelector('#replacement').remove();true");
 
   const failAssertions = join(temporaryRoot, "assertions-fail.json");
   writeFileSync(failAssertions, JSON.stringify([{ pickIndex: 0, metric: "rect.height", operator: ">=", expected: 999 }]));
@@ -493,17 +788,27 @@ try {
   await waitUntil(() => worldContext() && worldContext() !== returnOldWorld ? worldContext() : null, "isolated world did not return to the allowed origin");
   await waitUntil(async () => await mainEval("document.querySelectorAll('dom-picker-v2-host').length") === 1, "picker host did not return on the allowed origin");
 
+  const foundCandidates = spawnSync(process.execPath, [
+    DRIVER,
+    "find",
+    "--text=Save Cancel",
+    `--session=${sessionReady.payload.sessionPath}`,
+  ], { encoding: "utf8", timeout: 12_000 });
+  expect(foundCandidates.status === 0, `find command failed: ${foundCandidates.stdout}\n${foundCandidates.stderr}`);
+  const candidatesEvent = JSON.parse(foundCandidates.stdout.trim());
+  expect(candidatesEvent.event === "candidates" && candidatesEvent.payload.candidates.length > 0, "find command returned no bounded selector candidates");
+  expect(candidatesEvent.payload.candidates.length <= 20, "find command exceeded its bounded result contract");
+  expect(candidatesEvent.payload.candidates[0].selector === "[data-testid=\"settings-toolbar\"]", "find command did not rank the distinctive toolbar owner first");
+
   const snapshotInstruction = join(temporaryRoot, "trusted-chat.txt");
   writeFileSync(snapshotInstruction, "Make the Cancel button easier to distinguish\n");
-  const snapshotArtifacts = join(temporaryRoot, "snapshot-artifacts");
+  const snapshotCaptureTransitions = (await isolatedEval("globalThis.__domPicker._host.audit()")).captureTransitions;
   const bundledSnapshot = spawnSync(process.execPath, [
     DRIVER,
     "snapshot",
     "#cancel",
     `--instruction-file=${snapshotInstruction}`,
-    `--artifacts=${snapshotArtifacts}`,
-    `--port=${debugPort}`,
-    `--target=${target.id}`,
+    `--session=${sessionReady.payload.sessionPath}`,
   ], { encoding: "utf8", timeout: 15_000 });
   expect(bundledSnapshot.status === 0, `trusted-chat snapshot bundle failed: ${bundledSnapshot.stdout}\n${bundledSnapshot.stderr}`);
   const bundledEvent = JSON.parse(bundledSnapshot.stdout.trim());
@@ -511,13 +816,36 @@ try {
   expect(bundledEvent.payload.provenance.trustedUserEvent === false && bundledEvent.payload.provenance.trusted === false, "snapshot bundle fabricated browser trust");
   const bundledRecord = JSON.parse(readFileSync(bundledEvent.payload.requestPath, "utf8"));
   expect(bundledRecord.sessionId === sessionReady.sessionId, "snapshot bundle did not preserve the continuous driver session id");
+  expect(bundledEvent.payload.requestPath.startsWith(artifacts) && bundledRecord.payload.queueSequence === 2, "snapshot bundle did not enter the live session FIFO");
   expect(bundledRecord.payload.instruction === "Make the Cancel button easier to distinguish", "snapshot bundle lost the chat instruction");
   expect(existsSync(bundledRecord.payload.artifacts.beforeScreenshot), "snapshot bundle omitted its before screenshot");
+  expect(bundledRecord.payload.artifacts.pickerHidden === true, "snapshot bundle did not hide the picker for before evidence");
+  expect(bundledRecord.payload.artifacts.cropPadding === 24, "snapshot bundle did not record 24px target crop padding");
+  expect(bundledRecord.payload.artifacts.beforeTargetCrops?.length === 1 && existsSync(bundledRecord.payload.artifacts.beforeTargetCrops[0]), "snapshot bundle omitted its target crop");
   expect(Array.isArray(bundledRecord.payload.picks[0].sourceHints.matchedStyles), "snapshot bundle omitted matched-style evidence");
+  const snapshotQueue = spawnSync(process.execPath, [DRIVER, "queue", `--session=${sessionReady.payload.sessionPath}`], { encoding: "utf8", timeout: 8_000 });
+  const snapshotEntry = JSON.parse(snapshotQueue.stdout.trim()).payload.entries.find((entry) => entry.requestId === bundledRecord.payload.requestId);
+  expect(snapshotEntry?.state === "queued" && snapshotEntry.sequence === 2, "snapshot bundle was not recoverable as the next FIFO entry");
+  const snapshotCaptureAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
+  expect(!snapshotCaptureAudit.captureMode && snapshotCaptureAudit.captureTransitions >= snapshotCaptureTransitions + 2, "snapshot capture mode was not restored");
   const bundledAssertions = join(temporaryRoot, "snapshot-assertions.json");
   writeFileSync(bundledAssertions, JSON.stringify([{ pickIndex: 0, metric: "accessibleName", operator: "==", expected: "Cancel" }]));
   const bundledVerification = spawnSync(process.execPath, [DRIVER, "verify", `--request=${bundledEvent.payload.requestPath}`, `--assertions=${bundledAssertions}`], { encoding: "utf8", timeout: 15_000 });
   expect(bundledVerification.status === 0 && JSON.parse(bundledVerification.stdout).payload.passed, "snapshot bundle could not use the standard verifier");
+  const standaloneArtifacts = join(temporaryRoot, "standalone-snapshot-artifacts");
+  const standaloneSnapshot = spawnSync(process.execPath, [
+    DRIVER,
+    "snapshot",
+    "#save",
+    `--instruction-file=${snapshotInstruction}`,
+    `--artifacts=${standaloneArtifacts}`,
+    `--port=${debugPort}`,
+    `--target=${target.id}`,
+  ], { encoding: "utf8", timeout: 15_000 });
+  expect(standaloneSnapshot.status === 0, `standalone trusted-chat snapshot failed: ${standaloneSnapshot.stdout}\n${standaloneSnapshot.stderr}`);
+  const standaloneRecord = JSON.parse(readFileSync(JSON.parse(standaloneSnapshot.stdout.trim()).payload.requestPath, "utf8"));
+  expect(standaloneRecord.payload.artifacts.pickerHidden === true, "standalone snapshot evidence included the picker UI");
+  expect(standaloneRecord.payload.artifacts.beforeTargetCrops?.length === 1 && existsSync(standaloneRecord.payload.artifacts.beforeTargetCrops[0]), "standalone snapshot omitted its 24px target crop");
   const ambiguousSnapshot = spawnSync(process.execPath, [DRIVER, "snapshot", ".toolbar-action", `--port=${debugPort}`, `--target=${target.id}`], { encoding: "utf8", timeout: 12_000 });
   expect(ambiguousSnapshot.status === 2 && `${ambiguousSnapshot.stdout}\n${ambiguousSnapshot.stderr}`.includes("must match exactly one"), "snapshot did not fail closed on an ambiguous selector");
 
@@ -526,6 +854,30 @@ try {
   await stopped;
   await waitUntil(async () => await mainEval("document.querySelectorAll('dom-picker-v2-host').length") === 0, "driver shutdown left the picker host behind");
   expect(await isolatedEval("typeof globalThis.__domPicker") === "undefined", "driver shutdown left the isolated API behind");
+
+  driverProcess = spawn(process.execPath, [DRIVER, "resume", `--session=${sessionReady.payload.sessionPath}`], { stdio: ["ignore", "pipe", "pipe"] });
+  driverEvents = new JsonLineStream(driverProcess);
+  const resumedReady = await driverEvents.waitFor("ready", (line) => line.payload?.resumed === true, 12_000);
+  expect(resumedReady.sessionId === sessionReady.sessionId, "resume changed the durable session id");
+  expect(resumedReady.payload.sessionPath === sessionReady.payload.sessionPath, "resume changed the session manifest path");
+  await driverEvents.waitFor("runtime_ready", (line) => line.payload?.isTop && line.payload?.url?.startsWith(appUrl), 12_000);
+  await waitUntil(async () => {
+    const seen = [];
+    for (const context of Array.from(contexts.values()).filter((item) => item.name === "dom-picker-v2" && item.auxData?.frameId === topFrameId)) {
+      try {
+        const value = await evaluate("globalThis.__domPicker?.sessionId || null", context.id);
+        seen.push({ id: context.id, value });
+        if (value === sessionReady.sessionId) return true;
+      } catch (error) {
+        seen.push({ id: context.id, error: error.message });
+      }
+    }
+    throw new Error(JSON.stringify(seen));
+  }, "resume did not restore the isolated picker runtime");
+  const resumedStopped = driverEvents.waitFor("stopped", () => true, 8_000, false);
+  driverProcess.kill("SIGINT");
+  await resumedStopped;
+  await waitUntil(async () => await mainEval("document.querySelectorAll('dom-picker-v2-host').length") === 0, "resumed driver shutdown left the picker host behind");
 
   const fallbackSnapshot = spawnSync(process.execPath, [DRIVER, "snapshot", "#save", `--port=${debugPort}`, `--target=${target.id}`], { encoding: "utf8", timeout: 12_000 });
   expect(fallbackSnapshot.status === 0, `fallback snapshot failed: ${fallbackSnapshot.stdout}\n${fallbackSnapshot.stderr}`);

@@ -9,6 +9,8 @@ ROOT="$(cd "$SKILL/../.." && pwd)"
 PICKER="$SKILL/assets/picker-runtime.js"
 DRIVER="$SKILL/scripts/dom-picker.mjs"
 LOCATOR="$SKILL/scripts/locate-source.mjs"
+LEDGER="$SKILL/scripts/session-ledger.mjs"
+UI_FIXTURE="$HERE/ui-audit-fixture.mjs"
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 
@@ -39,6 +41,8 @@ assert_not_contains() {
 assert_status 0 "picker runtime parses" node --check "$PICKER"
 assert_status 0 "Chromium driver parses" node --check "$DRIVER"
 assert_status 0 "source locator parses" node --check "$LOCATOR"
+assert_status 0 "session ledger parses" node --check "$LEDGER"
+assert_status 0 "UI audit fixture parses" node --check "$UI_FIXTURE"
 assert_status 0 "driver help succeeds" node "$DRIVER" help
 if grep -qF "start <url>" "$TMP/out" && grep -qF "verify --request" "$TMP/out"; then
   pass "driver help documents continuous and verification paths"
@@ -55,6 +59,7 @@ assert_status 2 "locator rejects evidence with no picks" node "$LOCATOR" --repo=
 
 # Runtime and trust-boundary regression guards.
 assert_contains "runtime exposes protocol v2" "var VERSION = 2" "$PICKER"
+assert_contains "runtime exposes protocol revision 1" "var REVISION = 1" "$PICKER"
 assert_contains "runtime defaults to closed Shadow DOM" 'var shadowMode = config.shadowMode === "open" || config.shadowMode === "light" ? config.shadowMode : "closed"' "$PICKER"
 assert_contains "runtime requires trusted pointer input" "!event.isTrusted" "$PICKER"
 assert_contains "runtime pins the allowed origin" "location.origin !== ALLOWED_ORIGIN" "$PICKER"
@@ -63,6 +68,7 @@ assert_contains "runtime captures pseudo styles" "pseudoStyles" "$PICKER"
 assert_contains "runtime captures overflow metrics" "horizontalOverflow" "$PICKER"
 assert_contains "runtime self-heals a removed host" "if (!host.isConnected) mount()" "$PICKER"
 assert_contains "runtime exposes targeted UI audit evidence" "textareaLabelled" "$PICKER"
+assert_contains "runtime gates identity-safe reacquisition" "hasDistinctiveCorroborator" "$PICKER"
 assert_contains "driver names its isolated world" 'const WORLD_NAME = "dom-picker-v2"' "$DRIVER"
 assert_contains "driver binds only the named execution context" "executionContextName: WORLD_NAME" "$DRIVER"
 assert_contains "driver injects into the named world" "worldName: WORLD_NAME" "$DRIVER"
@@ -70,6 +76,8 @@ assert_contains "driver uses a random session binding" "randomUUID()" "$DRIVER"
 assert_contains "driver persists requests atomically" "function atomicJson" "$DRIVER"
 assert_contains "driver fails closed on target count" "if (matches.length !== 1)" "$DRIVER"
 assert_contains "driver verifies by reacquiring picks" "._host.reacquire" "$DRIVER"
+assert_contains "driver captures picker-hidden evidence" "captureCleanEvidence" "$DRIVER"
+assert_contains "ledger supports durable cancellation" "requestCancellation" "$LEDGER"
 assert_contains "locator uses fixed-string ripgrep arguments" '["-l", "-F", "--no-messages", "--", query, repoRoot]' "$LOCATOR"
 assert_contains "locator enforces the high score" "top.score >= 0.82" "$LOCATOR"
 assert_contains "locator enforces the runner-up margin" "margin >= 0.12" "$LOCATOR"
@@ -99,15 +107,17 @@ for path in sys.argv[1:]:
 
 protocol, result, behavior, triggers = values
 assert protocol["properties"]["protocolVersion"]["const"] == 2
+assert protocol["properties"]["protocolRevision"]["const"] == 1
 events = set(protocol["properties"]["event"]["enum"])
-assert {"ready", "pick", "request", "verification", "rejected", "stopped"} <= events
+assert {"ready", "pick", "request", "queue", "claim", "request_status", "cancel_request", "candidates", "selection_command", "verification", "rejected", "stopped"} <= events
 provenance = protocol["definitions"]["requestPayload"]["properties"]["provenance"]
 assert {"channel", "trustedUserEvent"} <= set(provenance["required"])
-assert set(result["properties"]["status"]["enum"]) == {"applied_verified", "no_change", "review_required", "blocked"}
+assert set(result["properties"]["status"]["enum"]) == {"applied_verified", "no_change", "cancelled", "review_required", "blocked"}
+assert "cancellation" in result["properties"] and len(result["allOf"]) >= 2
 assert set(result["properties"]["authorization"]["properties"]["channel"]["enum"]) == {"trusted-chat", "isolated-picker", "none"}
 assert behavior["skill_name"] == "dom-picker" and len(behavior["evals"]) >= 8
 ids = {item["id"] for item in behavior["evals"]}
-assert {"isolated-picker-applies-and-verifies", "main-world-forgery-rejected", "verification-failure-is-not-completion", "cross-origin-navigation-pauses-authority"} <= ids
+assert {"isolated-picker-applies-and-verifies", "main-world-forgery-rejected", "verification-failure-is-not-completion", "cross-origin-navigation-pauses-authority", "durable-fifo-claim-and-status", "active-cancel-safe-rollback", "positional-selector-identity-rejected", "iframe-refinement-routed-to-owner"} <= ids
 assert len(triggers) >= 20
 assert sum(item["should_trigger"] for item in triggers) >= 10
 assert sum(not item["should_trigger"] for item in triggers) >= 10
@@ -120,8 +130,16 @@ for reference in protocol source-location verification safety-policy examples; d
 done
 assert_contains "SKILL requires target reacquisition" "targetReacquired: true" "$SKILL/SKILL.md"
 assert_contains "SKILL trusts only persisted isolated requests" "atomically persisted and acknowledged" "$SKILL/SKILL.md"
+assert_contains "SKILL claims FIFO requests" "claim --session" "$SKILL/SKILL.md"
+assert_contains "SKILL discovers selectors without custom CDP" "find --text" "$SKILL/SKILL.md"
+assert_contains "SKILL enqueues chat snapshots" "--instruction-file=<trusted-chat.txt> --session=<session.json>" "$SKILL/SKILL.md"
+assert_contains "SKILL documents truthful cancellation" "only after rollback is complete" "$SKILL/SKILL.md"
 assert_contains "safety policy rejects main-world imitations" "main-world imitation" "$SKILL/references/safety-policy.md"
 assert_contains "verification policy refuses apply-only completion" "Never report completion" "$SKILL/references/verification.md"
+
+# Durable session and CLI contracts.
+assert_status 0 "durable FIFO session ledger" node "$HERE/ledger.mjs"
+assert_status 0 "lifecycle CLI JSON contracts" node "$HERE/lifecycle-cli.mjs"
 
 # Real Chromium integration. Chrome absence is an explicit, successful skip.
 node "$HERE/e2e.mjs" >"$TMP/e2e.out" 2>"$TMP/e2e.err"
