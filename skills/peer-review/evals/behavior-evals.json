@@ -46,6 +46,30 @@
       ]
     },
     {
+      "id": "full-spectrum-multi-review",
+      "prompt": "Ask codex, claude, and agy to peer-review docs/plans/payment-retry.md with the default all focus. I want each AI to examine the whole plan, not split responsibilities.",
+      "expected_output": "Runs every requested reviewer against the same full-spectrum prompt, then synthesizes evidence-backed findings across correctness, feasibility, assumptions, failure modes, repository fit, and simpler alternatives.",
+      "files": ["docs/plans/payment-retry.md"],
+      "assertions": [
+        "Sends the same six-dimension all-focus matrix to every reviewer rather than assigning reviewer-specific lenses.",
+        "Keeps verified and inferred findings distinct and preserves the evidence supplied by each reviewer.",
+        "Groups the resulting issues as shared, disputed, or single-reviewer findings.",
+        "Adds an adopt, adapt, or reject judgment for each material issue."
+      ]
+    },
+    {
+      "id": "discount-overlapping-reviewer-backends",
+      "prompt": "Peer-review docs/spec.md with the codex-high, codex-low, and claude-opus profiles, then tell me what to change. The two codex profiles use the same model with different effort settings.",
+      "expected_output": "Runs all three requested profiles, surfaces the same-backend overlap warning, counts the correlated codex profiles as one signal when describing agreement, and independently verifies decisive repository claims before adopting them.",
+      "files": ["docs/spec.md", ".peer-review.json"],
+      "assertions": [
+        "Does not suppress either requested codex profile merely because their backends overlap.",
+        "Surfaces reviewer_backend_overlap and does not present the two codex profiles as two independent votes.",
+        "Distinguishes shared, disputed, and single-reviewer findings before making a recommendation.",
+        "Labels an accepted repository-dependent claim unverified unless the cited source was checked."
+      ]
+    },
+    {
       "id": "avoid-ordinary-code-review-trigger",
       "prompt": "Review this diff for bugs and missing tests.",
       "expected_output": "Does not invoke peer-review because the user asked for the host agent's own code review, not an external second opinion.",

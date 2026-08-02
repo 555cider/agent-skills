@@ -52,6 +52,9 @@ if printf '%s\n' "$@" | grep -qx -- '--help'; then
   exit 0
 fi
 printf '%s\n' "$@" > "$PEER_REVIEW_STUB_ARGS"
+if [ -n "${PEER_REVIEW_STUB_STDIN:-}" ]; then
+  cat > "$PEER_REVIEW_STUB_STDIN"
+fi
 printf 'stub review ok\n'
 EOF
   chmod +x "$path"
@@ -102,6 +105,7 @@ set +e
 (
   cd "$D" &&
   PATH="$D/bin:$PATH" PEER_REVIEW_STUB_ARGS="$D/args.txt" \
+    PEER_REVIEW_STUB_STDIN="$D/prompt-all.md" \
     "$PR" plan.md --reviewer=codex-effort-only --host=claude --timeout=5
 ) >"$WORK/out" 2>"$WORK/err"
 EC=$?
@@ -112,6 +116,28 @@ assert_file_contains "effort forwarded to codex config" "$D/args.txt" "model_rea
 assert_file_not_contains "effort not misread as model flag" "$D/args.txt" "--model"
 assert_file_contains "codex uses an ephemeral session" "$D/args.txt" "--ephemeral"
 assert_file_contains "codex ignores ambient user config" "$D/args.txt" "--ignore-user-config"
+assert_file_contains "all focus reviews correctness" "$D/prompt-all.md" "Correctness"
+assert_file_contains "all focus reviews feasibility" "$D/prompt-all.md" "Feasibility and dependencies"
+assert_file_contains "all focus reviews assumptions" "$D/prompt-all.md" "Hidden assumptions"
+assert_file_contains "all focus reviews failure modes" "$D/prompt-all.md" "Failure modes and edge cases"
+assert_file_contains "all focus reviews repo fit" "$D/prompt-all.md" "Repository fit and duplication"
+assert_file_contains "all focus reviews simpler alternatives" "$D/prompt-all.md" "Simpler alternatives"
+assert_file_contains "all focus labels severity and evidence status" "$D/prompt-all.md" "[high|medium|low][verified|inferred]"
+assert_file_contains "all focus distinguishes no issue from omission" "$D/prompt-all.md" "No material issue found"
+
+set +e
+(
+  cd "$D" &&
+  PATH="$D/bin:$PATH" PEER_REVIEW_STUB_ARGS="$D/args-correctness.txt" \
+    PEER_REVIEW_STUB_STDIN="$D/prompt-correctness.md" \
+    "$PR" plan.md --reviewer=codex-effort-only --focus=correctness --host=claude --timeout=5
+) >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+
+assert_exit "explicit correctness focus run" 0
+assert_file_contains "explicit correctness focus keeps narrow contract" "$D/prompt-correctness.md" "Surface only:"
+assert_file_not_contains "explicit correctness focus does not expand to full matrix" "$D/prompt-correctness.md" "Feasibility and dependencies"
 
 set +e
 (
@@ -182,6 +208,91 @@ assert_file_contains "agy receives model value" "$D2/args_agy.txt" "gemini-3.5-f
 assert_file_contains "agy receives sandbox flag" "$D2/args_agy.txt" "--sandbox"
 assert_file_contains "agy receives plan mode" "$D2/args_agy.txt" "plan"
 assert_file_not_contains "agy does not bypass permissions" "$D2/args_agy.txt" "--dangerously-skip-permissions"
+
+# Multiple profile names that resolve to the same CLI and model are correlated
+# signals even when their effort differs. Different explicit models or CLIs are
+# not inferred to be the same backend.
+D6="$WORK/backend-overlap"
+mkdir -p "$D6/bin"
+git -C "$D6" init -q
+make_stub_cli "$D6/bin/codex"
+make_stub_cli "$D6/bin/claude"
+make_opencode_stub_cli "$D6/bin/opencode"
+cat >"$D6/.peer-review.json" <<'EOF'
+{
+  "reviewers": {
+    "codex-high": { "cli": "codex", "model": "gpt-5", "effort": "high" },
+    "codex-low": { "cli": "codex", "model": "gpt-5", "effort": "low" },
+    "codex-other": { "cli": "codex", "model": "gpt-5-mini" },
+    "codex-default-a": { "cli": "codex" },
+    "codex-default-b": { "cli": "codex" },
+    "claude-same-name": { "cli": "claude", "model": "gpt-5" },
+    "opencode-short": { "cli": "opencode", "model": "gpt-5" },
+    "opencode-qualified": { "cli": "opencode", "model": "opencode/gpt-5" }
+  }
+}
+EOF
+printf '# Plan\n\nCompare reviewer signals.\n' >"$D6/plan.md"
+
+set +e
+(
+  cd "$D6" &&
+  PATH="$D6/bin:$PATH" PEER_REVIEW_STUB_ARGS="$D6/args.txt" \
+    "$PR" plan.md --reviewer=codex-high,codex-low --host=opencode --timeout=5
+) >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+assert_exit "same backend profiles run" 0
+assert_file_contains "same CLI and model emit overlap warning" "$WORK/out" \
+  "WARN=reviewer_backend_overlap cli=codex reviewers=codex-high,codex-low"
+
+set +e
+(
+  cd "$D6" &&
+  PATH="$D6/bin:$PATH" PEER_REVIEW_STUB_ARGS="$D6/args.txt" \
+    "$PR" plan.md --reviewer=codex-default-a,codex-default-b --host=opencode --timeout=5
+) >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+assert_exit "same default backend profiles run" 0
+assert_file_contains "same CLI defaults emit overlap warning" "$WORK/out" \
+  "WARN=reviewer_backend_overlap cli=codex reviewers=codex-default-a,codex-default-b"
+
+set +e
+(
+  cd "$D6" &&
+  PATH="$D6/bin:$PATH" PEER_REVIEW_STUB_ARGS="$D6/args.txt" \
+    "$PR" plan.md --reviewer=codex-high,codex-other --host=opencode --timeout=5
+) >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+assert_exit "different model profiles run" 0
+assert_file_not_contains "different explicit models do not emit overlap warning" "$WORK/out" \
+  "WARN=reviewer_backend_overlap"
+
+set +e
+(
+  cd "$D6" &&
+  PATH="$D6/bin:$PATH" PEER_REVIEW_STUB_ARGS="$D6/args.txt" \
+    "$PR" plan.md --reviewer=codex-high,claude-same-name --host=opencode --timeout=5
+) >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+assert_exit "different CLI profiles run" 0
+assert_file_not_contains "different CLIs do not infer backend overlap" "$WORK/out" \
+  "WARN=reviewer_backend_overlap"
+
+set +e
+(
+  cd "$D6" &&
+  PATH="$D6/bin:$PATH" PEER_REVIEW_STUB_ARGS="$D6/args.txt" \
+    "$PR" plan.md --reviewer=opencode-short,opencode-qualified --host=claude --timeout=5
+) >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+assert_exit "equivalent opencode model profiles run" 0
+assert_file_contains "opencode model normalization still emits overlap warning" "$WORK/out" \
+  "WARN=reviewer_backend_overlap cli=opencode reviewers=opencode-short,opencode-qualified"
 
 make_failing_stub_cli() {
   local path="$1"

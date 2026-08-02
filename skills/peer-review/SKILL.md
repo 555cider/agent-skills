@@ -73,6 +73,12 @@ with `--help`. Do not look for a plan-shaped message and do not run a review.
 of options rather than a single plan — the reviewer recommends one with
 reasoning, lists trade-offs per option, and flags any missed option.
 
+The default `all` focus is a full-spectrum review. Every selected reviewer
+receives the same matrix — correctness, feasibility/dependencies, hidden
+assumptions, failure modes/edge cases, repository fit/duplication, and simpler
+alternatives. Do not divide those dimensions among reviewers: agreement and
+disagreement are useful only when each reviewer considered the whole plan.
+
 `--timeout=<seconds>` bounds each reviewer process. Default is 300 seconds,
 or `PEER_REVIEW_TIMEOUT_SECONDS` when set. Forward the user's timeout when
 they provide one. Raise it for known-slow reviewers or large plans; lower it
@@ -137,6 +143,11 @@ the user explicitly opts in via `0` or by name:
 - Reviewers sharing a backing model give weaker signal when paired
   (e.g. `codex` + `opencode` if opencode is configured to a GPT-family model).
   Mix vendors when in doubt.
+- When two selected profiles resolve to the same CLI and the same effective
+  model after adapter normalization (or both use that CLI's default), the wrapper emits
+  `WARN=reviewer_backend_overlap`. Different effort settings do not make those
+  profiles independent. Run every profile the user requested, but count an
+  overlapping group as one signal when synthesizing agreement.
 
 **Self-review opt-in.** If the user passes `--reviewer=0` (or names the
 host CLI directly, e.g. `--reviewer=claude` from Claude Code), forward it
@@ -159,6 +170,7 @@ reviewer, then `EXCLUDE_NOTE=` last:
 
 ```
 WARN=<optional machine-readable warning>
+WARN=reviewer_backend_overlap cli=<cli> reviewers=<profile-1,profile-2>
 REVIEW=<reviewer-name> <absolute-path-to-saved-review>
 REVIEW=<reviewer-name> <absolute-path-to-saved-review>
 EXCLUDE_NOTE=<optional one-line message about .git/info/exclude update>
@@ -191,10 +203,21 @@ Cite the specific assumption you accept or reject. The reviewer is a peer,
 not an authority — push back on points that overweight a constraint,
 misread the repo, or assume more than warranted.
 
-**With multiple reviewers:** call out where they agree (shared concerns are
-stronger signal) and where they disagree (the divergence is often the most
-informative part — name what each got right and wrong). Don't just average
-the takes; weigh each point on its merit.
+**With multiple reviewers:** synthesize by issue rather than retelling each
+review in sequence. Use three groups in the user's language:
+
+- **Shared findings** — raised by at least two distinct configured backend
+  signals. Profiles named together in `reviewer_backend_overlap` count once.
+- **Disputed findings** — reviewers materially disagree about the premise,
+  severity, or remedy. State the disagreement rather than averaging it away.
+- **Single-reviewer findings** — raised by only one backend signal; useful,
+  but weaker until independently supported.
+
+For every material issue, give your own `adopt`, `adapt`, or `reject` verdict
+and the reason. Before adopting or adapting a repository-dependent claim,
+open the cited location and verify it. If the evidence cannot be checked,
+label the claim unverified and turn it into a verification step instead of
+presenting it as fact. Agreement raises priority; it does not prove truth.
 
 If you had a prior take on this plan (you wrote it, or you'd recommended
 a direction): say whether your position holds or shifted, and why. If you

@@ -28,6 +28,23 @@ settings in one review.
 Exact flag spellings for `model` and `effort` live in `build_cmd()` in
 `scripts/run-peer-review.sh` — do not duplicate them here.
 
+## Overlapping reviewer signals
+
+If multiple selected profiles use the same `cli` and the same effective model
+after adapter normalization (including multiple profiles that all omit
+`model`), the wrapper emits:
+
+```
+WARN=reviewer_backend_overlap cli=<cli> reviewers=<profile-1,profile-2>
+```
+
+The profiles still run and keep separate review files. The warning means their
+agreement counts as one configured backend signal during synthesis. Different
+`effort` values do not remove the overlap. Different effective model values do;
+for example, OpenCode's `gpt-5` and `opencode/gpt-5` spellings normalize to the
+same effective model. The wrapper does not guess whether models reached through
+different CLIs share a provider or model family.
+
 ## Search order
 
 1. `<repo>/.peer-review.json` (project-local override)

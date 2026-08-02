@@ -51,7 +51,7 @@ this README does not restate it (copies drift). Instead:
   (`--help`/`-h` must be the only argument).
 - **`list` subcommand output** (Special + Reviewer CLIs tables):
   `references/list-output.md`.
-- **Self-review (`--reviewer=0`) and the `reviewer_matches_host` warning:**
+- **Self-review (`--reviewer=0`), host matching, and backend-overlap warnings:**
   `references/cli-adapters.md`.
 - **Profile config (`.peer-review.json` schema, search order, name rules):**
   `references/profile-config.md`.

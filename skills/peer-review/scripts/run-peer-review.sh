@@ -371,6 +371,20 @@ profile_cli_for() {
   fi
 }
 
+# profile_effective_model_for <profile-name>: print the model string passed to
+# the backing CLI. OpenCode accepts short names but the adapter qualifies them,
+# so overlap detection must compare the qualified value too.
+profile_effective_model_for() {
+  local p="$1"
+  local cli model
+  cli="$(profile_cli_for "$p")"
+  model="${PROFILE_MODEL[$p]:-}"
+  if [ "$cli" = "opencode" ] && [ -n "$model" ] && [[ "$model" != */* ]]; then
+    model="opencode/$model"
+  fi
+  printf '%s' "$model"
+}
+
 # profile_slug <name>: filesystem-safe slug for use in filenames. Profile names
 # are already restricted to [A-Za-z0-9._-]; this just lowercases and caps length.
 profile_slug() {
@@ -627,6 +641,37 @@ for p in "${REVIEWERS_LIST[@]}"; do
   fi
 done
 
+# Several profile names can still resolve to the same reviewer backend. Treat
+# effort variants as correlated when both the backing CLI and configured model
+# match (including two profiles that both use the CLI default model). The
+# warning is informational: the requested reviewers still run.
+declare -A BACKEND_OVERLAP_REPORTED=()
+for ((_i=0; _i<${#REVIEWERS_LIST[@]}; _i++)); do
+  p="${REVIEWERS_LIST[$_i]}"
+  [ -z "${BACKEND_OVERLAP_REPORTED[$p]:-}" ] || continue
+
+  cli="$(profile_cli_for "$p")"
+  model="$(profile_effective_model_for "$p")"
+  _overlap=("$p")
+
+  for ((_j=_i+1; _j<${#REVIEWERS_LIST[@]}; _j++)); do
+    _candidate="${REVIEWERS_LIST[$_j]}"
+    _candidate_cli="$(profile_cli_for "$_candidate")"
+    _candidate_model="$(profile_effective_model_for "$_candidate")"
+    if [ "$cli" = "$_candidate_cli" ] && [ "$model" = "$_candidate_model" ]; then
+      _overlap+=("$_candidate")
+    fi
+  done
+
+  if [ ${#_overlap[@]} -gt 1 ]; then
+    for _candidate in "${_overlap[@]}"; do
+      BACKEND_OVERLAP_REPORTED[$_candidate]=1
+    done
+    _overlap_names="$(IFS=,; printf '%s' "${_overlap[*]}")"
+    echo "WARN=reviewer_backend_overlap cli=$cli reviewers=$_overlap_names"
+  fi
+done
+
 MULTI=0
 [ ${#REVIEWERS_LIST[@]} -gt 1 ] && MULTI=1
 
@@ -796,10 +841,22 @@ CONVENTION_BODY="
 Before reviewing, look for AGENTS.md or CLAUDE.md at the repo root. If either specifies a reading order for steering / convention docs (e.g. \"Read In This Order: ...\"), follow that order before reviewing. Also check scoped AGENTS.md/CLAUDE.md inside any subdirectory the plan touches; the most specific scope wins."
 
 case "$FOCUS" in
-  all) FOCUS_BODY="Provide:
-1. Critical issues — wrong assumptions, missing edge cases, infeasible steps
-2. Repo-fit observations — does this match existing patterns? cite specific file paths
-3. Suggested refinements — concrete, not vague" ;;
+  all) FOCUS_BODY="Review every dimension below. Use equivalent headings in the content's language, and include every heading so a no-issue judgment is distinguishable from an omitted review:
+
+1. **Correctness** — factual or technical mistakes in the plan
+2. **Feasibility and dependencies** — ordering, prerequisites, and executable steps
+3. **Hidden assumptions** — about the codebase, user intent, runtime, or future state
+4. **Failure modes and edge cases** — operational, data, compatibility, and rollback risks
+5. **Repository fit and duplication** — established patterns, conventions, and existing implementations
+6. **Simpler alternatives** — a lower-complexity route that preserves the goal, or state that none is better
+
+Within each dimension, report only material findings. If none exist, write \"No material issue found\" in the content's language. Do not repeat one finding under several headings.
+
+Use this compact shape for each material finding:
+- [high|medium|low][verified|inferred] <claim>
+  - Evidence: for a verified repository claim, cite repo-relative path:line; for a verified plan claim, cite its section. For inferred claims, name what could not be confirmed.
+  - Impact: <what fails or becomes riskier>
+  - Minimal refinement: <smallest change that resolves it>" ;;
   feasibility) FOCUS_BODY="Assess only whether the plan is executable as written:
 - Are the steps coherent and properly ordered?
 - Do dependencies between steps line up?
@@ -951,7 +1008,7 @@ build_cmd() {
   local profile="$1"
   local cli model effort
   cli="$(profile_cli_for "$profile")"
-  model="${PROFILE_MODEL[$profile]:-}"
+  model="$(profile_effective_model_for "$profile")"
   effort="${PROFILE_EFFORT[$profile]:-}"
 
   CMD=()
@@ -1000,12 +1057,7 @@ build_cmd() {
       }
       ensure_opencode_readonly_agent
       CMD=(opencode --pure run --agent "$OPENCODE_AGENT_NAME")
-      if [ -n "$model" ]; then
-        if [[ "$model" != */* ]]; then
-          model="opencode/$model"
-        fi
-        CMD+=(-m "$model")
-      fi
+      [ -n "$model" ] && CMD+=(-m "$model")
       [ -n "$effort" ] && CMD+=(--variant "$effort")
       ;;
     agy)
