@@ -7,6 +7,7 @@ export UI_SPLINT_SETTLE_MS=0
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$HERE/../scripts/audit-chrome.mjs"
+RULE_COVERAGE="$HERE/../scripts/rule-coverage.mjs"
 PY_RUNNER="$HERE/../scripts/run-ui-audit.py"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ui-audit-tests.XXXXXX")"
 PROFILES_BEFORE="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"
@@ -26,6 +27,57 @@ assert_exit() {
     fail "$1" "expected exit $2, got $EC (output: $(cat "$WORK/out" 2>/dev/null | tr '\n' '|' | head -c 300))"
   fi
 }
+
+set +e
+node --input-type=module - "$RULE_COVERAGE" >"$WORK/out" 2>"$WORK/err" <<'JS'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const { assessRuleCoverage } = await import(pathToFileURL(process.argv[2]).href);
+const top = assessRuleCoverage({
+  rulesExpected: ['documentRule', 'viewportRule'],
+  rulesRun: ['documentRule', 'viewportRule'],
+  rulesSkipped: [],
+}, { scroll: 'top', phase: 'all' });
+assert.equal(top.status, 'checked');
+
+// A top-page union contains viewportRule, but that must not mask its omission
+// from the independent bottom/viewport report.
+const bottom = assessRuleCoverage({
+  rulesExpected: ['viewportRule'],
+  rulesRun: [],
+  rulesSkipped: [],
+}, { scroll: 'bottom', phase: 'viewport' });
+assert.equal(bottom.status, 'error');
+assert.deepEqual(bottom.rulesMissing, ['viewportRule']);
+assert.match(bottom.error, /did not run/);
+
+const missingManifest = assessRuleCoverage({ rulesRun: ['viewportRule'] }, { scroll: 'bottom', phase: 'viewport' });
+assert.equal(missingManifest.status, 'error');
+assert.match(missingManifest.error, /rulesExpected/);
+
+const missingRun = assessRuleCoverage({ rulesExpected: ['viewportRule'] }, { scroll: 'bottom', phase: 'viewport' });
+assert.equal(missingRun.status, 'error');
+assert.match(missingRun.error, /rulesRun/);
+
+const missingSkipped = assessRuleCoverage({
+  rulesExpected: ['viewportRule'],
+  rulesRun: ['viewportRule'],
+}, { scroll: 'bottom', phase: 'viewport' });
+assert.equal(missingSkipped.status, 'error');
+assert.match(missingSkipped.error, /rulesSkipped/);
+
+const skipped = assessRuleCoverage({
+  rulesExpected: ['viewportRule'],
+  rulesRun: [],
+  rulesSkipped: ['viewportRule: boom'],
+}, { scroll: 'bottom', phase: 'viewport' });
+assert.equal(skipped.status, 'error');
+assert.deepEqual(skipped.rulesSkipped, ['viewportRule: boom']);
+JS
+EC=$?
+set -e
+assert_exit "each scroll report proves its own audit rule coverage" 0
 
 PORT="$(python3 - <<'PY'
 import socket
@@ -99,6 +151,60 @@ EC=$?
 set -e
 assert_exit "removed mutating --probes flag is rejected" 2
 
+# ---- empty matrix axes are invalid configuration, not a zero-cell green audit ----
+for AXIS in routes viewports themes states scrollPositions; do
+  ROUTES='["/clean.html"]'
+  VIEWPORTS='[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}]'
+  THEMES='["light"]'
+  STATES='["default"]'
+  SCROLL_POSITIONS='["top"]'
+  case "$AXIS" in
+    routes) ROUTES='[]' ;;
+    viewports) VIEWPORTS='[]' ;;
+    themes) THEMES='[]' ;;
+    states) STATES='[]' ;;
+    scrollPositions) SCROLL_POSITIONS='[]' ;;
+  esac
+  printf '{"routes":%s,"viewports":%s,"themes":%s,"states":%s,"scrollPositions":%s}\n' \
+    "$ROUTES" "$VIEWPORTS" "$THEMES" "$STATES" "$SCROLL_POSITIONS" >"$WORK/empty-$AXIS.json"
+  set +e
+  node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/empty-$AXIS.json" \
+    --out-dir "$WORK/empty-$AXIS" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+  EC=$?
+  set -e
+  assert_exit "empty $AXIS configuration is rejected" 2
+  if grep -qF "$AXIS must be a non-empty array" "$WORK/err"; then
+    pass "empty $AXIS reports an actionable configuration error"
+  else
+    fail "empty $AXIS reports an actionable configuration error" "$(cat "$WORK/err" 2>/dev/null | tr '\n' '|' | head -c 300)"
+  fi
+done
+
+printf '%s\n' '{"routes":[""],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"themes":["light"],"states":["default"],"scrollPositions":["top"]}' >"$WORK/invalid-route.json"
+set +e
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/invalid-route.json" --out-dir "$WORK/invalid-route" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+assert_exit "invalid route entry is rejected" 2
+if grep -qF "routes[0] must be a non-empty string" "$WORK/err"; then pass "invalid route entry identifies its index"; else fail "invalid route entry identifies its index" "$(cat "$WORK/err" 2>/dev/null | tr '\n' '|' | head -c 300)"; fi
+
+for INVALID_MOCK in minMatches method; do
+  if [ "$INVALID_MOCK" = "minMatches" ]; then
+    RULE='{"pattern":"**/api/items","minMatches":0,"body":[]}'
+    EXPECTED='stateMocks.default[0].minMatches must be an integer of at least 1'
+  else
+    RULE='{"pattern":"**/api/items","method":"GET POST","body":[]}'
+    EXPECTED='stateMocks.default[0].method is invalid'
+  fi
+  printf '{"routes":["/clean.html"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"themes":["light"],"states":["default"],"scrollPositions":["top"],"stateMocks":{"default":[%s]}}\n' "$RULE" >"$WORK/invalid-mock-$INVALID_MOCK.json"
+  set +e
+  node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/invalid-mock-$INVALID_MOCK.json" --out-dir "$WORK/invalid-mock-$INVALID_MOCK" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+  EC=$?
+  set -e
+  assert_exit "invalid state mock $INVALID_MOCK is rejected before Chrome" 2
+  if grep -qF "$EXPECTED" "$WORK/err"; then pass "invalid state mock $INVALID_MOCK reports its rule"; else fail "invalid state mock $INVALID_MOCK reports its rule" "$(cat "$WORK/err" 2>/dev/null | tr '\n' '|' | head -c 300)"; fi
+done
+
 cat >"$WORK/theme-valid.json" <<'EOF'
 {"routes":["/clean.html"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"themes":["app-dark"],"states":["default"],"scrollPositions":["top"],"themeInitScripts":{"app-dark":"document.documentElement.dataset.theme='dark'"}}
 EOF
@@ -112,6 +218,16 @@ assert cell["themeDriver"] == "init-script" and cell["status"] == "checked", cel
 assert cell["hoverProbe"]["status"] == "not-applicable", cell
 PY
 then pass "theme init script records verified driver and mobile hover is not applicable"; else fail "theme init script records verified driver and mobile hover is not applicable" "invalid coverage"; fi
+
+cat >"$WORK/theme-missing-init.json" <<'EOF'
+{"routes":["/clean.html"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"themes":["app-dark"],"states":["default"],"scrollPositions":["top"]}
+EOF
+set +e
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$WORK/theme-missing-init.json" --out-dir "$WORK/theme-missing-init" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+set -e
+assert_exit "custom theme without an init script is rejected" 2
+if grep -qF "themeInitScripts.app-dark" "$WORK/err"; then pass "missing custom theme driver reports the theme name"; else fail "missing custom theme driver reports the theme name" "$(cat "$WORK/err" 2>/dev/null | tr '\n' '|' | head -c 300)"; fi
 
 cat >"$WORK/theme-error.json" <<'EOF'
 {"routes":["/clean.html"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"themes":["broken"],"states":["default"],"scrollPositions":["top"],"themeInitScripts":{"broken":"throw new Error('theme boom')"}}
@@ -194,6 +310,20 @@ for fixture in expected:
     bad_cells = [c for c in coverage.get("matrix", []) if c.get("status") != "checked"]
     if bad_cells:
         errors.append(f"{file_name}: unverified coverage cells {bad_cells!r}")
+    expected_positions = config["scrollPositions"]
+    expected_phases = ["all"] + ["viewport"] * (len(expected_positions) - 1)
+    for cell in coverage.get("matrix", []):
+        reports = cell.get("ruleCoverage")
+        if not isinstance(reports, list):
+            errors.append(f"{file_name}: cell omitted per-report ruleCoverage")
+            continue
+        if [report.get("scroll") for report in reports] != expected_positions:
+            errors.append(f"{file_name}: ruleCoverage scroll sequence is incomplete: {reports!r}")
+        if [report.get("phase") for report in reports] != expected_phases:
+            errors.append(f"{file_name}: ruleCoverage phase sequence is incomplete: {reports!r}")
+        incomplete_reports = [report for report in reports if report.get("status") != "checked"]
+        if incomplete_reports:
+            errors.append(f"{file_name}: incomplete audit reports {incomplete_reports!r}")
 
     # An un-baselined Fail, an unverified cell, or unresolved required review gates completion.
     has_fail = any(f.get("severity") == "Fail" for f in findings)
@@ -473,8 +603,75 @@ import json, sys
 cell = json.load(open(sys.argv[1]))["matrix"][0]
 assert cell["status"] == "checked", cell
 assert cell["stateDriver"] == "configured-mock" and cell["interceptions"] == 1, cell
+assert cell["rulesExpected"] and set(cell["rulesExpected"]) == set(cell["rulesRun"]), cell
+proof = cell["stateMock"]
+assert proof["status"] == "checked", proof
+assert proof["rules"] == [{
+    "pattern": "**/api/items",
+    "method": "any",
+    "minMatches": 1,
+    "matches": 1,
+    "held": 0,
+    "status": "checked",
+}], proof
 PY
 then pass "configured CDP state mock is proven by interception"; else fail "configured CDP state mock is proven by interception" "missing configured proof"; fi
+
+# ---- every explicit mock rule must independently prove its declared contract ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-mock.html"],"states":["partial"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"partial":[{"pattern":"**/api/items","body":[]},{"pattern":"**/api/summary","body":{}}]}}') \
+  --out-dir "$WORK/partial-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "partially matched explicit state mock blocks completion" 1
+if python3 - "$WORK/partial-mock/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+assert cell["status"] == "not-forced", cell
+assert cell["interceptions"] == 1, cell
+rules = cell["stateMock"]["rules"]
+assert [rule["matches"] for rule in rules] == [1, 0], rules
+assert [rule["status"] for rule in rules] == ["checked", "not-forced"], rules
+assert cell["stateMock"]["status"] == "not-forced", cell
+PY
+then pass "partial state mock coverage identifies the unmatched rule"; else fail "partial state mock coverage identifies the unmatched rule" "$(cat "$WORK/partial-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
+
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-mock.html"],"states":["method"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"method":[{"pattern":"**/api/items","method":"POST","body":[]}]}}') \
+  --out-dir "$WORK/method-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "state mock method mismatch blocks completion" 1
+if python3 - "$WORK/method-mock/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+rule = cell["stateMock"]["rules"][0]
+assert cell["status"] == "not-forced" and cell["interceptions"] == 0, cell
+assert rule["method"] == "POST" and rule["matches"] == 0 and rule["status"] == "not-forced", rule
+PY
+then pass "state mock proof preserves method-specific mismatch"; else fail "state mock proof preserves method-specific mismatch" "$(cat "$WORK/method-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
+
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-mock.html"],"states":["density"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"density":[{"pattern":"**/api/items","minMatches":2,"body":[]}]}}') \
+  --out-dir "$WORK/min-matches-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "state mock below minMatches blocks completion" 1
+if python3 - "$WORK/min-matches-mock/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+rule = cell["stateMock"]["rules"][0]
+assert cell["status"] == "not-forced", cell
+assert rule["minMatches"] == 2 and rule["matches"] == 1 and rule["status"] == "not-forced", rule
+PY
+then pass "state mock proof enforces minMatches"; else fail "state mock proof enforces minMatches" "$(cat "$WORK/min-matches-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
+
+# The default state is only implicit when no explicit mock contract was declared.
+node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/clean.html"],"states":["default"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"default":[{"pattern":"**/api/missing","body":[]}]}}') \
+  --out-dir "$WORK/default-explicit-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "unmatched explicit default-state mock blocks completion" 1
+if python3 - "$WORK/default-explicit-mock/coverage.json" <<'PY'
+import json, sys
+cell = json.load(open(sys.argv[1]))["matrix"][0]
+assert cell["state"] == "default" and cell["status"] == "not-forced", cell
+assert cell["stateMock"]["status"] == "not-forced", cell
+PY
+then pass "explicit default-state mock requires proof"; else fail "explicit default-state mock requires proof" "$(cat "$WORK/default-explicit-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
 
 # ---- rulesSkipped is unverified coverage, not a green audit ----
 node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"auditConfig":{"polish":null},"themes":["dark"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"states":["default"],"scrollPositions":["top"]}') \

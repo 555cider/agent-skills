@@ -24,6 +24,8 @@ contract checks measured findings and review advisories independently.
 | `state-mock.html` | CDP Fetch forcing | empty/error/loading each records a real interception |
 | `realistic-clean.html` | anonymized app-shell patterns | CTA pair, text descendants, skip link, and valid status tabs stay quiet |
 | `newcases.html` | broad polish plus logic-driven UI guidance | non-text contrast, inline-link affordance, long-body alignment/line-height, and their precision guards |
+| `contrast-thresholds.html` | WCAG text/placeholder boundaries and complex paint | determinate normal/large failures, visible-only placeholder checks, computed placeholder opacity, large-placeholder precision, and required pixel review for opacity/filter/blend/mask/inset-shadow chains |
+| `uninspected-surfaces.html` | light-DOM coverage boundaries | open shadow root, iframe, canvas, object, and embed advisories plus reasoned exemption precision |
 | `clean.html` | a well-built version of the same screens | **nothing** (zero findings) |
 
 `expected.json` uses `mustHit`, `mustNotHit`, `mustAdvise`, and `mustNotAdvise`, plus
@@ -48,8 +50,10 @@ a runner because synthetic in-page events cannot prove Tab behavior. Hover contr
 require trusted runner pointer movement; dispatching `mouseover` in the page is not proof. For DOM-only rules,
 inject `audit.js` via MCP/DevTools and call `__uiAudit({isMobile:true})`.
 
-The automated suite also verifies schema v2, state interception proof, worker determinism,
-browser-context isolation, suppression behavior, and honest incomplete-probe coverage.
+The automated suite also verifies schema v2, non-empty matrix configuration, custom-theme
+drivers, per-rule state interception proof (method and minimum match count), per-scroll-report
+expected-vs-run rule completeness, worker determinism, browser-context isolation, suppression behavior, and
+honest incomplete-probe coverage.
 
 ## Gotcha (handled by the canonical runner)
 

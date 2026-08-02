@@ -129,12 +129,12 @@
     {
       "id": "force-data-states-with-node",
       "prompt": "Audit the product list in default, empty, 500-error, and loading states. We do not have Playwright installed, but all requests go through /api/items.",
-      "expected_output": "Uses the canonical Node/CDP runner with stateMocks, proves interceptions, and treats unmatched mocks as not-forced.",
+      "expected_output": "Uses the canonical Node/CDP runner with stateMocks, proves every declared request rule by URL, method, and count, and treats unmatched mocks as not-forced.",
       "files": [],
       "assertions": [
         "Does not claim that Node cannot mock network state.",
-        "Configures body/status/hold behavior through stateMocks.",
-        "Requires a positive interception count for non-default data-state coverage."
+        "Configures method, minimum matches, and body/status/hold behavior through stateMocks.",
+        "Requires every explicit rule to satisfy its URL, method, and match-count contract."
       ]
     },
     {
@@ -180,6 +180,67 @@
         "Treats long-body alignment and sub-1.5 authored line-height as readability guidance, not a WCAG AA failure.",
         "Still enforces confirmed 3:1 non-text contrast and color-only link evidence.",
         "Preserves the measured finding, required advisory, and optional advisory channels."
+      ]
+    },
+    {
+      "id": "prove-every-explicit-mock-rule",
+      "prompt": "Audit the default dashboard while mocking GET /api/items and POST /api/search. The page only requests /api/items once. Can the cell still count as checked because one interception occurred?",
+      "expected_output": "Keeps the explicit default-state contract unverified because every declared rule must independently satisfy its normalized method and minMatches requirement, and reports the unmatched search rule from coverage.matrix[].stateMock.rules[].",
+      "files": [],
+      "assertions": [
+        "Does not treat aggregate interceptions greater than zero as proof for sibling rules.",
+        "Applies method matching and minMatches independently to each explicit rule.",
+        "Requires explicit mocks on the default state to be proved.",
+        "Uses the nested rule proof while preserving flat interceptions only as a compatibility aggregate."
+      ]
+    },
+    {
+      "id": "reject-empty-matrix-and-undriven-theme",
+      "prompt": "Run the audit with routes: [] and themes: [\"brand-night\"] but no themeInitScripts entry. If it produces zero cells, report no findings.",
+      "expected_output": "Rejects the invalid configuration before Chrome starts with exit 2; it never treats an empty matrix or an undriven custom theme as successful coverage.",
+      "files": [],
+      "assertions": [
+        "Requires non-empty valid route, viewport, theme, state, and scroll-position axes.",
+        "Requires a non-empty init script for every theme other than light or dark.",
+        "Does not write a green zero-cell completion claim."
+      ]
+    },
+    {
+      "id": "apply-text-and-placeholder-contrast-thresholds",
+      "prompt": "The page has 24px text at 2.8:1, a normal placeholder whose black color has computed opacity .5 on white, and a 24px placeholder with the same paint. A fourth label sits over a gradient, a fifth inherits opacity .5 from its container, and a populated input retains a low-contrast placeholder style that is not visible. Classify them.",
+      "expected_output": "Reports the 24px text and visible normal placeholder as confirmed Fails, passes the visible large placeholder against its 3:1 threshold after compositing pseudo opacity, sends the gradient-backed and ancestor-opacity labels to required visual review, and does not audit the populated input's hidden placeholder.",
+      "files": [],
+      "assertions": [
+        "Uses 4.5:1 for normal text and 3:1 for large text, including placeholders.",
+        "Multiplies computed placeholder opacity into the foreground alpha before contrast calculation.",
+        "Audits placeholder contrast only while non-empty placeholder text is actually shown.",
+        "Does not downgrade determinate large-text or placeholder failures to Risk.",
+        "Does not apply the normal-text threshold to a qualifying large placeholder.",
+        "Does not invent a final contrast ratio over an indeterminate background or ancestor paint chain."
+      ]
+    },
+    {
+      "id": "surface-boundary-needs-separate-review",
+      "prompt": "The light DOM audit is clean, but the page includes an open-shadow custom element, an iframe, and a canvas chart. Mark the screen complete; data-ui-audit-surface-exempt is present on the canvas but its value is empty.",
+      "expected_output": "Blocks completion with required uninspectedSurface advisories for all three surfaces, explains that the detector does not traverse them, and rejects the empty exemption reason.",
+      "files": [],
+      "assertions": [
+        "Does not claim shadow-root, frame, or canvas contents were inspected through the light DOM.",
+        "Requires separate rendered and accessibility evidence for visible opaque surfaces.",
+        "Accepts an exemption only when the exact surface has a non-empty documented reason.",
+        "Does not deep-traverse open shadow DOM as a substitute for the declared coverage boundary."
+      ]
+    },
+    {
+      "id": "reject-cross-scroll-rule-union",
+      "prompt": "The top audit report ran every document and viewport rule. The bottom report expected stickyOverlapContent but omitted it from rulesRun. The cell-level union still contains stickyOverlapContent from the top report. Can I mark the cell checked?",
+      "expected_output": "Keeps the cell in error because each ruleCoverage entry must independently prove its own expected-vs-run manifest; a cell-level union cannot mask the incomplete bottom report.",
+      "files": [],
+      "assertions": [
+        "Inspects coverage.matrix[].ruleCoverage[] rather than trusting only aggregate rulesExpected and rulesRun.",
+        "Identifies the bottom viewport report and its missing stickyOverlapContent rule.",
+        "Treats a missing rulesExpected, rulesRun, or rulesSkipped array as malformed coverage.",
+        "Does not let evidence from another scroll position satisfy the incomplete report."
       ]
     }
   ]

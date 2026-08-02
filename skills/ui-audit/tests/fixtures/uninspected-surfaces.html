@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Uninspected surface regression</title>
+  <style>
+    body { margin: 0; padding: 24px; color: #111; background: #fff; font: 16px/1.5 system-ui, sans-serif; }
+    main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    iframe, canvas, object, embed, open-surface { display: block; width: 220px; height: 90px; border: 2px solid #333; background: #fff; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Opaque rendered surfaces</h1>
+  <main>
+    <open-surface id="open-shadow"></open-surface>
+    <iframe id="iframe-surface" title="Embedded status" srcdoc="<p>Status panel</p>"></iframe>
+    <canvas id="canvas-surface" width="220" height="90"></canvas>
+    <object id="object-surface" type="text/html" data="data:text/html,%3Cp%3EObject%20panel%3C%2Fp%3E"></object>
+    <embed id="embed-surface" type="text/html" src="data:text/html,%3Cp%3EEmbed%20panel%3C%2Fp%3E">
+    <canvas id="empty-reason" width="220" height="90" data-ui-audit-surface-exempt=""></canvas>
+
+    <open-surface id="exempt-shadow" data-ui-audit-surface-exempt="audited by component-level shadow DOM checks"></open-surface>
+    <iframe id="exempt-frame" title="Trusted payment widget" srcdoc="<p>Payment widget</p>" data-ui-audit-surface-exempt="vendor accessibility report reviewed"></iframe>
+    <canvas id="exempt-canvas" width="220" height="90" data-ui-audit-surface-exempt="decorative chart texture with text alternative"></canvas>
+    <canvas id="hidden-canvas" class="hidden" width="220" height="90"></canvas>
+  </main>
+  <script>
+    customElements.define('open-surface', class extends HTMLElement {
+      connectedCallback() {
+        if (this.shadowRoot) return;
+        const root = this.attachShadow({ mode: 'open' });
+        root.innerHTML = '<button style="color:#aaa;background:#fff;border:0">Shadow action</button>';
+      }
+    });
+  </script>
+</body>
+</html>

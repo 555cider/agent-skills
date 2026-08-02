@@ -21,6 +21,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { assessRuleCoverage } from './rule-coverage.mjs';
 
 if (typeof WebSocket === 'undefined') {
   console.error('ui-audit audit-chrome.mjs requires Node >= 22 (built-in WebSocket). Detected ' + process.version +
@@ -76,17 +77,27 @@ if (argv.includes('--config') && !existsSync(configPath)) {
   process.exit(2);
 }
 
-const defCfg = JSON.parse(readFileSync(DEFAULT_CONFIG, 'utf8'));
-const userCfg = existsSync(configPath) && configPath !== DEFAULT_CONFIG
-  ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
+function configurationError(message) {
+  console.error(String(message));
+  process.exit(2);
+}
+
+let defCfg;
+let userCfg;
+try {
+  defCfg = JSON.parse(readFileSync(DEFAULT_CONFIG, 'utf8'));
+  userCfg = existsSync(configPath) && configPath !== DEFAULT_CONFIG
+    ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
+} catch (error) {
+  configurationError(`invalid JSON configuration: ${error && error.message || error}`);
+}
 const cfg = { ...defCfg, ...userCfg };
-const routes = routesOverride ? routesOverride.split(',') : cfg.routes || ['/'];
-const viewports = cfg.viewports || [{ name: 'mobile', width: 390, height: 844, isMobile: true, dpr: 3 },
-                                    { name: 'desktop', width: 1280, height: 900, isMobile: false, dpr: 1 }];
-const themes = cfg.themes || ['light', 'dark'];
-const states = cfg.states || ['default'];
-const scrollPositions = cfg.scrollPositions || ['top', 'bottom'];
-const adaptations = cfg.adaptations || [];
+const routes = routesOverride !== null ? routesOverride.split(',') : cfg.routes;
+const viewports = cfg.viewports;
+const themes = cfg.themes;
+const states = cfg.states;
+const scrollPositions = cfg.scrollPositions;
+const adaptations = cfg.adaptations ?? [];
 const auditCfg = cfg.auditConfig || {};
 const baseline = cfg.baseline || [];
 const themeInitScripts = cfg.themeInitScripts || {};
@@ -99,15 +110,56 @@ const waitForSelector = cfg.waitForSelector || null;
 const workers = Number(cfg.workers ?? 2);
 const settleMs = Number(process.env.UI_SPLINT_SETTLE_MS ?? cfg.settleMs ?? 1200);
 
+function requireNonEmptyArray(name, value) {
+  if (!Array.isArray(value) || value.length === 0) configurationError(`${name} must be a non-empty array`);
+}
+
+requireNonEmptyArray('routes', routes);
+requireNonEmptyArray('viewports', viewports);
+requireNonEmptyArray('themes', themes);
+requireNonEmptyArray('states', states);
+requireNonEmptyArray('scrollPositions', scrollPositions);
+
+routes.forEach((route, index) => {
+  if (typeof route !== 'string' || !route.trim()) configurationError(`routes[${index}] must be a non-empty string`);
+});
+viewports.forEach((viewport, index) => {
+  if (!viewport || typeof viewport !== 'object' || Array.isArray(viewport)) configurationError(`viewports[${index}] must be an object`);
+  if (typeof viewport.name !== 'string' || !viewport.name.trim()) configurationError(`viewports[${index}].name must be a non-empty string`);
+  if (!Number.isFinite(viewport.width) || viewport.width <= 0) configurationError(`viewports[${index}].width must be a positive number`);
+  if (!Number.isFinite(viewport.height) || viewport.height <= 0) configurationError(`viewports[${index}].height must be a positive number`);
+  if (typeof viewport.isMobile !== 'boolean') configurationError(`viewports[${index}].isMobile must be a boolean`);
+  if (viewport.dpr != null && (!Number.isFinite(viewport.dpr) || viewport.dpr <= 0)) configurationError(`viewports[${index}].dpr must be a positive number`);
+});
+themes.forEach((theme, index) => {
+  if (typeof theme !== 'string' || !theme.trim()) configurationError(`themes[${index}] must be a non-empty string`);
+});
+states.forEach((state, index) => {
+  if (typeof state !== 'string' || !state.trim()) configurationError(`states[${index}] must be a non-empty string`);
+});
+scrollPositions.forEach((position, index) => {
+  if (!['top', 'mid', 'bottom'].includes(position)) configurationError(`scrollPositions[${index}] must be one of top, mid, bottom`);
+});
+if (!adaptations || !Array.isArray(adaptations)) configurationError('adaptations must be an array');
+if (!themeInitScripts || typeof themeInitScripts !== 'object' || Array.isArray(themeInitScripts)) configurationError('themeInitScripts must be an object');
+if (!stateMocks || typeof stateMocks !== 'object' || Array.isArray(stateMocks)) configurationError('stateMocks must be an object');
+for (const theme of themes) {
+  if (!['light', 'dark'].includes(theme) &&
+      (typeof themeInitScripts[theme] !== 'string' || !themeInitScripts[theme].trim())) {
+    configurationError(`themeInitScripts.${theme} must be a non-empty script for custom theme ${JSON.stringify(theme)}`);
+  }
+}
 if (!Number.isInteger(workers) || workers < 1 || workers > 8) {
-  console.error('workers must be an integer between 1 and 8');
-  process.exit(2);
+  configurationError('workers must be an integer between 1 and 8');
 }
 for (const adaptation of adaptations) {
   if (!['zoom-200', 'reflow-320'].includes(adaptation)) {
-    console.error(`unsupported adaptation: ${JSON.stringify(adaptation)}`);
-    process.exit(2);
+    configurationError(`unsupported adaptation: ${JSON.stringify(adaptation)}`);
   }
+}
+for (const state of Object.keys(stateMocks)) {
+  try { normalizedStateRules(state, stateMocks, apiMockPattern); }
+  catch (error) { configurationError(error && error.message || error); }
 }
 
 mkdirSync(join(outDir, 'screens'), { recursive: true });
@@ -393,8 +445,12 @@ function normalizedStateRules(state, mocks, fallbackPattern) {
     if (state === 'error') rules = [{ pattern: fallbackPattern, status: 500, contentType: 'application/json', body: { error: 'ui-audit forced error' } }];
     if (state === 'loading') rules = [{ pattern: fallbackPattern, hold: true }];
   }
-  if (rules == null) return { explicit: false, fallback: false, rules: [] };
+  if (rules == null) {
+    if (explicit) throw new Error(`stateMocks.${state} must be a non-empty array`);
+    return { explicit: false, fallback: false, rules: [] };
+  }
   if (!Array.isArray(rules)) throw new Error(`stateMocks.${state} must be an array`);
+  if (explicit && rules.length === 0) throw new Error(`stateMocks.${state} must be a non-empty array`);
   const normalized = rules.map((rule, index) => {
     if (!rule || typeof rule !== 'object' || Array.isArray(rule)) throw new Error(`stateMocks.${state}[${index}] must be an object`);
     if (typeof rule.pattern !== 'string' || !rule.pattern) throw new Error(`stateMocks.${state}[${index}] requires pattern`);
@@ -402,10 +458,20 @@ function normalizedStateRules(state, mocks, fallbackPattern) {
     const holds = rule.hold === true;
     if (hasBody === holds) throw new Error(`stateMocks.${state}[${index}] requires exactly one of body or hold:true`);
     const body = typeof rule.body === 'string' ? rule.body : JSON.stringify(rule.body);
+    const rawMethod = rule.method ?? 'any';
+    if (typeof rawMethod !== 'string' || !rawMethod.trim()) throw new Error(`stateMocks.${state}[${index}].method must be a non-empty HTTP method or "any"`);
+    const method = ['any', '*'].includes(rawMethod.trim().toLowerCase()) ? 'any' : rawMethod.trim().toUpperCase();
+    if (method !== 'any' && !/^[!#$%&'*+\-.^_`|~0-9A-Z]+$/.test(method)) throw new Error(`stateMocks.${state}[${index}].method is invalid`);
+    const minMatches = rule.minMatches ?? 1;
+    if (!Number.isInteger(minMatches) || minMatches < 1) throw new Error(`stateMocks.${state}[${index}].minMatches must be an integer of at least 1`);
+    const status = Number(rule.status ?? 200);
+    if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error(`stateMocks.${state}[${index}].status must be an integer from 100 to 599`);
     return {
       pattern: rule.pattern,
       matcher: globRegex(rule.pattern),
-      status: Number(rule.status ?? 200),
+      method,
+      minMatches,
+      status,
       contentType: String(rule.contentType || 'application/json'),
       body,
       hold: holds
@@ -423,9 +489,17 @@ async function installStateMock(cdp, sessionId, state, mocks, fallbackPattern) {
     driver: spec.explicit ? 'configured-mock' : (spec.fallback ? 'fallback-mock' : (state === 'default' ? 'page-default' : 'none')),
     interceptions: 0,
     held: 0,
+    rules: spec.rules.map(rule => ({
+      pattern: rule.pattern,
+      method: rule.method,
+      minMatches: rule.minMatches,
+      matches: 0,
+      held: 0,
+      status: 'not-forced'
+    })),
     error: null
   };
-  if (!spec.rules.length) return { proof, cleanup: async () => {} };
+  if (!spec.rules.length) return { proof, flush: async () => {}, cleanup: async () => {} };
 
   const held = new Set();
   const pending = new Set();
@@ -434,14 +508,19 @@ async function installStateMock(cdp, sessionId, state, mocks, fallbackPattern) {
   }, sessionId);
   const stop = cdp.listen('Fetch.requestPaused', sessionId, params => {
     const task = (async () => {
-      const rule = spec.rules.find(candidate => candidate.matcher.test(params.request.url));
-      if (!rule) {
+      const ruleIndex = spec.rules.findIndex(candidate => candidate.matcher.test(params.request.url) &&
+        (candidate.method === 'any' || candidate.method === String(params.request.method || '').toUpperCase()));
+      if (ruleIndex < 0) {
         await cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sessionId);
         return;
       }
+      const rule = spec.rules[ruleIndex];
+      const ruleProof = proof.rules[ruleIndex];
       proof.interceptions++;
+      ruleProof.matches++;
       if (rule.hold) {
         proof.held++;
+        ruleProof.held++;
         held.add(params.requestId);
         return;
       }
@@ -457,6 +536,9 @@ async function installStateMock(cdp, sessionId, state, mocks, fallbackPattern) {
   });
   return {
     proof,
+    flush: async () => {
+      while (pending.size) await Promise.allSettled([...pending]);
+    },
     cleanup: async () => {
       stop();
       for (const requestId of held) {
@@ -465,6 +547,28 @@ async function installStateMock(cdp, sessionId, state, mocks, fallbackPattern) {
       await Promise.allSettled([...pending]);
       try { await cdp.send('Fetch.disable', {}, sessionId); } catch {}
     }
+  };
+}
+
+function stateMockSnapshot(proof) {
+  const rules = (proof.rules || []).map(rule => ({
+    pattern: rule.pattern,
+    method: rule.method,
+    minMatches: rule.minMatches,
+    matches: rule.matches,
+    held: rule.held,
+    status: rule.matches >= rule.minMatches ? 'checked' : 'not-forced'
+  }));
+  let status = 'not-applicable';
+  if (proof.error) status = 'error';
+  else if (rules.length) status = rules.every(rule => rule.status === 'checked') ? 'checked' : 'not-forced';
+  return {
+    configured: proof.configured,
+    explicit: proof.explicit,
+    fallback: proof.fallback,
+    driver: proof.driver,
+    status,
+    rules
   };
 }
 
@@ -781,7 +885,9 @@ try {
     const cellFindings = [];
     const cellAdvisories = [];
     const cellRulesSkipped = [];
+    const cellRulesExpected = [];
     const cellRulesRun = [];
+    const cellRuleCoverage = [];
     const suppression = { whitelist: 0, baseline: 0, perRuleCap: 0, advisoryCap: 0, byRule: {} };
     let targetId = null;
     let browserContextId = null;
@@ -849,8 +955,11 @@ try {
         const rulePhase = positionIndex === 0 ? 'all' : 'viewport';
         const acfg = JSON.stringify({ ...auditCfg, route, theme, state, adaptation, isMobile: !!vp.isMobile, baseline, rulePhase });
         const report = await runtimeJson(cdp, sessionId, `window.__uiAudit(${acfg})`);
-        for (const skipped of report.coverage?.rulesSkipped || []) if (!cellRulesSkipped.includes(skipped)) cellRulesSkipped.push(skipped);
-        for (const rule of report.coverage?.rulesRun || []) if (!cellRulesRun.includes(rule)) cellRulesRun.push(rule);
+        const reportRuleCoverage = assessRuleCoverage(report.coverage, { scroll: sp, phase: rulePhase });
+        cellRuleCoverage.push(reportRuleCoverage);
+        for (const rule of reportRuleCoverage.rulesExpected) if (!cellRulesExpected.includes(rule)) cellRulesExpected.push(rule);
+        for (const skipped of reportRuleCoverage.rulesSkipped) if (!cellRulesSkipped.includes(skipped)) cellRulesSkipped.push(skipped);
+        for (const rule of reportRuleCoverage.rulesRun) if (!cellRulesRun.includes(rule)) cellRulesRun.push(rule);
         mergeSuppression(suppression, report.coverage?.suppressed);
         for (const signal of report.findings || []) { signal.scroll = sp; signal.cell = identity; cellFindings.push(signal); }
         for (const signal of report.advisories || []) { signal.scroll = sp; signal.cell = identity; cellAdvisories.push(signal); }
@@ -902,27 +1011,40 @@ try {
       );
       cell.counts = countSev(dedupedFindings);
       cell.advisoryTotals = countAdvisories(dedupedAdvisories);
+      cell.rulesExpected = cellRulesExpected;
       cell.rulesRun = cellRulesRun;
+      cell.ruleCoverage = cellRuleCoverage;
       cell.suppressed = suppression;
+      await mock.flush();
       cell.interceptions = mock.proof.interceptions;
+      cell.stateMock = stateMockSnapshot(mock.proof);
+      if (cellRulesSkipped.length) cell.rulesSkipped = cellRulesSkipped;
+      const missingRules = cellRulesExpected.filter(rule => !cellRulesRun.includes(rule));
+      if (missingRules.length) cell.rulesMissing = missingRules;
+      const incompleteRuleCoverage = cellRuleCoverage.find(report => report.status !== 'checked');
 
       if (mock.proof.error) {
         cell.status = 'error'; cell.error = 'state mock failed: ' + mock.proof.error;
-      } else if (cellRulesSkipped.length) {
-        cell.rulesSkipped = cellRulesSkipped; cell.status = 'error'; cell.error = 'audit rule(s) skipped: ' + cellRulesSkipped.join('; ');
+      } else if (incompleteRuleCoverage) {
+        cell.status = 'error';
+        cell.error = `audit coverage incomplete at ${incompleteRuleCoverage.scroll}/${incompleteRuleCoverage.phase}: ${incompleteRuleCoverage.error}`;
       } else if (!['checked', 'not-applicable'].includes(keyboard.proof.status)) {
         cell.status = 'error'; cell.error = 'keyboard probe incomplete: ' + (keyboard.proof.reason || keyboard.proof.status);
       } else if (!['checked', 'not-applicable'].includes(pointer.proof.status)) {
         cell.status = 'error'; cell.error = 'hover probe incomplete: ' + (pointer.proof.reason || pointer.proof.status);
       } else {
-        const networkProved = mock.proof.interceptions > 0;
-        const stateChecked = state === 'default' ||
-          (mock.proof.explicit ? networkProved : (networkProved || setupProof.configured));
+        const mockProved = cell.stateMock.status === 'checked';
+        const stateChecked = mock.proof.explicit
+          ? mockProved
+          : (state === 'default' || mockProved || setupProof.configured);
         if (stateChecked) cell.status = 'checked';
         else {
           cell.status = 'not-forced';
-          cell.reason = mock.proof.configured
-            ? `state mock installed but intercepted 0 requests (${mock.proof.driver})`
+          const incompleteRule = cell.stateMock.rules.find(rule => rule.status !== 'checked');
+          cell.reason = incompleteRule
+            ? `state mock rule ${incompleteRule.method} ${incompleteRule.pattern} matched ${incompleteRule.matches}/${incompleteRule.minMatches} required request(s)`
+            : mock.proof.configured
+              ? `state mock installed but did not prove the state (${mock.proof.driver})`
             : 'non-default state has neither a matching stateMocks rule nor a verified structured setup';
         }
       }
@@ -931,6 +1053,15 @@ try {
       console.log(`  audited ${cell.status}: ${route} ${vp.name} ${theme} ${state} ${adaptation} -> ${JSON.stringify(cell.counts)}`);
       return { cell, findings: dedupedFindings, advisories: dedupedAdvisories };
     } catch (error) {
+      cell.rulesExpected = cellRulesExpected;
+      cell.rulesRun = cellRulesRun;
+      cell.ruleCoverage = cellRuleCoverage;
+      if (cellRulesSkipped.length) cell.rulesSkipped = cellRulesSkipped;
+      if (mock) {
+        await mock.flush();
+        cell.interceptions = mock.proof.interceptions;
+        cell.stateMock = stateMockSnapshot(mock.proof);
+      }
       cell.status = 'error'; cell.error = String(error && error.message || error);
       timings.totalMs = Date.now() - cellStarted; cell.timings = timings;
       console.error(`  ! ${JSON.stringify(identity)}: ${cell.error}`);
@@ -955,10 +1086,11 @@ try {
     const timer = setTimeout(resolve, 1000);
     proc.once('exit', () => { clearTimeout(timer); resolve(); });
   });
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 10; attempt++) {
     try { rmSync(profile, { recursive: true, force: true }); break; }
     catch { await sleep(100 * (attempt + 1)); }
   }
+  if (existsSync(profile)) console.error(`WARNING: Chrome temporary profile could not be removed: ${profile}`);
 }
 
 // Aggregate across cells while preserving routes and the worst-severity evidence.

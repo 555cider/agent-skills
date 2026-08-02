@@ -175,6 +175,66 @@
       ]
     },
     {
+      "file": "contrast-thresholds.html",
+      "viewport": { "width": 800, "height": 700, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "effectiveContrast", "matches": "large-text-fail", "severity": "Fail", "confidence": "auto-measured", "note": "Large text below 3:1 is a confirmed WCAG 1.4.3 failure" },
+        { "rule": "placeholderContrast", "matches": "normal-placeholder", "severity": "Fail", "confidence": "auto-measured", "note": "Normal placeholder below 4.5:1 is a confirmed failure" },
+        { "rule": "placeholderContrast", "matches": "pseudo-alpha-normal", "severity": "Fail", "confidence": "auto-measured", "note": "Computed placeholder opacity participates in the effective foreground alpha" }
+      ],
+      "mustAdvise": [
+        { "rule": "effectiveContrast", "matches": "own-opacity-text", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "effectiveContrast", "matches": "ancestor-opacity-text", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "effectiveContrast", "matches": "filtered-text", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "effectiveContrast", "matches": "blended-text", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "effectiveContrast", "matches": "masked-text", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "effectiveContrast", "matches": "inset-shadow-text", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "placeholderContrast", "matches": "inset-shadow-placeholder", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "effectiveContrast", "matches": "complex-text", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "placeholderContrast", "matches": "complex-placeholder", "severity": "Risk", "confidence": "needs-visual", "review": "required" }
+      ],
+      "mustNotHit": [
+        { "rule": "placeholderContrast", "matches": "large-placeholder-pass" },
+        { "rule": "placeholderContrast", "matches": "pseudo-alpha-large" },
+        { "rule": "effectiveContrast", "matches": "own-opacity-text" },
+        { "rule": "effectiveContrast", "matches": "ancestor-opacity-text" },
+        { "rule": "effectiveContrast", "matches": "filtered-text" },
+        { "rule": "effectiveContrast", "matches": "blended-text" },
+        { "rule": "effectiveContrast", "matches": "masked-text" },
+        { "rule": "effectiveContrast", "matches": "inset-shadow-text" },
+        { "rule": "placeholderContrast", "matches": "inset-shadow-placeholder" },
+        { "rule": "placeholderContrast", "matches": "filled-placeholder" },
+        { "rule": "placeholderContrast", "matches": "date-placeholder" }
+      ],
+      "mustNotAdvise": [
+        { "rule": "placeholderContrast", "matches": "large-placeholder-pass" },
+        { "rule": "placeholderContrast", "matches": "pseudo-alpha-large" },
+        { "rule": "effectiveContrast", "matches": "outer-shadow-text" },
+        { "rule": "placeholderContrast", "matches": "filled-placeholder" },
+        { "rule": "placeholderContrast", "matches": "date-placeholder" }
+      ]
+    },
+    {
+      "file": "uninspected-surfaces.html",
+      "viewport": { "width": 800, "height": 700, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustAdvise": [
+        { "rule": "uninspectedSurface", "matches": "open-shadow", "severity": "Risk", "confidence": "needs-visual", "review": "required" },
+        { "rule": "uninspectedSurface", "matches": "iframe-surface", "review": "required" },
+        { "rule": "uninspectedSurface", "matches": "canvas-surface", "review": "required" },
+        { "rule": "uninspectedSurface", "matches": "object-surface", "review": "required" },
+        { "rule": "uninspectedSurface", "matches": "embed-surface", "review": "required" },
+        { "rule": "uninspectedSurface", "matches": "empty-reason", "review": "required", "note": "An empty exemption reason is not an exemption" }
+      ],
+      "mustNotAdvise": [
+        { "rule": "uninspectedSurface", "matches": "exempt-shadow" },
+        { "rule": "uninspectedSurface", "matches": "exempt-frame" },
+        { "rule": "uninspectedSurface", "matches": "exempt-canvas" },
+        { "rule": "uninspectedSurface", "matches": "hidden-canvas" }
+      ]
+    },
+    {
       "file": "interaction-layout.html",
       "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
       "theme": "light",

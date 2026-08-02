@@ -70,7 +70,7 @@
 
   // -------------------------------- defaults --------------------------------
   var DEFAULTS = {
-    contrast: { normal: 4.5, large: 3.0, washedOut: 1.3, placeholderFail: 3.0, nonText: 3.0, colorCue: 3.0 },
+    contrast: { normal: 4.5, large: 3.0, nonText: 3.0, colorCue: 3.0 },
     tap: { fail: 24, risk: 44, crowdGap: 8 },     // CSS px (WCAG 2.5.8 = 24, comfortable = 44)
     overflowTolerancePx: 1,
     collapsePx: 3,
@@ -125,6 +125,7 @@
     ruleDef('selectedStateAmbiguity', ruleSelectedState, 'document', 'state'),
     ruleDef('authModeNavConflict', ruleAuthConflict, 'document', 'state'),
     ruleDef('brokenOrDistortedMedia', ruleMedia, 'document', 'media'),
+    ruleDef('uninspectedSurface', ruleUninspectedSurface, 'document', 'coverage'),
     ruleDef('focusTrapLeak', ruleFocusTrap, 'document', 'keyboard', 'WCAG 2.1.2'),
     ruleDef('layoutShiftCLS', ruleCLS, 'document', 'stability'),
     ruleDef('designSystemDrift', ruleDrift, 'document', 'heuristic'),
@@ -159,6 +160,7 @@
     var cfg = merge(DEFAULTS, userConfig || {});
     var isMobile = cfg.isMobile == null ? root.innerWidth <= 600 : !!cfg.isMobile;
     var findings = [];
+    var rulesExpected = [];
     var rulesRun = [];
     var rulesSkipped = [];
     var elementIndex = qsa('body *');
@@ -191,6 +193,7 @@
         if (cfg.rulePhase === 'viewport' && rule.phase !== 'viewport') return;
         if (cfg.rulePhase === 'document' && rule.phase !== 'document') return;
         var name = rule.name, fn = rule.fn;
+        rulesExpected.push(name);
         try {
           fn(ctx);
           rulesRun.push(name);
@@ -250,6 +253,7 @@
         ts: null // per-report; Date is not read in-page. Runner stamps coverage.generated_at.
       },
       coverage: {
+        rulesExpected: rulesExpected,
         rulesRun: rulesRun,
         rulesSkipped: rulesSkipped,
         elementsScanned: ctx.scanned,
@@ -336,28 +340,23 @@
       var cs = getComputedStyle(el);
       var fg = parseColor(cs.color);
       if (!fg) continue;
-      var bg = effectiveBg(el);
+      var bg = contrastBg(el);
       var fgOnBg = fg[3] < 1 ? composite(fg, bg.rgb) : fg.slice(0, 3);
       var ratio = contrast(fgOnBg, bg.rgb);
       var px = parseFloat(cs.fontSize);
       var bold = (parseInt(cs.fontWeight, 10) || 400) >= 700;
       var large = px >= 24 || (px >= 18.66 && bold);
       var min = large ? cfg.contrast.large : cfg.contrast.normal;
-      if (ratio >= min) continue;
-
       var txt = el.textContent.trim().slice(0, 40);
-      // normal text below its min is a real Fail; large text is Risk unless washed-out (near 1:1).
-      var sev = large ? (ratio < cfg.contrast.washedOut ? 'Fail' : 'Risk') : 'Fail';
-      var conf = bg.indeterminate ? 'needs-visual' : 'auto-measured';
-      if (bg.indeterminate && ratio >= cfg.contrast.washedOut) {
-        // can't be sure over gradient/image unless it's near 1:1
+      if (bg.indeterminate) {
         ctx.findings.push(mk('effectiveContrast', 'Risk', 'needs-visual', cssPath(el),
-          'Text "' + txt + '" may fail contrast over a gradient/image/overlapping surface — pixel-confirm needed.',
+          'Text "' + txt + '" uses unresolved background or paint compositing — rendered-pixel contrast review is required.',
           { ratioVsResolvedBg: round2(ratio), bgIndeterminateReason: bg.reason }, { min: min }, rectOf(el),
           'Sample the text pixels from a screenshot crop; ensure ' + min + ':1 against the actual rendered background.'));
         continue;
       }
-      ctx.findings.push(mk('effectiveContrast', sev, conf, cssPath(el),
+      if (ratio >= min) continue;
+      ctx.findings.push(mk('effectiveContrast', 'Fail', 'auto-measured', cssPath(el),
         'Text "' + txt + '" contrast ' + round2(ratio) + ':1 is below ' + min + ':1.',
         { ratio: round2(ratio), fg: rgbStr(fgOnBg), bg: rgbStr(bg.rgb), fontPx: px, bold: bold, large: large },
         { min: min }, rectOf(el),
@@ -369,17 +368,28 @@
     var cfg = ctx.cfg;
     qsa('input[placeholder], textarea[placeholder]').forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
+      var placeholderText = el.getAttribute('placeholder') || '';
+      if (!placeholderText.trim() || !el.matches(':placeholder-shown')) return;
       var ph = getComputedStyle(el, '::placeholder');
       var fg = parseColor(ph.color);
       if (!fg) return;
-      var bg = effectiveBg(el);
+      var placeholderOpacity = parseFloat(ph.opacity);
+      if (Number.isFinite(placeholderOpacity)) fg[3] *= Math.max(0, Math.min(1, placeholderOpacity));
+      var bg = contrastBg(el, ph);
       var fgOnBg = fg[3] < 1 ? composite(fg, bg.rgb) : fg.slice(0, 3);
       var ratio = contrast(fgOnBg, bg.rgb);
-      if (ratio >= cfg.contrast.normal) return;
-      var sev = ratio < cfg.contrast.placeholderFail ? 'Fail' : 'Risk';
-      ctx.findings.push(mk('placeholderContrast', sev, bg.indeterminate ? 'needs-visual' : 'auto-measured', cssPath(el),
-        'Placeholder "' + (el.getAttribute('placeholder') || '').slice(0, 30) + '" contrast ' + round2(ratio) + ':1 below 4.5:1.',
-        { ratio: round2(ratio), fg: rgbStr(fgOnBg), bg: rgbStr(bg.rgb) }, { min: cfg.contrast.normal }, rectOf(el),
+      var px = parseFloat(ph.fontSize || getComputedStyle(el).fontSize);
+      var bold = (parseInt(ph.fontWeight || getComputedStyle(el).fontWeight, 10) || 400) >= 700;
+      var large = px >= 24 || (px >= 18.66 && bold);
+      var min = large ? cfg.contrast.large : cfg.contrast.normal;
+      var confidence = bg.indeterminate ? 'needs-visual' : 'auto-measured';
+      if (!bg.indeterminate && ratio >= min) return;
+      ctx.findings.push(mk('placeholderContrast', confidence === 'needs-visual' ? 'Risk' : 'Fail', confidence, cssPath(el),
+        bg.indeterminate
+          ? 'Placeholder "' + placeholderText.slice(0, 30) + '" uses unresolved background or paint compositing — rendered-pixel contrast review is required.'
+          : 'Placeholder "' + placeholderText.slice(0, 30) + '" contrast ' + round2(ratio) + ':1 below ' + min + ':1.',
+        { ratio: round2(ratio), fg: rgbStr(fgOnBg), bg: rgbStr(bg.rgb), fontPx: px, bold: bold, large: large,
+          bgIndeterminateReason: bg.reason || null }, { min: min }, rectOf(el),
         'Darken/lighten placeholder text; placeholders are not a substitute for a visible label.'));
     });
   }
@@ -885,6 +895,34 @@
           { renderedW: Math.round(r.width), naturalW: img.naturalWidth, dpr: root.devicePixelRatio || 1 }, {}, rectOf(img),
           'Provide a higher-resolution asset (srcset) for this display size.'));
       }
+    });
+  }
+
+  function ruleUninspectedSurface(ctx) {
+    function renderedSurface(el) {
+      var node = el;
+      while (node && node.nodeType === 1) {
+        var style = getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || parseFloat(style.opacity) < 0.05) return false;
+        node = node.parentElement;
+      }
+      var bounds = el.getBoundingClientRect();
+      return bounds.width >= 1 && bounds.height >= 1;
+    }
+    var candidates = qsa('iframe,canvas,object,embed');
+    ctx.elements.forEach(function (el) {
+      if (el.shadowRoot && candidates.indexOf(el) < 0) candidates.push(el);
+    });
+    candidates.forEach(function (el) {
+      if (!renderedSurface(el)) return;
+      var exemption = el.getAttribute('data-ui-audit-surface-exempt');
+      if (typeof exemption === 'string' && exemption.trim()) return;
+      var kind = el.shadowRoot ? 'open-shadow-root' : el.tagName.toLowerCase();
+      ctx.findings.push(mk('uninspectedSurface', 'Risk', 'needs-visual', cssPath(el),
+        'Visible ' + kind + ' content is outside this light-DOM audit and needs separate rendered inspection.',
+        { surface: kind, openShadowRoot: !!el.shadowRoot, exemptionReason: exemption || null },
+        { separateInspectionRequired: true }, rectOf(el),
+        'Inspect the rendered surface separately, or add data-ui-audit-surface-exempt="<reason>" only when equivalent evidence already exists.'));
     });
   }
 
@@ -1772,6 +1810,40 @@
     var a = fg[3];
     return [fg[0] * a + bg[0] * (1 - a), fg[1] * a + bg[1] * (1 - a), fg[2] * a + bg[2] * (1 - a)];
   }
+  function contrastBg(el, pseudoStyle) {
+    var bg = effectiveBg(el);
+    var paintReason = complexPaintReason(el, pseudoStyle);
+    if (!paintReason) return bg;
+    return {
+      rgb: bg.rgb,
+      indeterminate: true,
+      reason: [bg.reason, paintReason].filter(Boolean).join('; ')
+    };
+  }
+  function complexPaintReason(el, pseudoStyle) {
+    var pseudoReason = stylePaintReason(pseudoStyle, 'placeholder pseudo-element', false);
+    if (pseudoReason) return pseudoReason;
+    var n = el;
+    while (n && n.nodeType === 1) {
+      var reason = stylePaintReason(getComputedStyle(n), n.tagName.toLowerCase(), true);
+      if (reason) return reason;
+      n = n.parentElement;
+    }
+    return null;
+  }
+  function stylePaintReason(cs, label, includeOpacity) {
+    if (!cs) return null;
+    var opacity = parseFloat(cs.opacity);
+    if (includeOpacity && Number.isFinite(opacity) && opacity >= 0.05 && opacity < 1) return 'opacity on ' + label;
+    if (cs.filter && cs.filter !== 'none') return 'filter on ' + label;
+    if ((cs.backdropFilter && cs.backdropFilter !== 'none') ||
+        (cs.webkitBackdropFilter && cs.webkitBackdropFilter !== 'none')) return 'backdrop-filter on ' + label;
+    if (cs.mixBlendMode && cs.mixBlendMode !== 'normal') return 'mix-blend-mode on ' + label;
+    if (cs.boxShadow && /\binset\b/.test(cs.boxShadow)) return 'inset box-shadow on ' + label;
+    var maskImage = cs.maskImage || cs.webkitMaskImage;
+    if (maskImage && maskImage !== 'none') return 'mask-image on ' + label;
+    return null;
+  }
   function effectiveBg(el) {
     var indeterminate = false, reason = null;
     var acc = null; // accumulated translucent layers from el upward
@@ -1800,7 +1872,7 @@
     for (var i = layers.length - 1; i >= 0; i--) out = composite(layers[i], out);
     return out;
   }
-  function srgb(c) { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+  function srgb(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
   function luminance(rgb) { return 0.2126 * srgb(rgb[0]) + 0.7152 * srgb(rgb[1]) + 0.0722 * srgb(rgb[2]); }
   function contrast(a, b) { var L1 = luminance(a), L2 = luminance(b), hi = Math.max(L1, L2), lo = Math.min(L1, L2); return (hi + 0.05) / (lo + 0.05); }
   function saturation(rgb) {

@@ -27,10 +27,15 @@ Skip empty groups.
 Do this before opening any judgment group. It turns raw audit output into a clean finding list.
 
 - **Resolve `needs-visual`.** Any finding with `confidence: needs-visual` (text over a
-  gradient/image; CLS with no observer) is unconfirmed. Pixel-sample a screenshot crop
+  gradient/image or through opacity/filter/blend/mask/inset-shadow paint; CLS with no observer) is unconfirmed. Pixel-sample a screenshot crop
   for the true composited contrast, or re-inject `audit.js` *before* navigation so the
   CLS observer installs early. Never assert a number you did not measure; never ship it
   unresolved.
+- **Inspect opaque surfaces separately.** `uninspectedSurface` means the light-DOM pass
+  could not inspect an open shadow root, frame, canvas, object, or embed. Review that
+  live surface with the appropriate rendered, keyboard, and accessibility evidence.
+  Use `data-ui-audit-surface-exempt="<reason>"` only when equivalent evidence already
+  exists; an empty reason is not a resolution.
 - **Apply whitelist/baseline.** Drop findings matched by `whitelist`/`baseline` in
   `audit-config.json`. A returning baseline finding is not new noise.
 - **Dedupe to root cause.** Collapse the same defect across repeated instances of one
@@ -205,6 +210,9 @@ states are *meaningfully distinct* is judgment.
 
 ## Charts & metrics interpretability  *([hybrid])*
 
+- **[hybrid]** A canvas, embedded chart, or shadow-root visualization first appears as
+  `uninspectedSurface`; do not treat the surrounding checked DOM as chart coverage.
+  Inspect pixels, keyboard/touch access, and the text/table alternative separately.
 - **[hybrid]** Can the chart be read without context — title, units, axes/scale cues,
   legend meaning, series labels, time range? A pretty chart hiding units or range is a
   finding. `Risk`; `Fail` when it drives a primary decision.

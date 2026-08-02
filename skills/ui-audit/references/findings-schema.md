@@ -18,8 +18,8 @@
   "themeInitScripts": { "app-dark": "document.documentElement.dataset.theme='dark'" },
   "apiMockPattern": "**/api/**",
   "stateMocks": {
-    "empty": [{ "pattern": "**/api/items", "status": 200, "contentType": "application/json", "body": [] }],
-    "loading": [{ "pattern": "**/api/items", "hold": true }]
+    "empty": [{ "pattern": "**/api/items", "method": "GET", "minMatches": 1, "status": 200, "contentType": "application/json", "body": [] }],
+    "loading": [{ "pattern": "**/api/items", "method": "GET", "hold": true }]
   },
   "stateSetups": {
     "dialog-open": {
@@ -40,9 +40,11 @@
 }
 ```
 
-`stateMocks.<state>` must be an array. Every item has a `pattern` and exactly one of `body` or `hold: true`; `status` defaults to 200 and `contentType` to `application/json`. Non-string bodies are JSON encoded. Empty/error/loading fallback mocks use `apiMockPattern` when no explicit rule exists.
+`routes`, `viewports`, `themes`, `states`, and `scrollPositions` are required non-empty arrays after defaults and CLI overrides are merged. Routes, themes, and states contain non-empty strings; viewport dimensions and DPR are positive; `isMobile` is boolean; scroll positions are `top`, `mid`, or `bottom`. Built-in `light`/`dark` themes use media emulation. Every custom theme requires a non-empty `themeInitScripts.<theme>` script. Configuration errors exit 2 before Chrome launches.
 
-The state is verified only after at least one request is intercepted. A successful structured setup may independently prove a custom interaction state; if an explicit mock is also configured, its interception is still required.
+`stateMocks.<state>` must be a non-empty array when declared. Every item has a `pattern` and exactly one of `body` or `hold: true`; `method` defaults to `any`, `minMatches` defaults to `1`, `status` defaults to 200, and `contentType` defaults to `application/json`. Methods are case-normalized HTTP tokens; `minMatches` is an integer of at least 1. Non-string bodies are JSON encoded. Empty/error/loading fallback mocks use `apiMockPattern` when no explicit rule exists.
+
+Every explicit rule is verified independently after its URL pattern, request method, and minimum match count are satisfied. This applies to explicit mocks on `default` as well as non-default states. A successful structured setup may independently prove a custom interaction state only when no incomplete explicit mock contract remains.
 
 ## In-page report
 
@@ -55,6 +57,7 @@ The state is verified only after at least one request is intercepted. A successf
     "isMobile": true, "scrollY": 0, "ts": null
   },
   "coverage": {
+    "rulesExpected": ["effectiveContrast", "targetSizeMinimum"],
     "rulesRun": ["effectiveContrast", "targetSizeMinimum"],
     "rulesSkipped": [],
     "elementsScanned": 142,
@@ -70,7 +73,7 @@ The state is verified only after at least one request is intercepted. A successf
 }
 ```
 
-The first scroll position runs all rules. Later positions run only `phase: viewport` rules, currently the scroll-dependent sticky/occlusion checks. Whitelist and baseline suppression happen before per-rule and advisory caps.
+The first scroll position runs all rules. Later positions run only `phase: viewport` rules, currently the scroll-dependent sticky/occlusion checks. `rulesExpected` is the applicable rule manifest for that invocation. Every report must provide array-valued `rulesExpected`, `rulesRun`, and `rulesSkipped`; the expected manifest must be non-empty. The runner validates every invocation independently before aggregating it into a cell, so a rule reported at the top cannot mask its omission from a later viewport report. Whitelist and baseline suppression happen before per-rule and advisory caps.
 
 ## Signal shape
 
@@ -139,11 +142,31 @@ Only high-confidence measured signals appear here. `Polish` remains in the total
     "index": 0,
     "route": "/", "viewport": "desktop", "theme": "light", "state": "empty", "adaptation": "reflow-320",
     "themeDriver": "media", "stateDriver": "configured-mock", "interceptions": 1,
+    "stateMock": {
+      "configured": true, "explicit": true, "fallback": false,
+      "driver": "configured-mock", "status": "checked",
+      "rules": [{
+        "pattern": "**/api/items", "method": "GET", "minMatches": 1,
+        "matches": 1, "held": 0, "status": "checked"
+      }]
+    },
     "setupDriver": "none",
     "stateSetup": { "status": "not-configured", "actions": 0, "assertions": 0 },
     "keyboardProbe": { "status": "checked", "expected": 8, "visited": 8, "maxSteps": 120 },
     "hoverProbe": { "status": "not-applicable", "expected": 0, "checked": 0, "missing": 0 },
-    "rulesRun": ["effectiveContrast", "horizontalOverflow"],
+    "rulesExpected": ["effectiveContrast", "stickyOverlapContent"],
+    "rulesRun": ["effectiveContrast", "stickyOverlapContent"],
+    "ruleCoverage": [{
+      "scroll": "top", "phase": "all", "status": "checked",
+      "rulesExpected": ["effectiveContrast", "stickyOverlapContent"],
+      "rulesRun": ["effectiveContrast", "stickyOverlapContent"],
+      "rulesMissing": [], "rulesSkipped": []
+    }, {
+      "scroll": "bottom", "phase": "viewport", "status": "checked",
+      "rulesExpected": ["stickyOverlapContent"],
+      "rulesRun": ["stickyOverlapContent"],
+      "rulesMissing": [], "rulesSkipped": []
+    }],
     "suppressed": { "whitelist": 0, "baseline": 0, "perRuleCap": 0, "advisoryCap": 0, "byRule": {} },
     "counts": { "Fail": 0, "Risk": 0, "Polish": 0 },
     "advisoryTotals": { "required": 0, "optional": 0 },
@@ -157,10 +180,14 @@ Only high-confidence measured signals appear here. `Polish` remains in the total
 
 Cells are sorted by configuration index even when workers run concurrently. Fresh browser contexts isolate cookies, local storage, cache, and service workers.
 
+`ruleCoverage[]` preserves the manifest proof for each `window.__uiAudit()` invocation in configured scroll order. Each entry records `scroll`, `phase`, `rulesExpected`, `rulesRun`, `rulesMissing`, `rulesSkipped`, and `checked | error`; error entries also include `error`. Missing/non-array manifest fields, an empty expected manifest, skipped rules, or expected rules absent from that report's run list are errors. The cell-level `rulesExpected`, `rulesRun`, `rulesMissing`, and `rulesSkipped` fields remain aggregate compatibility evidence, not the completeness decision. Any error entry makes the cell an error even when the cell-level unions look complete.
+
+`interceptions` remains the schema-v2 aggregate match count for existing consumers. New consumers should use `stateMock.rules[]` to prove each declared rule. Each rule object retains `pattern`, normalized `method`, `minMatches`, observed `matches`, held-request count, and `checked | not-forced` status.
+
 Cell status:
 
-- `checked`: intended state and all required probes/rules were verified.
-- `not-forced`: a non-default state lacked interception/setup proof.
+- `checked`: intended state, every explicit mock rule, and all required probes/rules were verified.
+- `not-forced`: a state lacked setup proof or at least one explicit mock rule missed its method/count contract.
 - `error`: navigation, theme, mock, setup, rule, or trusted-probe failure.
 
 Any status other than `checked`, any un-baselined Fail, or any required advisory makes the runner exit 1. All three JSON documents are still written.
