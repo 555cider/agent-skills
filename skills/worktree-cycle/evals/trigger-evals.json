@@ -1,0 +1,106 @@
+[
+  {
+    "query": "워크트리 시작해줘",
+    "should_trigger": true
+  },
+  {
+    "query": "Start an isolated worktree for the auth refactor.",
+    "should_trigger": true
+  },
+  {
+    "query": "dev HEAD 에서 분기한 워크트리 하나 파줘",
+    "should_trigger": true
+  },
+  {
+    "query": "이 작업은 격리해서 하자 — 워크트리 만들어줘",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a worktree branched from the local integration branch, not from origin.",
+    "should_trigger": true
+  },
+  {
+    "query": "워크트리 정리해줘",
+    "should_trigger": true
+  },
+  {
+    "query": "작업 끝났어. dev 로 squash merge 하고 브랜치랑 워크트리 지워줘",
+    "should_trigger": true
+  },
+  {
+    "query": "Squash-merge the worktree branch into dev and clean up the branch and the worktree.",
+    "should_trigger": true
+  },
+  {
+    "query": "worktree-feat-login 머지하고 정리해줘",
+    "should_trigger": true
+  },
+  {
+    "query": "Fold the finished worktree back into the local integration branch.",
+    "should_trigger": true
+  },
+  {
+    "query": "Close out the worktree work and remove the branch afterwards.",
+    "should_trigger": true
+  },
+  {
+    "query": "이 기능 워크트리에서 작업하고 끝나면 dev 로 접어넣어줘",
+    "should_trigger": true
+  },
+  {
+    "query": "워크트리 base 가 origin 말고 로컬 dev HEAD 인지 확인하고 만들어줘",
+    "should_trigger": true
+  },
+  {
+    "query": "이 파일의 널 참조 버그를 고쳐줘",
+    "should_trigger": false
+  },
+  {
+    "query": "git log 보고 일일보고 작성해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "origin/dev 에 push 해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Rebase my feature branch onto main.",
+    "should_trigger": false
+  },
+  {
+    "query": "Show me the diff between HEAD and origin/main.",
+    "should_trigger": false
+  },
+  {
+    "query": "이 PR 리뷰해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "package.json 의존성 최신으로 업데이트해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Stash my current changes so I can switch branches.",
+    "should_trigger": false
+  },
+  {
+    "query": "git worktree 명령이 뭔지 개념만 설명해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "테스트 전부 돌려서 실패하는 것 알려줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Merge main into my current branch with a real merge commit, keeping every commit.",
+    "should_trigger": false
+  },
+  {
+    "query": "지금 체크아웃된 브랜치를 staging 으로 바꿔줘",
+    "should_trigger": false
+  },
+  {
+    "query": "커밋 메시지를 컨벤셔널 커밋 형식으로 고쳐서 amend 해줘",
+    "should_trigger": false
+  }
+]

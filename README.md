@@ -62,6 +62,15 @@ directories yourself.
   source locator; only high-confidence safe edits are applied, and completion
   requires target reacquisition plus observable assertions. See the
   [DOM Picker v2 guide](skills/dom-picker/README.md).
+- [`skills/worktree-cycle/`](skills/worktree-cycle/) — the git worktree
+  lifecycle as two guarded scripts: **start** branches from the **local**
+  integration branch HEAD (never the remote default) and asserts that base right
+  after creation, so stale-base collisions surface at creation instead of at
+  merge time; **finish** squash-merges back and removes the worktree and branch.
+  Every guard runs before anything is modified, a merge conflict restores the
+  main worktree untouched, untracked files the merge would overwrite are stashed
+  rather than deleted, and incomplete cleanup exits non-zero with the remedy that
+  matches the actual leftover. Never pushes.
 
 ## Install
 
