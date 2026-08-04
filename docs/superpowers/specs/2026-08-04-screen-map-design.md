@@ -31,7 +31,8 @@ actions back. The consumer is an agent, not a person; humans only review.
 
 An incrementally grown map mixes transitions recorded at different app versions
 and offers no way to tell which are still true. A snapshot carries one
-`app.commit`, so staleness is a single comparison. Re-crawling stays cheap
+`app.commit`, so staleness is derived from the application changes since that
+commit while ignoring only generated map artifacts. Re-crawling stays cheap
 because an existing map is reused as the crawl *plan*: stored actions replay, and
 the agent only adjudicates where reality diverged. That is regeneration with a
 hint, not accumulation.
@@ -142,12 +143,15 @@ node scripts/screen-map.mjs invalidate --transition t7 --reason '…'
 ```
 
 `route --to` is the agent's payload: an ordered action sequence, a pasteable
-Playwright snippet, and `confidence: fresh | stale`. The whole map never needs to
-enter context.
+Playwright snippet, and `confidence: fresh | stale | unknown`. The whole map never
+needs to enter context.
 
-`status` compares the target repository's `HEAD` against `map.app.commit`. When
-they differ, `route` marks results `stale` and the skill instructs the agent to
-discard a stale path the moment any step fails.
+`status` compares application and config changes between `map.app.commit`, the
+current `HEAD`, and the working tree. A later commit containing only generated
+`map.json`, `map.md`, or `storage-state.json` does not stale the observed app;
+application or config changes do. If the recorded commit is unavailable locally,
+the verdict is `unknown` rather than guessed. A stale route is discarded the
+moment any step fails.
 
 ## Out of scope for v1
 

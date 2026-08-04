@@ -2,7 +2,8 @@
 
 import {
   authTarget, classifyAction, countsTowardSettle, fingerprintSignature, normalizePath, pathFromEntrypoints,
-  renderMarkdown, renderMermaid, renderTiming, replayPathKey, routeTemplate, shortestSafePath, stateKind,
+  playwrightExpr, renderMarkdown, renderMermaid, renderTiming, replayPathKey, routeTemplate,
+  shortestSafePath, stateKind,
   storageSeedSource,
 } from '../scripts/model.mjs';
 
@@ -131,7 +132,7 @@ eq('safe lexicon recognizes 닫기',
 eq('deny list overrides everything',
   classOf({ kind: 'link', role: 'link', name: '홈', href: 'http://x/', external: false, key: 'link:link:홈' },
     { deny: ['link:link:홈'] }), 'destructive');
-eq('allow list overrides the destructive lexicon',
+eq('a user-authored allow entry reclassifies a lexicon false positive',
   classOf({ kind: 'click', role: 'button', name: '삭제', key: 'click:button:삭제' },
     { allow: ['click:button:삭제'] }), 'safe');
 eq('download links are never followed',
@@ -177,6 +178,27 @@ check('mutating transitions are never used for replay', shortestSafePath(map, 's
 eq('path from entrypoints reports its origin', pathFromEntrypoints(map, 's2').origin, 's0');
 check('unreachable target yields no path', pathFromEntrypoints(map, 's3') === null);
 eq('a state is zero steps from itself', shortestSafePath(map, 's1', 's1'), []);
+
+// ---------- executable locators ----------
+
+const firstOpenLink = playwrightExpr({
+  kind: 'link', role: 'link', name: 'Open', hrefRaw: '/items/1',
+  cssFallback: 'main li:nth-of-type(1) > a',
+});
+const secondOpenLink = playwrightExpr({
+  kind: 'link', role: 'link', name: 'Open', hrefRaw: '/items/2',
+  cssFallback: 'main li:nth-of-type(2) > a',
+});
+check('same-name links with different hrefs get different executable locators',
+  firstOpenLink !== secondOpenLink && firstOpenLink.includes('[href="/items/1"]')
+    && secondOpenLink.includes('[href="/items/2"]'),
+  JSON.stringify({ firstOpenLink, secondOpenLink }));
+eq('a position-ambiguous action admits that it needs the CSS fallback',
+  playwrightExpr({
+    kind: 'click', role: 'button', name: 'Open', ambiguous: true,
+    cssFallback: 'main > button:nth-of-type(2)',
+  }),
+  "page.locator('main > button:nth-of-type(2)')");
 
 // ---------- rendering ----------
 

@@ -43,7 +43,7 @@ record in the file belongs to the same app commit.
     "action": {
       "kind": "click",               // "click" | "link" | "submit"
       "role": "button", "name": "전체 9999",   // name as displayed
-      "href": null, "external": false,
+      "href": null, "hrefRaw": null, "external": false,
       "cssFallback": "aside > nav > section:nth-of-type(1) > button:nth-of-type(1)",
       "key": "click:button:전체",    // identity: numeric tokens dropped from the name
       "ambiguous": false,            // true when only position disambiguated it
@@ -68,6 +68,12 @@ record in the file belongs to the same app commit.
 ```
 
 ## Reading it correctly
+
+**Freshness follows the app tree, not the repository's commit counter.** Committing generated
+`map.json` or `map.md` after a crawl keeps the snapshot fresh because those files do not change the
+app that was observed. Changes to application files or `config.json` make it stale. If the recorded
+commit is no longer available locally after a rebase, force-push, or shallow clone, freshness is
+`unknown` rather than guessed.
 
 **`status` is the honesty field.** Only `verified` means the transition was performed and its target
 observed. `unexplored` means the edge exists in the UI and policy forbade pressing it. `sampled`
@@ -98,6 +104,10 @@ against. `title` is still taken from a heading, which is why `titleIsSample` exi
 **`key` is identity, `name` is display.** Purely numeric tokens are stripped from the key so a badge
 count that moves does not orphan the control. When `fallbackUsed` is true the control was found by
 CSS position rather than by name — that route is more brittle than the rest.
+
+`href` is the resolved absolute destination used for origin checks. `hrefRaw` preserves the anchor's
+literal attribute so same-name links can produce distinct Playwright locators without falling back
+to list position.
 
 **`frontier` is not decoration.** A non-empty frontier or a non-null `budgetHit` means the map is
 incomplete, and any claim of coverage has to say so.

@@ -34,6 +34,10 @@ echo "── pure model ──────────────────�
 run_suite unit node "$HERE/unit.mjs"
 
 echo
+echo "── browser driver ───────────────────────────────────────"
+run_suite assert-browser node "$HERE/assert-browser.mjs"
+
+echo
 echo "── safety gate ──────────────────────────────────────────"
 printf '%s' '{"baseUrl":"https://example.com"}' > "$WORK/off-limits.json"
 node "$CLI" crawl --config "$WORK/off-limits.json" > "$WORK/gate.json" 2> "$WORK/gate.err"
