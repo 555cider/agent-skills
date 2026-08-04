@@ -20,6 +20,16 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n        %s\n' "$1" "$2"; }
 
+# Write a config literal to a real file and echo its path. Process substitution
+# (`--config <(printf ...)`) yields /proc/<pid>/fd/N, which Node on Windows
+# resolves to C:\proc\... and cannot open, so every such run died with exit 2.
+CONFIG_SEQ=0
+config_file() {
+  CONFIG_SEQ=$((CONFIG_SEQ + 1))
+  printf '%s' "$1" >"$WORK/config-$CONFIG_SEQ.json"
+  printf '%s' "$WORK/config-$CONFIG_SEQ.json"
+}
+
 assert_exit() {
   if [ "$EC" = "$2" ]; then
     pass "$1 [exit $2]"
@@ -443,8 +453,12 @@ fi
 # ---- whitelist suppresses ALL matching instances (safeMatch regression) ----
 # adbanners.html has two low-contrast `.ad-banner` slots. The buggy safeMatch only compared the
 # first match of each selector, so it leaked every finding past the first whitelisted instance.
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/adbanners.html"],"adaptations":[]}') --out-dir "$WORK/wl-off" --no-screenshots >/dev/null 2>&1
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/adbanners.html"],"adaptations":[],"auditConfig":{"whitelist":[".ad-banner"]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/adbanners.html"],"adaptations":[]}')" --out-dir "$WORK/wl-off" --no-screenshots >/dev/null 2>&1
+# MSYS2_ARG_CONV_EXCL: Git Bash rewrites a bare "/route.html" argv into
+# "C:/Program Files/Git/route.html" before the runner sees it, which silently
+# audits nothing. Excluding the route prefix leaves $RUNNER conversion intact.
+MSYS2_ARG_CONV_EXCL='/adbanners.html' \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/adbanners.html"],"adaptations":[],"auditConfig":{"whitelist":[".ad-banner"]}}')" \
   --routes "/adbanners.html" --out-dir "$WORK/wl-on" --no-screenshots >/dev/null 2>&1
 if python3 - "$WORK/wl-off/findings.json" "$WORK/wl-on/findings.json" <<'PY'
 import json, sys
@@ -464,7 +478,7 @@ else
 fi
 
 # ---- optional advisory cap is fair across rules and records suppression ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/newcases.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":800,"height":600,"isMobile":false,"dpr":1}],"auditConfig":{"maxPolish":2}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/newcases.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":800,"height":600,"isMobile":false,"dpr":1}],"auditConfig":{"maxPolish":2}}')" \
   --out-dir "$WORK/advisory-cap" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/advisory-cap/advisories.json" "$WORK/advisory-cap/coverage.json" <<'PY'
 import json, sys
@@ -477,7 +491,7 @@ PY
 then pass "optional advisory cap is fair and observable"; else fail "optional advisory cap is fair and observable" "cap contract failed"; fi
 
 # ---- runner-generated keyboard findings honor whitelist and baseline ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"auditConfig":{"whitelist":["#covered-action"]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"auditConfig":{"whitelist":["#covered-action"]}}')" \
   --out-dir "$WORK/keyboard-wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/keyboard-wl/findings.json" <<'PY'
 import json, sys
@@ -486,7 +500,7 @@ assert not any(f.get("rule") == "focusObscured" for f in findings), findings
 PY
 then pass "keyboard findings honor whitelist"; else fail "keyboard findings honor whitelist" "focusObscured leaked"; fi
 
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"baseline":[{"rule":"focusObscured","selector":"button#covered-action"}]}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"baseline":[{"rule":"focusObscured","selector":"button#covered-action"}]}')" \
   --out-dir "$WORK/keyboard-base" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/keyboard-base/findings.json" <<'PY'
 import json, sys
@@ -496,7 +510,7 @@ PY
 then pass "keyboard findings honor baseline"; else fail "keyboard findings honor baseline" "focusObscured leaked"; fi
 
 # ---- runner-generated pointer findings honor whitelist and baseline ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/interaction-layout.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"auditConfig":{"whitelist":["#search-action","#sort-order"]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/interaction-layout.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"auditConfig":{"whitelist":["#search-action","#sort-order"]}}')" \
   --out-dir "$WORK/pointer-wl" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/pointer-wl/advisories.json" <<'PY'
 import json, sys
@@ -505,7 +519,7 @@ assert not any(f.get("rule") == "missingHoverFeedback" for f in advisories), adv
 PY
 then pass "pointer findings honor whitelist"; else fail "pointer findings honor whitelist" "missingHoverFeedback leaked"; fi
 
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/interaction-layout.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"baseline":[{"rule":"missingHoverFeedback","selector":"#search-action"},{"rule":"missingHoverFeedback","selector":"#sort-order"}]}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/interaction-layout.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"baseline":[{"rule":"missingHoverFeedback","selector":"#search-action"},{"rule":"missingHoverFeedback","selector":"#sort-order"}]}')" \
   --out-dir "$WORK/pointer-base" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/pointer-base/advisories.json" <<'PY'
 import json, sys
@@ -515,7 +529,7 @@ PY
 then pass "pointer findings honor baseline"; else fail "pointer findings honor baseline" "missingHoverFeedback leaked"; fi
 
 # ---- bounded traversal and setup failures remain honest coverage errors ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"keyboardProbe":{"maxSteps":1,"settleMs":0}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/focus-obscured.html"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"keyboardProbe":{"maxSteps":1,"settleMs":0}}')" \
   --out-dir "$WORK/keyboard-cap" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "keyboard traversal cap blocks completion" 1
@@ -526,7 +540,7 @@ assert cell["status"] == "error" and cell["keyboardProbe"]["status"] == "incompl
 PY
 then pass "keyboard cap is recorded in coverage"; else fail "keyboard cap is recorded in coverage" "missing incomplete proof"; fi
 
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/hover-valid.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"hoverProbe":{"maxTargets":1,"settleMs":0,"maxWaitMs":0,"denseGapPx":12}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/hover-valid.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"hoverProbe":{"maxTargets":1,"settleMs":0,"maxWaitMs":0,"denseGapPx":12}}')" \
   --out-dir "$WORK/pointer-cap" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "pointer target cap blocks completion" 1
@@ -538,7 +552,7 @@ assert cell["hoverProbe"]["checked"] == 1 and cell["hoverProbe"]["expected"] == 
 PY
 then pass "pointer cap is recorded in coverage"; else fail "pointer cap is recorded in coverage" "missing incomplete proof"; fi
 
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-setup-modal.html"],"themes":["light"],"states":["dialog-open"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateSetups":{"dialog-open":{"actions":[{"type":"click","selector":"#missing"}],"expect":[{"selector":"[role=dialog]","state":"visible"}]}}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/state-setup-modal.html"],"themes":["light"],"states":["dialog-open"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateSetups":{"dialog-open":{"actions":[{"type":"click","selector":"#missing"}],"expect":[{"selector":"[role=dialog]","state":"visible"}]}}}')" \
   --out-dir "$WORK/setup-error" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "invalid state setup blocks completion" 1
@@ -550,7 +564,7 @@ PY
 then pass "state setup failure is recorded"; else fail "state setup failure is recorded" "missing setup error"; fi
 
 # ---- every cell gets an isolated browser context ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/context-isolation.html"],"themes":["light"],"states":["one","two"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateSetups":{"one":{"expect":[{"selector":".fresh","state":"visible"}]},"two":{"expect":[{"selector":".fresh","state":"visible"}]}}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/context-isolation.html"],"themes":["light"],"states":["one","two"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateSetups":{"one":{"expect":[{"selector":".fresh","state":"visible"}]},"two":{"expect":[{"selector":".fresh","state":"visible"}]}}}')" \
   --out-dir "$WORK/context-isolation" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/context-isolation/coverage.json" <<'PY'
 import json, sys
@@ -577,7 +591,8 @@ PY
 then pass "workers=1 and workers=2 produce deterministic outputs"; else fail "workers=1 and workers=2 produce deterministic outputs" "output mismatch"; fi
 
 # ---- non-default data states are recorded as not-forced, not silently 'checked' ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"states":["default","empty"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":3}]}') \
+MSYS2_ARG_CONV_EXCL='/clean.html' \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"states":["default","empty"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":3}]}')" \
   --routes "/clean.html" --out-dir "$WORK/nf" --no-screenshots >"$WORK/nf.out" 2>&1
 EC=$?
 if python3 - "$WORK/nf/coverage.json" <<'PY'
@@ -596,7 +611,7 @@ fi
 assert_exit "not-forced cell blocks completion" 1
 
 # ---- explicit CDP Fetch state mock records configured interception proof ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-mock.html"],"states":["stale"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"stale":[{"pattern":"**/api/items","status":200,"contentType":"application/json","body":[]}]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/state-mock.html"],"states":["stale"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"stale":[{"pattern":"**/api/items","status":200,"contentType":"application/json","body":[]}]}}')" \
   --out-dir "$WORK/configured-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 if python3 - "$WORK/configured-mock/coverage.json" <<'PY'
 import json, sys
@@ -618,7 +633,7 @@ PY
 then pass "configured CDP state mock is proven by interception"; else fail "configured CDP state mock is proven by interception" "missing configured proof"; fi
 
 # ---- every explicit mock rule must independently prove its declared contract ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-mock.html"],"states":["partial"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"partial":[{"pattern":"**/api/items","body":[]},{"pattern":"**/api/summary","body":{}}]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/state-mock.html"],"states":["partial"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"partial":[{"pattern":"**/api/items","body":[]},{"pattern":"**/api/summary","body":{}}]}}')" \
   --out-dir "$WORK/partial-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "partially matched explicit state mock blocks completion" 1
@@ -634,7 +649,7 @@ assert cell["stateMock"]["status"] == "not-forced", cell
 PY
 then pass "partial state mock coverage identifies the unmatched rule"; else fail "partial state mock coverage identifies the unmatched rule" "$(cat "$WORK/partial-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
 
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-mock.html"],"states":["method"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"method":[{"pattern":"**/api/items","method":"POST","body":[]}]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/state-mock.html"],"states":["method"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"method":[{"pattern":"**/api/items","method":"POST","body":[]}]}}')" \
   --out-dir "$WORK/method-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "state mock method mismatch blocks completion" 1
@@ -647,7 +662,7 @@ assert rule["method"] == "POST" and rule["matches"] == 0 and rule["status"] == "
 PY
 then pass "state mock proof preserves method-specific mismatch"; else fail "state mock proof preserves method-specific mismatch" "$(cat "$WORK/method-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
 
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/state-mock.html"],"states":["density"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"density":[{"pattern":"**/api/items","minMatches":2,"body":[]}]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/state-mock.html"],"states":["density"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"density":[{"pattern":"**/api/items","minMatches":2,"body":[]}]}}')" \
   --out-dir "$WORK/min-matches-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "state mock below minMatches blocks completion" 1
@@ -661,7 +676,7 @@ PY
 then pass "state mock proof enforces minMatches"; else fail "state mock proof enforces minMatches" "$(cat "$WORK/min-matches-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
 
 # The default state is only implicit when no explicit mock contract was declared.
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"routes":["/clean.html"],"states":["default"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"default":[{"pattern":"**/api/missing","body":[]}]}}') \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/clean.html"],"states":["default"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"stateMocks":{"default":[{"pattern":"**/api/missing","body":[]}]}}')" \
   --out-dir "$WORK/default-explicit-mock" --no-screenshots >"$WORK/out" 2>"$WORK/err"
 EC=$?
 assert_exit "unmatched explicit default-state mock blocks completion" 1
@@ -674,7 +689,8 @@ PY
 then pass "explicit default-state mock requires proof"; else fail "explicit default-state mock requires proof" "$(cat "$WORK/default-explicit-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
 
 # ---- rulesSkipped is unverified coverage, not a green audit ----
-node "$RUNNER" "http://127.0.0.1:$PORT" --config <(printf '{"auditConfig":{"polish":null},"themes":["dark"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"states":["default"],"scrollPositions":["top"]}') \
+MSYS2_ARG_CONV_EXCL='/clean.html' \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"auditConfig":{"polish":null},"themes":["dark"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"states":["default"],"scrollPositions":["top"]}')" \
   --routes "/clean.html" --out-dir "$WORK/skipped" --no-screenshots >"$WORK/skipped.out" 2>&1
 EC=$?
 if python3 - "$WORK/skipped/coverage.json" <<'PY'
