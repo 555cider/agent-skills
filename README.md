@@ -71,6 +71,19 @@ directories yourself.
   main worktree untouched, untracked files the merge would overwrite are stashed
   rather than deleted, and incomplete cleanup exits non-zero with the remedy that
   matches the actual leftover. Never pushes.
+- [`skills/screen-map/`](skills/screen-map/README.md) — an agent-readable map of a web
+  app: which screens exist and the concrete action that moves between any two. One
+  crawl writes a **snapshot** (`.screen-map/map.json`) pinned to the app commit; maps
+  are never merged, so old and new observations cannot tangle. A node is a route
+  template plus a deliberately lossy DOM signature, so `/items/1` and `/items/2`
+  collapse into one screen while an open modal or dropdown stays its own. It is
+  not a sitemap: it records what you click to move between screens, not a URL
+  hierarchy. The action policy is **positive recognition** — an action runs only
+  when a rule proves it safe,
+  unrecognized ones need `--allow-mutating`, and destructive ones are never
+  executed under any flag, though their edges are still recorded. Later sessions
+  ask `route --to '/orders/:id'` and get an executable action sequence that was
+  walked end to end, plus a freshness verdict against the current commit.
 
 ## Install
 
