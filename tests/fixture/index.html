@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>홈</title></head>
+<body>
+  <header><nav aria-label="주요"><a href="/">홈</a></nav></header>
+  <main>
+    <h1>홈</h1>
+    <ul>
+      <li><a href="/items">상품 목록 {{VISITS}}</a></li>
+      <li><a href="/new">새 상품</a></li>
+      <li><a href="https://example.invalid/docs" target="_blank" rel="noreferrer">외부 문서</a></li>
+    </ul>
+    <button id="usermenu" type="button" aria-haspopup="menu">사용자 메뉴</button>
+  </main>
+
+  <!-- Portal-style popup: opening it marks the page aria-hidden, the way component
+       libraries do. Without overlay detection the whole screen reads as empty. -->
+  <div id="menu" role="menu" aria-label="사용자 메뉴" hidden>
+    <a role="menuitem" href="/cart">장바구니</a>
+    <button role="menuitem" type="button" id="menuclose">닫기</button>
+  </div>
+
+  <script>
+    const main = document.querySelector('main');
+    document.getElementById('usermenu').addEventListener('click', () => {
+      document.getElementById('menu').hidden = false;
+      main.setAttribute('aria-hidden', 'true');
+    });
+    document.getElementById('menuclose').addEventListener('click', () => {
+      document.getElementById('menu').hidden = true;
+      main.removeAttribute('aria-hidden');
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+[
+  {
+    "query": "Open the local app and star the newest announcement — I don't know which screen that lives on.",
+    "should_trigger": true
+  },
+  {
+    "query": "Map this web app so the next session can navigate it without exploring from scratch.",
+    "should_trigger": true
+  },
+  {
+    "query": "What is the click path from the dashboard to the order detail screen?",
+    "should_trigger": true
+  },
+  {
+    "query": "Crawl localhost:5101 and commit the resulting screen map.",
+    "should_trigger": true
+  },
+  {
+    "query": "Before you automate this flow, work out which screens exist in the dev app and how they connect.",
+    "should_trigger": true
+  },
+  {
+    "query": "Is the stored route to the settings screen still valid after today's routing refactor?",
+    "should_trigger": true
+  },
+  {
+    "query": "Use screen-map to get me to the mailbox trash folder.",
+    "should_trigger": true
+  },
+  {
+    "query": "I need an executable action sequence that reaches the checkout screen on our dev server.",
+    "should_trigger": true
+  },
+  {
+    "query": "Which destructive buttons exist in the local app that the crawl never pressed?",
+    "should_trigger": true
+  },
+  {
+    "query": "Regenerate the app map, the routes changed last week.",
+    "should_trigger": true
+  },
+  {
+    "query": "Which screens of the local app have no verified path from the entry point?",
+    "should_trigger": true
+  },
+  {
+    "query": "Record how to get from login to the report page so we stop rediscovering it every session.",
+    "should_trigger": true
+  },
+  {
+    "query": "This button's padding is off by a few pixels — fix it.",
+    "should_trigger": false
+  },
+  {
+    "query": "Check the dashboard for contrast and overflow problems before I ship it.",
+    "should_trigger": false
+  },
+  {
+    "query": "Scrape product prices from a competitor's public website.",
+    "should_trigger": false
+  },
+  {
+    "query": "Write a unit test for the invoice total calculation.",
+    "should_trigger": false
+  },
+  {
+    "query": "Why is the Spring Boot application failing to start?",
+    "should_trigger": false
+  },
+  {
+    "query": "Rename this React component and update every import of it.",
+    "should_trigger": false
+  },
+  {
+    "query": "Summarize the last twenty commits into a daily report.",
+    "should_trigger": false
+  },
+  {
+    "query": "Add a database index on the announcements table.",
+    "should_trigger": false
+  },
+  {
+    "query": "Tab through the open modal and confirm keyboard focus stays inside it.",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain what a strongly connected component is in graph theory.",
+    "should_trigger": false
+  },
+  {
+    "query": "Deploy the frontend build to staging.",
+    "should_trigger": false
+  },
+  {
+    "query": "Reformat this JSON config file and sort its keys.",
+    "should_trigger": false
+  },
+  {
+    "query": "Generate a sitemap.xml so search engines can index the marketing site.",
+    "should_trigger": false
+  },
+  {
+    "query": "Draw an information architecture sitemap of our page hierarchy for the redesign deck.",
+    "should_trigger": false
+  },
+  {
+    "query": "List every URL the router declares so I can paste them into a spreadsheet.",
+    "should_trigger": false
+  }
+]

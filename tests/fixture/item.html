@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>상품 상세</title></head>
+<body>
+  <header><nav aria-label="주요"><a href="/">홈</a></nav></header>
+  <main>
+    <h1>상품 상세</h1>
+    <nav aria-label="위치"><a href="/items">상품 목록</a></nav>
+    <p>식별자: <span id="id"></span></p>
+    <a href="/cart">장바구니</a>
+    <button id="del" type="button">삭제</button>
+  </main>
+  <script>
+    document.getElementById('id').textContent = location.pathname.split('/').pop();
+    document.getElementById('del').addEventListener('click', () => {
+      fetch('/__click?name=delete', { method: 'POST' });
+      location.href = '/items';
+    });
+  </script>
+</body>
+</html>
