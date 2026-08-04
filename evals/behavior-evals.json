@@ -1,0 +1,89 @@
+{
+  "skill_name": "worktree-cycle",
+  "evals": [
+    {
+      "id": "start-branches-from-local-integration-head",
+      "prompt": "결제 재시도 작업용 워크트리 만들어줘. 통합 브랜치는 dev 야.",
+      "expected_output": "Runs scripts/start-worktree.sh with the name and --base dev, then reports the created path, the branch worktree-<name>, and that the new worktree HEAD matches the local dev HEAD.",
+      "files": [],
+      "assertions": [
+        "Uses scripts/start-worktree.sh instead of hand-rolling git worktree add.",
+        "Branches from the local dev branch HEAD, never from origin/dev or the remote default.",
+        "Reports the asserted base SHA rather than assuming the worktree landed on the right commit.",
+        "Tells the user how to enter the worktree and which finish command closes it."
+      ]
+    },
+    {
+      "id": "start-refuses-remote-fallback",
+      "prompt": "Create a worktree based on dev. There is no local dev branch in this clone yet.",
+      "expected_output": "The start script stops because refs/heads/dev is missing, and the response explains that falling back to origin/dev would produce a stale base; it offers to create the local branch first instead.",
+      "files": [],
+      "assertions": [
+        "Does not work around the failure by branching from origin/dev or the remote default.",
+        "Explains that a remote-based branch is the stale-base accident the skill prevents.",
+        "Proposes creating the local integration branch as the next step.",
+        "Reports that no worktree was created."
+      ]
+    },
+    {
+      "id": "finish-requires-returning-to-the-main-worktree",
+      "prompt": "다 됐어. 지금 워크트리 안이야 — 여기서 바로 squash merge 하고 정리해줘.",
+      "expected_output": "Returns to the main worktree before running scripts/finish-worktree.sh, because the finish guard refuses to delete the worktree the caller is standing in.",
+      "files": [],
+      "assertions": [
+        "Moves the working directory to the main worktree before invoking finish.",
+        "Explains that removing the current worktree would fail on Windows and strand the shell on POSIX.",
+        "Runs finish with -b <branch> and a Conventional Commits message.",
+        "Does not attempt to delete the worktree directory manually."
+      ]
+    },
+    {
+      "id": "finish-blocked-by-uncommitted-work",
+      "prompt": "worktree-fix-login 정리해줘. (워크트리에 커밋 안 한 변경이 남아 있는 상태)",
+      "expected_output": "The finish guard reports the uncommitted changes in the worktree and stops without merging; the response asks whether to commit them first rather than discarding or force-merging.",
+      "files": [],
+      "assertions": [
+        "Reports that nothing was merged, removed, or deleted.",
+        "Names the uncommitted worktree changes as the reason.",
+        "Does not pass a force flag or reset the worktree to get past the guard.",
+        "Offers committing the pending work as the next step."
+      ]
+    },
+    {
+      "id": "finish-cleanup-failure-is-not-success",
+      "prompt": "Finish the worktree. Its node_modules is a junction, so removal may fail.",
+      "expected_output": "Reports the squash commit as landed AND the cleanup as incomplete, with the leftover worktree and branch named, because the finish script exits non-zero in that case.",
+      "files": [],
+      "assertions": [
+        "Does not report the run as fully successful when finish exits non-zero.",
+        "States that the squash commit is already on the integration branch, so finish must not be re-run.",
+        "Relays the manual cleanup steps: unlink the junction, then worktree remove/prune, then branch -D.",
+        "Warns against rm -rf or Remove-Item -Recurse through the junction."
+      ]
+    },
+    {
+      "id": "untracked-collision-is-stashed-not-misdiagnosed",
+      "prompt": "메인트리에 초안으로 만들어 둔 파일들이 있는데, 같은 경로를 워크트리에서 커밋했어. 이제 정리해줘.",
+      "expected_output": "Finish detects that the incoming paths already exist untracked in the main worktree, stashes exactly those files, completes the squash merge, and reports the stash it left behind.",
+      "files": [],
+      "assertions": [
+        "Names the untracked collision as the cause, not a stale base or a content conflict.",
+        "Does not delete or hand-move the untracked drafts to get the merge through.",
+        "Reports that the stash was kept rather than popped, because the merge supersedes those drafts.",
+        "Passes on the stash show / stash drop commands so the pre-merge version stays recoverable."
+      ]
+    },
+    {
+      "id": "never-pushes-after-merging",
+      "prompt": "워크트리 정리하고 배포까지 해줘.",
+      "expected_output": "Squash-merges and cleans up locally, then stops and hands the push command to the user instead of running it.",
+      "files": [],
+      "assertions": [
+        "Does not run git push as part of the finish flow.",
+        "Explains that publishing the integration branch is a separate human step.",
+        "Shows the exact push command for the user to run.",
+        "Confirms the local merge result before handing off."
+      ]
+    }
+  ]
+}
