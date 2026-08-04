@@ -145,13 +145,18 @@ export class Page {
     this.targetId = targetId;
     this.browserContextId = browserContextId;
     this.dialogs = [];
+    this.blockedNavigations = [];
     this.cleanups = [];
-    this.inflight = 0;
+    this.inflightRequests = new Set();
     this.completions = 0;
     this.idleSince = Date.now();
   }
 
-  static async open(cdp, { viewport = { width: 1280, height: 900 }, storageSeed = null } = {}) {
+  get inflight() { return this.inflightRequests.size; }
+
+  static async open(cdp, {
+    viewport = { width: 1280, height: 900 }, storageSeed = null, allowedOrigin = null,
+  } = {}) {
     const { browserContextId } = await cdp.send('Target.createBrowserContext');
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId });
     const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
@@ -174,6 +179,29 @@ export class Page {
 
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: HARVEST_SOURCE }, sessionId);
 
+    if (allowedOrigin) {
+      const { frameTree } = await cdp.send('Page.getFrameTree', {}, sessionId);
+      const mainFrameId = frameTree.frame.id;
+      await cdp.send('Fetch.enable', {
+        patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }],
+      }, sessionId);
+      page.cleanups.push(cdp.listen('Fetch.requestPaused', sessionId, params => {
+        let blocked = false;
+        if (params.frameId === mainFrameId) {
+          try { blocked = new URL(params.request.url).origin !== allowedOrigin; }
+          catch { blocked = true; }
+        }
+        if (blocked) {
+          page.blockedNavigations.push({ url: params.request.url, reason: 'external-origin' });
+          cdp.send('Fetch.failRequest', {
+            requestId: params.requestId, errorReason: 'BlockedByClient',
+          }, sessionId).catch(() => {});
+          return;
+        }
+        cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sessionId).catch(() => {});
+      }));
+    }
+
     // Fingerprint stability alone marks a skeleton screen as settled: the DOM holds
     // still for a few hundred ms while the data request is in flight, and the crawler
     // records the loading state as a screen of its own. Track in-flight requests so
@@ -184,20 +212,18 @@ export class Page {
     // counting everything meant `inflight` never returned to zero at all, so every
     // settle ran to its timeout and the crawl paid seconds per action to re-learn what
     // it already knew within one.
-    const counted = new Set();
-    page.cleanups.push(cdp.listen('Network.requestWillBeSent', sessionId, params => {
+    const started = params => {
       // A redirect re-fires for the same id; counting it twice leaks the counter up.
-      if (counted.has(params.requestId)) return;
+      if (page.inflightRequests.has(params.requestId)) return;
       if (!countsTowardSettle(params.type)) return;
-      counted.add(params.requestId);
-      page.inflight += 1;
-    }));
+      page.inflightRequests.add(params.requestId);
+    };
     const finished = params => {
-      if (!counted.delete(params.requestId)) return;
-      page.inflight = Math.max(0, page.inflight - 1);
+      if (!page.inflightRequests.delete(params.requestId)) return;
       page.completions += 1;
       if (page.inflight === 0) page.idleSince = Date.now();
     };
+    page.cleanups.push(cdp.listen('Network.requestWillBeSent', sessionId, started));
     page.cleanups.push(cdp.listen('Network.loadingFinished', sessionId, finished));
     page.cleanups.push(cdp.listen('Network.loadingFailed', sessionId, finished));
 
@@ -315,7 +341,7 @@ export class Page {
       { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 }, this.sessionId);
     await this.cdp.send('Input.dispatchMouseEvent',
       { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 }, this.sessionId);
-    return { ok: true };
+    return { ok: true, via: target.via };
   }
 
   async fill(selector, value) {

@@ -206,8 +206,9 @@ function matchesAny(name, patterns) {
 /**
  * The guarantee is one-directional: an action runs by default only when it is
  * *positively recognized* as safe. Everything unrecognized falls to
- * `unknownActionClass` (default `mutating`), which needs --allow-mutating, and
- * anything matching the destructive lexicon is never executed at all.
+ * `unknownActionClass` (default `mutating`), which needs --allow-mutating. An
+ * exact user-authored allow entry reclassifies a heuristic false positive;
+ * anything that remains destructive is never executed.
  */
 export function classifyAction(action = {}, policy = {}) {
   const destructive = policy.destructivePatterns || DEFAULT_DESTRUCTIVE_PATTERNS;
@@ -316,8 +317,16 @@ export function pathFromEntrypoints(map, toStateId, fromStateId = null) {
 export function playwrightExpr(action = {}) {
   const name = action.name ? String(action.name) : '';
   const quoted = text => "'" + text.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+  if (action.ambiguous && action.cssFallback) {
+    return `page.locator(${quoted(action.cssFallback)})`;
+  }
   if (name && action.role) {
-    return `page.getByRole(${quoted(action.role)}, { name: ${quoted(name)} })`;
+    const semantic = `page.getByRole(${quoted(action.role)}, { name: ${quoted(name)} })`;
+    if (action.kind === 'link' && action.hrefRaw) {
+      const hrefSelector = `a[href=${JSON.stringify(String(action.hrefRaw))}]`;
+      return `${semantic}.and(page.locator(${quoted(hrefSelector)}))`;
+    }
+    return semantic;
   }
   if (action.cssFallback) return `page.locator(${quoted(action.cssFallback)})`;
   return `page.locator(${quoted(action.selector || 'body')})`;

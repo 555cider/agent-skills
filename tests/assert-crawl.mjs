@@ -78,6 +78,14 @@ check('the external link is never followed',
   external?.status === 'blocked' && external?.blockedReason === 'external-origin',
   JSON.stringify({ status: external?.status, reason: external?.blockedReason }));
 
+const redirectedExternal = transitionsNamed('외부 리다이렉트')[0];
+check('a same-origin link that redirects away is recorded', !!redirectedExternal);
+check('an external redirect is blocked before it becomes a transition target',
+  redirectedExternal?.status === 'blocked' && redirectedExternal?.blockedReason === 'external-origin',
+  JSON.stringify({ status: redirectedExternal?.status, reason: redirectedExternal?.blockedReason }));
+check('the blocked external origin receives no document request', clicks.external === 0,
+  'external server counted ' + clicks.external + ' requests');
+
 // ---------- modal scoping ----------
 
 const dialogState = byRoute('/items').find(state => state.kind === 'overlay');
@@ -123,6 +131,10 @@ check('every verified transition names its target',
   map.transitions.filter(transition => transition.status === 'verified').every(transition => !!transition.to));
 check('every transition target exists',
   map.transitions.filter(transition => transition.to).every(transition => !!stateOf(transition.to)));
+check('every transition records whether CSS fallback was used',
+  map.transitions.every(transition => typeof transition.action.fallbackUsed === 'boolean'),
+  JSON.stringify(map.transitions.filter(transition => typeof transition.action.fallbackUsed !== 'boolean')
+    .map(transition => transition.id)));
 check('the cycle between list and detail is captured',
   map.transitions.some(transition => stateOf(transition.from)?.route === '/items/:id' && stateOf(transition.to)?.route === '/items'));
 check('the crawl terminated inside its budget',

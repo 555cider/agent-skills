@@ -23,9 +23,10 @@ Use the user's language in reports.
 - **Never crawl a host outside `allowHosts`.** The default is `localhost` and `127.0.0.1`. Widening
   it is the user's decision for a disposable environment, never yours. Staging and production are
   not disposable.
-- **An action runs only when it is positively recognized as safe.** Anything unrecognized needs
-  `--allow-mutating`; anything matching the destructive lexicon is never executed at all, under any
-  flag. See `references/action-policy.md`.
+- **Action classification fails closed.** Anything unrecognized needs `--allow-mutating`, and an
+  action that remains classified `destructive` never runs under any flag. A pre-existing exact
+  `actionPolicy.allow` entry is the user's explicit escape hatch for a false positive; never add one
+  on the user's behalf. See `references/action-policy.md`.
 - **Never present a stale route as fact.** When `status` says stale, say so, and tell the user the
   route is discarded the moment a step fails.
 - **Never merge maps.** Only `crawl` adds states and transitions. During use, `invalidate` may
@@ -109,15 +110,19 @@ route without the leading slash (`--to settings`) or set `MSYS_NO_PATHCONV=1`.
    remainder at all. Reach for `selector` when a login lives behind a collapsed `<details>` or under
    a dim backdrop; prefer `role` + `name` otherwise, since it survives markup churn.
 
-3. Crawl:
+3. Add `.screen-map/storage-state.json` to `.gitignore`, then commit `config.json`, `.gitignore`,
+   and the app state that will be crawled. Start the crawl from that clean commit: config is part of
+   the snapshot, while `storage-state.json` holds a live session and must never be committed.
+
+4. Crawl:
 
    ```bash
    node scripts/screen-map.mjs crawl --config .screen-map/config.json
    node scripts/screen-map.mjs crawl --config .screen-map/config.json --allow-mutating   # opt-in
    ```
 
-4. Read `map.md`, confirm the screen names make sense, and commit `map.json`, `map.md`, and
-   `config.json`. Add `.screen-map/storage-state.json` to `.gitignore` — it holds a live session.
+5. Read `map.md`, confirm the screen names make sense, and commit `map.json` and `map.md`. A commit
+   containing only those generated artifacts remains fresh; later app or config changes make it stale.
 
 Crawling reaches every screen by replaying an already-verified safe click path from an entrypoint,
 so every route the map hands out has been walked end to end. `--no-replay-verify` drops that

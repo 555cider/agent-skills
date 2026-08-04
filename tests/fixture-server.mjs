@@ -14,10 +14,11 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, 'fixture');
 
-const counters = { delete: 0, submit: 0 };
+const counters = { delete: 0, submit: 0, external: 0 };
 // Badge counts drift between visits in every real app. The home page renders one so
 // the suite proves an action key survives its own label changing.
 let visits = 0;
+let externalPort = null;
 
 function send(res, status, body, type = 'text/html; charset=utf-8') {
   res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
@@ -45,6 +46,10 @@ const server = createServer((req, res) => {
     res.writeHead(303, { location: '/items' });
     return res.end();
   }
+  if (req.method === 'GET' && path === '/external-redirect') {
+    res.writeHead(302, { location: `http://127.0.0.1:${externalPort}/landed` });
+    return res.end();
+  }
 
   if (req.method !== 'GET') return send(res, 405, 'method not allowed');
 
@@ -60,9 +65,17 @@ const server = createServer((req, res) => {
   return send(res, 404, '<h1>없는 화면</h1>');
 });
 
+const externalServer = createServer((_req, res) => {
+  counters.external += 1;
+  return send(res, 200, '<main><h1>허용되지 않은 출처</h1></main>');
+});
+
 const portFileIndex = process.argv.indexOf('--port-file');
-server.listen(0, '127.0.0.1', () => {
-  const { port } = server.address();
-  if (portFileIndex >= 0) writeFileSync(process.argv[portFileIndex + 1], String(port));
-  process.stdout.write(`PORT=${port}\n`);
+externalServer.listen(0, '127.0.0.1', () => {
+  externalPort = externalServer.address().port;
+  server.listen(0, '127.0.0.1', () => {
+    const { port } = server.address();
+    if (portFileIndex >= 0) writeFileSync(process.argv[portFileIndex + 1], String(port));
+    process.stdout.write(`PORT=${port}\n`);
+  });
 });

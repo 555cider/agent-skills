@@ -1,7 +1,7 @@
 /** End-to-end checks of the query surface against a crawled fixture map. */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,6 +51,13 @@ check('route ships a pasteable Playwright snippet',
   typeof route.json?.playwright === 'string' && route.json.playwright.includes('page.goto('));
 check('a fresh map reports fresh confidence', route.json?.confidence === 'fresh', JSON.stringify(route.json?.confidence));
 
+const detailRoute = cli('route', '--to', '/items/:id');
+const duplicateNameStep = (detailRoute.json?.steps || []).find(step => step.name === '상품 보기');
+check('same-name links keep their href-qualified Playwright locator through crawl and query',
+  duplicateNameStep?.playwright?.includes('.and(page.locator(')
+    && duplicateNameStep.playwright.includes('[href="/items/'),
+  JSON.stringify(duplicateNameStep));
+
 const missing = cli('route', '--to', '/does-not-exist');
 check('an unknown route answers "no" rather than erroring', missing.code === 1, 'exit ' + missing.code);
 check('an unknown route lists what is known', Array.isArray(missing.json?.known) && missing.json.known.includes('/items'));
@@ -84,6 +91,7 @@ check('report writes a markdown summary', report.code === 0 && existsSync(report
 const markdown = existsSync(reportPath) ? readFileSync(reportPath, 'utf8') : '';
 check('the summary names the screens', markdown.includes('/items/:id'));
 check('the summary calls out what was not executed', markdown.includes('## Not executed') && markdown.includes('삭제'));
+if (existsSync(reportPath)) unlinkSync(reportPath);
 
 // ---------- invalidate downgrades and nothing else ----------
 
@@ -103,7 +111,15 @@ check('invalidate never adds states or transitions',
 const fresh = cli('status');
 check('status is fresh right after a crawl', fresh.json?.status === 'fresh', JSON.stringify(fresh.json));
 
-git('commit', '--allow-empty', '-q', '-m', 'app moved on');
+git('add', '.screen-map/map.json', '.screen-map/map.md');
+git('commit', '-q', '-m', 'record screen map');
+const committedMap = cli('status');
+check('committing only generated map artifacts keeps the snapshot fresh',
+  committedMap.json?.status === 'fresh', JSON.stringify(committedMap.json));
+
+appendFileSync(join(appDir, 'README.md'), 'source changed\n');
+git('add', 'README.md');
+git('commit', '-q', '-m', 'app moved on');
 const stale = cli('status');
 check('status turns stale when the app commit moves', stale.json?.status === 'stale', JSON.stringify(stale.json));
 check('status explains why it is stale', typeof stale.json?.detail === 'string' && stale.json.detail.includes('moved'));
@@ -112,6 +128,13 @@ const staleRoute = cli('route', '--to', '/items');
 check('a stale map still answers, but flags its confidence', staleRoute.json?.confidence === 'stale');
 check('a stale route tells the agent what to do on failure',
   (staleRoute.json?.notes || []).some(note => note.includes('discard')));
+
+const unavailable = JSON.parse(readFileSync(mapPath, 'utf8'));
+unavailable.app.commit = '0000000000000000000000000000000000000000';
+writeFileSync(mapPath, JSON.stringify(unavailable, null, 2));
+const unknown = cli('status');
+check('status is unknown when the recorded commit is unavailable',
+  unknown.json?.status === 'unknown', JSON.stringify(unknown.json));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

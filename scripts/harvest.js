@@ -242,6 +242,7 @@
     );
 
     let href = null;
+    let hrefRaw = null;
     let external = false;
     if (el.tagName.toLowerCase() === 'a' && el.hasAttribute('href')) {
       const raw = el.getAttribute('href');
@@ -249,6 +250,7 @@
         try {
           const url = new URL(raw, location.href);
           href = url.href;
+          hrefRaw = raw;
           external = url.origin !== location.origin;
         } catch { href = null; }
       }
@@ -256,7 +258,7 @@
 
     return {
       kind: isSubmit ? 'submit' : (href ? 'link' : 'click'),
-      role, name, identity: identityName(name), href, external,
+      role, name, identity: identityName(name), href, hrefRaw, external,
       hrefPath: href ? (() => { try { return new URL(href).pathname; } catch { return null; } })() : null,
       download: el.hasAttribute('download'),
       inNav: !!(el.closest && el.closest('nav,[role="navigation"]')),

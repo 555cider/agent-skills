@@ -16,12 +16,12 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { launchBrowser, Page, sleep } from './browser.mjs';
 import {
   SCHEMA_VERSION, authTarget, classifyAction, fingerprintSignature, normalizePath,
-  pathFromEntrypoints, renderMarkdown, replayPathKey, routeTemplate, routeToSteps,
+  pathFromEntrypoints, playwrightExpr, renderMarkdown, replayPathKey, routeTemplate, routeToSteps,
   shortestSafePath, stateById, stateKey, stateKind, stateTitle, statesByRoute,
   transitionsFrom,
 } from './model.mjs';
@@ -117,22 +117,49 @@ function assertHostAllowed(baseUrl, allowHosts) {
   return url;
 }
 
+const gitLines = output => String(output || '').split('\n').map(line => line.trim()).filter(Boolean);
+const gitPath = (root, path) => relative(root, path).split('\\').join('/');
+
+function runGit(dir, args) {
+  return execFileSync('git', ['-C', dir, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+}
+
 /**
- * `dirty` means *the app* changed, not that the map was regenerated — the map
- * files live in this directory and would otherwise mark every fresh crawl stale.
+ * `dirty` means *the app* changed, not that generated map artifacts changed.
+ * Config remains part of the app snapshot; only files written by this tool are
+ * excluded from freshness.
  */
-function gitInfo(dir) {
-  const run = args => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+function gitInfo(mapPath) {
   try {
-    const commit = run(['rev-parse', '--short', 'HEAD']);
-    const prefix = run(['rev-parse', '--show-prefix']);
-    const changed = run(['status', '--porcelain', '--untracked-files=no'])
-      .split('\n').map(line => line.slice(3).trim()).filter(Boolean)
-      .filter(path => !prefix || !path.startsWith(prefix));
-    return { commit, dirty: changed.length > 0 };
+    const start = dirname(mapPath);
+    const root = runGit(start, ['rev-parse', '--show-toplevel']);
+    const commit = runGit(root, ['rev-parse', '--short', 'HEAD']);
+    const generated = new Set([
+      mapPath,
+      join(dirname(mapPath), 'map.md'),
+      join(dirname(mapPath), 'storage-state.json'),
+    ].map(path => gitPath(root, path)));
+    const changed = [
+      ...gitLines(runGit(root, ['diff', '--name-only'])),
+      ...gitLines(runGit(root, ['diff', '--cached', '--name-only'])),
+      ...gitLines(runGit(root, ['ls-files', '--others', '--exclude-standard'])),
+    ].filter(path => !generated.has(path));
+    return { root, commit, dirty: changed.length > 0, changed, generated };
   } catch {
-    return { commit: null, dirty: false };
+    return { root: null, commit: null, dirty: false, changed: [], generated: new Set() };
   }
+}
+
+function gitCommitExists(root, commit) {
+  try { runGit(root, ['cat-file', '-e', `${commit}^{commit}`]); return true; }
+  catch { return false; }
+}
+
+function committedAppChanges(info, fromCommit, toCommit) {
+  return gitLines(runGit(info.root, ['diff', '--name-only', fromCommit, toCommit]))
+    .filter(path => !info.generated.has(path));
 }
 
 // ---------- map file ----------
@@ -156,19 +183,33 @@ function loadMap(options) {
 }
 
 function freshnessOf(map, mapPath) {
-  const info = gitInfo(dirname(mapPath));
+  const info = gitInfo(mapPath);
   if (!info.commit || !map.app?.commit) {
     return { status: 'unknown', detail: 'no git commit recorded for the app', appCommit: info.commit, mapCommit: map.app?.commit || null };
   }
-  if (info.commit === map.app.commit) {
+  if (!gitCommitExists(info.root, map.app.commit)) {
     return {
-      status: info.dirty ? 'stale' : 'fresh',
-      detail: info.dirty ? 'working tree has uncommitted changes since the crawl' : 'app commit matches the crawl',
+      status: 'unknown', detail: `recorded app commit ${map.app.commit} is not available locally`,
+      appCommit: info.commit, mapCommit: map.app.commit,
+    };
+  }
+  const committed = info.commit === map.app.commit
+    ? []
+    : committedAppChanges(info, map.app.commit, info.commit);
+  if (!info.dirty && !committed.length) {
+    return {
+      status: 'fresh',
+      detail: info.commit === map.app.commit
+        ? 'app commit matches the crawl'
+        : 'only generated map artifacts changed since the crawl',
       appCommit: info.commit, mapCommit: map.app.commit,
     };
   }
   return {
-    status: 'stale', detail: `app moved from ${map.app.commit} to ${info.commit}`,
+    status: 'stale',
+    detail: info.dirty
+      ? 'working tree has app or config changes since the crawl'
+      : `app moved from ${map.app.commit} to ${info.commit}`,
     appCommit: info.commit, mapCommit: map.app.commit,
   };
 }
@@ -258,9 +299,10 @@ async function commandCrawl(options) {
         to: null,
         action: {
           kind: action.kind, role: action.role, name: action.name,
-          href: action.href || null, external: !!action.external,
+          href: action.href || null, hrefRaw: action.hrefRaw || null, external: !!action.external,
           cssFallback: action.cssFallback, key: action.key,
           ambiguous: !!action.ambiguous,
+          fallbackUsed: false,
         },
         class: verdict.class,
         classifiedBy: verdict.classifiedBy,
@@ -329,6 +371,7 @@ async function commandCrawl(options) {
   async function walk(page, path) {
     let observation = null;
     for (const transition of path) {
+      const blockedBefore = page.blockedNavigations.length;
       const clicked = await page.click(transition.action.key, transition.action.cssFallback);
       if (!clicked.ok) {
         // Where the walk actually stood matters more than which step failed: the
@@ -346,6 +389,10 @@ async function commandCrawl(options) {
       }
       if (clicked.via === 'css') transition.action.fallbackUsed = true;
       observation = await page.settle();
+      const blocked = page.blockedNavigations[blockedBefore];
+      if (blocked) {
+        return { ok: false, reason: `replay blocked navigation to ${blocked.url}: ${blocked.reason}` };
+      }
     }
     return { ok: true, observation };
   }
@@ -440,7 +487,9 @@ async function commandCrawl(options) {
   /** The action in hand when a fatal error lands — an error nobody can locate costs more than the bug. */
   let lastAttempt = null;
   try {
-    page = await Page.open(browser.cdp, { viewport: config.viewport, storageSeed: config.storageSeed });
+    page = await Page.open(browser.cdp, {
+      viewport: config.viewport, storageSeed: config.storageSeed, allowedOrigin: baseOrigin,
+    });
 
     if (config.auth) {
       await timed('setup.auth', () => runAuth(page, config, baseOrigin));
@@ -479,6 +528,7 @@ async function commandCrawl(options) {
         continue;
       }
 
+      const blockedBefore = page.blockedNavigations.length;
       const clicked = await timed('act.click', () => page.click(item.actionKey, transition.action.cssFallback));
       if (clicked.via === 'css') transition.action.fallbackUsed = true;
       if (!clicked.ok) {
@@ -492,6 +542,14 @@ async function commandCrawl(options) {
       const after = await timed('act.settle', () => page.settle());
       transition.ms = Date.now() - actionStartedAt;
       chargeState(state.id, transition.ms);
+      const blockedNavigation = page.blockedNavigations[blockedBefore];
+      if (blockedNavigation) {
+        transition.status = 'blocked';
+        transition.blockedReason = blockedNavigation.reason;
+        await page.navigate(baseOrigin + (state.evidence.urlSample || '/'));
+        await page.settle();
+        continue;
+      }
       let afterOrigin = null;
       try { afterOrigin = new URL(after.url).origin; } catch { afterOrigin = null; }
       if (afterOrigin && afterOrigin !== baseOrigin) {
@@ -558,7 +616,8 @@ async function commandCrawl(options) {
       })),
   };
 
-  const info = gitInfo(config.__dir);
+  const mapFile = join(config.__dir, 'map.json');
+  const info = gitInfo(mapFile);
   const map = {
     schema: SCHEMA_VERSION,
     app: { baseUrl: config.baseUrl, commit: info.commit, dirty: info.dirty },
@@ -583,7 +642,6 @@ async function commandCrawl(options) {
   await browser.close();
 
   mkdirSync(config.__dir, { recursive: true });
-  const mapFile = join(config.__dir, 'map.json');
   writeFileSync(mapFile, JSON.stringify(map, null, 2));
   writeFileSync(join(config.__dir, 'map.md'), renderMarkdown(map, freshnessOf(map, mapFile)));
 
@@ -727,9 +785,7 @@ function commandActions(options) {
         status: transition.status,
         blockedReason: transition.blockedReason,
         to: transition.to ? stateById(map, transition.to)?.route : null,
-        playwright: transition.action.name && transition.action.role
-          ? `page.getByRole('${transition.action.role}', { name: ${JSON.stringify(transition.action.name)} })`
-          : `page.locator(${JSON.stringify(transition.action.cssFallback || 'body')})`,
+        playwright: playwrightExpr(transition.action),
       })),
     })),
   });
@@ -804,7 +860,9 @@ async function commandVerify(options) {
   const browser = await launchBrowser({ headless: options.headed !== true, noSandbox: options.noSandbox === true });
   let page;
   try {
-    page = await Page.open(browser.cdp, { viewport: config.viewport, storageSeed: config.storageSeed });
+    page = await Page.open(browser.cdp, {
+      viewport: config.viewport, storageSeed: config.storageSeed, allowedOrigin: baseUrl.origin,
+    });
     const storagePath = join(dirname(path), 'storage-state.json');
     const origin = stateById(map, best.resolved.origin);
     await page.navigate(baseUrl.origin + (origin?.evidence.urlSample || '/'));
@@ -816,6 +874,7 @@ async function commandVerify(options) {
     let observation = await page.settle();
     const walked = [];
     for (const transition of best.resolved.path) {
+      const blockedBefore = page.blockedNavigations.length;
       const clicked = await page.click(transition.action.key, transition.action.cssFallback);
       if (!clicked.ok) {
         out({ ok: false, reached: false, failedAt: transition.id, reason: clicked.reason, walked });
@@ -823,6 +882,12 @@ async function commandVerify(options) {
         process.exit(EXIT_NO_ANSWER);
       }
       observation = await page.settle();
+      const blocked = page.blockedNavigations[blockedBefore];
+      if (blocked) {
+        out({ ok: false, reached: false, failedAt: transition.id, reason: blocked.reason, walked });
+        await page.close(); await browser.close();
+        process.exit(EXIT_NO_ANSWER);
+      }
       walked.push({ transition: transition.id, action: transition.action.name, at: observation.pathname });
     }
 

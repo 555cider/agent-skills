@@ -18,6 +18,11 @@ lead to the same default — do not press it.
 Nothing promotes an action into `safe` except the rules below and an explicit `actionPolicy.allow`
 entry. There is no flag that makes `destructive` run.
 
+`actionPolicy.allow` is a reclassification decision, not a crawler convenience. It exists for a
+user to identify one exact action key that the heuristics misjudged. The agent must never insert an
+allow entry on the user's behalf merely to reach more screens; without that pre-existing user
+decision, destructive-pattern matches remain destructive.
+
 ## Order of decision
 
 1. `actionPolicy.deny` contains the action key → `destructive`.
@@ -83,7 +88,8 @@ next agent needs. Failing closed narrows what the crawl *does*, not what the map
 
 ## Other hard limits
 
-- Off-origin navigation is never followed; the crawler returns to an entrypoint.
+- Off-origin top-level navigation is blocked before the document request leaves the browser; the
+  crawler returns to the source screen.
 - New tabs and `window.open` are neutralized, and stray popup targets are closed.
 - Downloads are denied at the browser level.
 - JavaScript dialogs are cancelled automatically (`beforeunload` is accepted so navigation cannot
