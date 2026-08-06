@@ -59,6 +59,72 @@ export function normalizePath(pathname) {
   return value || '/';
 }
 
+/**
+ * The navigation target for an auth step. `normalizePath` answers "are these the same
+ * screen", so it drops the query; an auth recipe asks the opposite question and needs
+ * the query it was given — `?openLogin=true`, `?next=/somewhere`, an SSO `?code=`.
+ * Normalizing a navigation target sends the browser somewhere else and reports nothing;
+ * the run then dies several steps later at a selector that was never going to be on the
+ * page it actually landed on.
+ */
+export function authTarget(path) {
+  const raw = String(path ?? '/');
+  const cut = raw.search(/[?#]/);
+  return cut < 0 ? normalizePath(raw) : normalizePath(raw.slice(0, cut)) + raw.slice(cut);
+}
+
+/**
+ * Identity of a replay attempt: which entrypoint, walked through which transitions. Two
+ * attempts sharing a key are the same walk and reach the same verdict, so a failure can
+ * be remembered against it. A map that has since grown a different route to the screen
+ * produces a different key, and is therefore tried again.
+ */
+export function replayPathKey(resolved) {
+  return String(resolved.origin) + '>' + (resolved.path || []).map(transition => transition.id).join('>');
+}
+
+/**
+ * Whether a request is evidence that a render is still pending.
+ *
+ * Playwright's `networkidle` counts every resource type except favicons and EventSource,
+ * and its own documentation calls the option DISCOURAGED — "rely on web assertions to
+ * assess readiness instead". Both halves of that are worth taking seriously. Against a
+ * dev server the strict rule never fires at all: Vite ships the app as hundreds of
+ * unbundled modules, and a page long since drawn keeps streaming them, so every wait runs
+ * to its timeout and returns the same screen it had a moment after loading.
+ *
+ * So this counts only what can carry new content into the page, and leans on the
+ * fingerprint-stability half of `settle` — the assertion Playwright points to, which
+ * plain networkidle does not have — to catch a screen that has not finished drawing.
+ * EventSource is excluded for Playwright's reason and not a different one: an open stream
+ * never ends, so counting it means never settling.
+ */
+const SETTLE_RELEVANT = new Set(['XHR', 'Fetch', 'Document']);
+
+export function countsTowardSettle(resourceType) {
+  // An absent type is counted: waiting too long is recoverable, while settling early
+  // writes a half-drawn screen into the map as though it were a screen.
+  if (!resourceType) return true;
+  return SETTLE_RELEVANT.has(resourceType);
+}
+
+/**
+ * The storage-seed script for a page, or null when there is nothing to seed. Values go
+ * in with `setItem`, so the app sees exactly what a previous session would have left.
+ * Never put a credential here — a seed suppresses first-run UI, and `auth.steps` is the
+ * only thing that should be handling secrets.
+ */
+export function storageSeedSource(seed) {
+  if (!seed) return null;
+  const local = Object.entries(seed.localStorage || {}).map(([key, value]) => [key, String(value)]);
+  const session = Object.entries(seed.sessionStorage || {}).map(([key, value]) => [key, String(value)]);
+  if (!local.length && !session.length) return null;
+  return '(()=>{try{'
+    + `for(const [k,v] of ${JSON.stringify(local)}) localStorage.setItem(k,v);`
+    + `for(const [k,v] of ${JSON.stringify(session)}) sessionStorage.setItem(k,v);`
+    + '}catch(e){/* opaque origin — nothing to seed */}})()';
+}
+
 // ---------- state signature ----------
 
 function stableStringify(value) {
@@ -288,6 +354,127 @@ function escapeCell(text) {
   return String(text ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
 }
 
+function truncate(text, limit) {
+  const value = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return value.length > limit ? value.slice(0, limit - 1) + '…' : value;
+}
+
+/** Mermaid reads `"`, `<`, `>` and `|` as syntax wherever they appear in a label. */
+function mermaidText(text, limit = 28) {
+  return truncate(String(text ?? '').replace(/["<>|{}[\]]/g, ' '), limit);
+}
+
+/**
+ * The map as a picture. The tables below it are the record; this is the part a human
+ * can actually check, which is the step the whole workflow rests on — a reviewer who
+ * cannot see the shape of the app cannot tell a good crawl from a broken one.
+ *
+ * Only verified transitions are drawn, because only those are claims the map makes
+ * about walking. What was *not* walked is not hidden: it rides on the node it belongs
+ * to as a count, so a screen the crawl barely opened looks different from one it
+ * exhausted.
+ */
+export function renderMermaid(map) {
+  const states = map.states || [];
+  if (!states.length) return [];
+  const entrypoints = new Set(map.entrypoints || []);
+  const known = new Set(states.map(state => state.id));
+
+  // An action that lands back on the screen it was pressed from says nothing about
+  // navigation, and there are dozens of them on a real toolbar. Drawn, they bury the
+  // graph in self-loops; counted on the node, they still show the screen was worked.
+  const loops = new Map();
+  const edges = new Map();
+  const unexplored = new Map();
+  for (const transition of map.transitions || []) {
+    if (transition.status !== 'verified' || !transition.to) {
+      unexplored.set(transition.from, (unexplored.get(transition.from) || 0) + 1);
+      continue;
+    }
+    if (!known.has(transition.from) || !known.has(transition.to)) continue;
+    if (transition.from === transition.to) {
+      loops.set(transition.from, (loops.get(transition.from) || 0) + 1);
+      continue;
+    }
+    const key = transition.from + '>' + transition.to;
+    if (!edges.has(key)) edges.set(key, { from: transition.from, to: transition.to, names: [] });
+    edges.get(key).names.push(transition.action?.name || transition.action?.kind || '?');
+  }
+
+  const lines = ['```mermaid', 'flowchart LR'];
+  for (const state of states) {
+    const badges = [];
+    if (loops.get(state.id)) badges.push(`↻${loops.get(state.id)}`);
+    if (unexplored.get(state.id)) badges.push(`⊘${unexplored.get(state.id)}`);
+    const label = [
+      mermaidText(state.route, 34),
+      mermaidText(state.title),
+      badges.join(' '),
+    ].filter(Boolean).join('<br/>');
+    // Stadium marks a screen reachable by URL alone; a hexagon marks an overlay,
+    // which exists only on top of whatever raised it.
+    const shape = entrypoints.has(state.id) ? `(["${label}"])`
+      : state.kind === 'overlay' ? `{{"${label}"}}`
+      : `["${label}"]`;
+    lines.push(`  ${state.id}${shape}`);
+  }
+  for (const edge of edges.values()) {
+    const [first, ...rest] = edge.names;
+    const label = mermaidText(first, 24) + (rest.length ? ` +${rest.length}` : '');
+    lines.push(`  ${edge.from} -->|"${label}"| ${edge.to}`);
+  }
+  if (entrypoints.size) {
+    lines.push(`  classDef entry stroke-width:3px`);
+    lines.push(`  class ${[...entrypoints].filter(id => known.has(id)).join(',')} entry`);
+  }
+  lines.push('```');
+  lines.push('');
+  lines.push('Stadium = entrypoint · hexagon = overlay · ↻ actions that stay on the screen ·'
+    + ' ⊘ actions recorded but never executed. Only verified transitions are drawn.');
+  return lines;
+}
+
+/**
+ * Where the clock went, as a table. Budget exhaustion is this skill's ordinary failure,
+ * and the fix depends entirely on which phase ate the time — narrowing entrypoints,
+ * dropping a screen, or turning replay verification off are different answers to
+ * different numbers. Reporting the total alone invites optimising by guess.
+ */
+export function renderTiming(timing) {
+  if (!timing || !(timing.phases || []).length) return [];
+  const seconds = ms => (ms / 1000).toFixed(1) + 's';
+  const share = ms => timing.totalMs ? Math.round((ms / timing.totalMs) * 100) + '%' : '—';
+  const lines = ['## Where the clock went', ''];
+  lines.push(`Total ${seconds(timing.totalMs)}.`);
+  lines.push('');
+  lines.push('| Phase | Time | Share | Count |');
+  lines.push('| --- | ---: | ---: | ---: |');
+  for (const phase of timing.phases) {
+    lines.push(`| \`${escapeCell(phase.label)}\` | ${seconds(phase.ms)} | ${share(phase.ms)} | ${phase.count} |`);
+  }
+  lines.push('');
+  if ((timing.byScreen || []).length) {
+    lines.push('| Screen | Time | Actions | Per action |');
+    lines.push('| --- | ---: | ---: | ---: |');
+    for (const row of timing.byScreen) {
+      const each = row.actions ? seconds(row.ms / row.actions) : '—';
+      lines.push(`| \`${escapeCell(row.route)}\` ${escapeCell(row.title)} | ${seconds(row.ms)} | ${row.actions} | ${each} |`);
+    }
+    lines.push('');
+  }
+  if ((timing.slowest || []).length) {
+    lines.push('Slowest single actions — an average over a bimodal cost describes neither half:');
+    lines.push('');
+    lines.push('| Action | On | Outcome | Time |');
+    lines.push('| --- | --- | --- | ---: |');
+    for (const row of timing.slowest) {
+      lines.push(`| ${escapeCell(row.action)} | \`${escapeCell(row.from)}\` | ${escapeCell(row.status)} | ${seconds(row.ms)} |`);
+    }
+    lines.push('');
+  }
+  return lines;
+}
+
 export function renderMarkdown(map, freshness = {}) {
   const lines = [];
   const byId = new Map((map.states || []).map(state => [state.id, state]));
@@ -313,6 +500,16 @@ export function renderMarkdown(map, freshness = {}) {
   lines.push(`- Coverage: ${coverage.states ?? 0} states, ${coverage.actionsSeen ?? 0} actions seen, ${coverage.executed ?? 0} executed, ${coverage.blocked ?? 0} not executed`);
   if (map.run?.budgetHit) lines.push(`- **Budget hit: ${map.run.budgetHit}** — the map is incomplete.`);
   lines.push('');
+
+  const diagram = renderMermaid(map);
+  if (diagram.length) {
+    lines.push('## Shape');
+    lines.push('');
+    lines.push(...diagram);
+    lines.push('');
+  }
+
+  lines.push(...renderTiming(map.run?.timing));
 
   lines.push('## Screens');
   lines.push('');

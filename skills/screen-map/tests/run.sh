@@ -105,5 +105,57 @@ fi
 run_suite assert-crawl-mutating node "$HERE/assert-crawl.mjs" --map "$APP2/.screen-map/map.json" --base "$BASE" --mode mutating
 
 echo
+echo "── storage seed (first-run overlay) ─────────────────────"
+# `/gated` decides during mount whether to raise a tour overlay whose backdrop hides
+# the screen behind it. Unseeded, that overlay is all the crawl can ever see; the
+# seed has to land before the first paint for the real screen to be mapped at all.
+seed_app() { # dir, seed-json
+  mkdir -p "$1/.screen-map"
+  cat > "$1/.screen-map/config.json" <<JSON
+{
+  "baseUrl": "$BASE",
+  "entrypoints": ["/gated"],
+  "storageSeed": $2,
+  "budget": { "maxStates": 30, "maxActions": 120, "maxMillis": 180000 }
+}
+JSON
+  printf 'fixture app\n' > "$1/README.md"
+  git -C "$1" init -q
+  git -C "$1" config user.email tests@example.invalid
+  git -C "$1" config user.name "screen-map tests"
+  git -C "$1" add -A
+  git -C "$1" commit -q -m "fixture app"
+}
+
+reached_items() { # map file -> "yes" when the screen behind the overlay was mapped
+  node -e '
+    const map = require(process.argv[1]);
+    process.stdout.write(map.states.some(state => state.route === "/items") ? "yes" : "no");
+  ' "$1"
+}
+
+seed_app "$WORK/app3" 'null'
+if node "$CLI" crawl --config "$WORK/app3/.screen-map/config.json" > "$WORK/crawl3.json" 2> "$WORK/crawl3.err"; then
+  if [ "$(reached_items "$WORK/app3/.screen-map/map.json")" = "no" ]; then
+    pass "without a seed the first-run overlay is all the crawl can reach"
+  else
+    fail "without a seed the first-run overlay is all the crawl can reach" "the crawl walked past an overlay that blocks clicks"
+  fi
+else
+  fail "unseeded crawl completes" "$(cat "$WORK/crawl3.json" "$WORK/crawl3.err" 2>/dev/null | tr '\n' ' ')"
+fi
+
+seed_app "$WORK/app4" '{ "localStorage": { "tour-done": "true" } }'
+if node "$CLI" crawl --config "$WORK/app4/.screen-map/config.json" > "$WORK/crawl4.json" 2> "$WORK/crawl4.err"; then
+  if [ "$(reached_items "$WORK/app4/.screen-map/map.json")" = "yes" ]; then
+    pass "a seeded crawl maps the screen behind the overlay"
+  else
+    fail "a seeded crawl maps the screen behind the overlay" "$(cat "$WORK/app4/.screen-map/map.json" 2>/dev/null | head -c 400)"
+  fi
+else
+  fail "seeded crawl completes" "$(cat "$WORK/crawl4.json" "$WORK/crawl4.err" 2>/dev/null | tr '\n' ' ')"
+fi
+
+echo
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

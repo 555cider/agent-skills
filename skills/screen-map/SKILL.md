@@ -71,8 +71,9 @@ route without the leading slash (`--to settings`) or set `MSYS_NO_PATHCONV=1`.
      "baseUrl": "http://localhost:5101",
      "allowHosts": ["localhost", "127.0.0.1"],
      "entrypoints": ["/"],
+     "storageSeed": { "localStorage": { "onboarding-dismissed": "true" } },
      "auth": { "steps": [
-       { "kind": "goto", "path": "/login" },
+       { "kind": "goto", "path": "/login?next=/dashboard" },
        { "kind": "fill", "selector": "#email", "value": "${SITE_MAP_EMAIL}" },
        { "kind": "click", "role": "button", "name": "로그인" },
        { "kind": "waitForPath", "path": "/dashboard" }
@@ -87,7 +88,26 @@ route without the leading slash (`--to settings`) or set `MSYS_NO_PATHCONV=1`.
    actually walked; a twenty-row list otherwise costs twenty replays and teaches nothing after the
    third. Every skipped edge records the cap and the total, so the map never hides it.
 
+   Budget by controls, not by screens. A crawl pays per candidate action — walking back to the
+   screen that owns it, pressing it, waiting for the app to settle — so one editor whose toolbar
+   holds two hundred buttons costs more than twenty ordinary pages. When `maxMillis` keeps running
+   out, read `coverage.actionsSeen` before raising it: a small app with a big control surface is
+   the normal reason, and narrowing `entrypoints` buys more than a longer clock.
+
    Credentials come from the environment through `${VAR}`. Never write one into the file.
+
+   `storageSeed` is written before every document renders, so a welcome card or product tour that
+   decides during mount never appears. Seeding is the only thing that works: an overlay's backdrop
+   swallows the clicks meant for the screen behind it, so an unseeded crawl maps the modal and stops
+   there. Put first-run flags here and nothing else — secrets belong in `auth.steps`.
+
+   Auth steps run once, before the first entrypoint. `goto` (`path`, query and hash preserved) ·
+   `fill` (`selector`, `value`) · `click` · `wait` (`ms`) · `waitForPath` (`path`, `timeoutMs`).
+   A `click` takes either `selector`, which dispatches a DOM click and therefore reaches a control
+   underneath an overlay, or `role` + `name`, which clicks the accessible name at its coordinates
+   and is blocked by anything covering it — and cannot see a control inside a modal's `aria-hidden`
+   remainder at all. Reach for `selector` when a login lives behind a collapsed `<details>` or under
+   a dim backdrop; prefer `role` + `name` otherwise, since it survives markup churn.
 
 3. Crawl:
 
@@ -102,6 +122,14 @@ route without the leading slash (`--to settings`) or set `MSYS_NO_PATHCONV=1`.
 Crawling reaches every screen by replaying an already-verified safe click path from an entrypoint,
 so every route the map hands out has been walked end to end. `--no-replay-verify` drops that
 guarantee for speed; say so if you use it.
+
+An app that stores what the crawl does to it — an editor that autosaves, a wizard that remembers its
+step — can stop reproducing its own opening screen once `--allow-mutating` has pressed a few
+buttons. Those actions come back `blocked` with `entrypoint did not reproduce the mapped screen`,
+and the verdict is remembered per screen so the clock is not spent proving it once per button. Read
+that reason as "this screen is not re-enterable", not "the map failed": route the crawl at the
+navigational parts of the app and expect a canvas or editor surface to map as one screen with its
+controls recorded but unopened.
 
 ## How screens are identified
 

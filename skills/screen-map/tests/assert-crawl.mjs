@@ -130,5 +130,19 @@ check('the crawl terminated inside its budget',
   JSON.stringify({ budgetHit: map.run.budgetHit, frontier: map.coverage.frontier }));
 check('the crawl recorded the app commit', /^[0-9a-f]{7,}$/.test(map.app.commit || ''), JSON.stringify(map.app.commit));
 
+// ---------- accounting ----------
+//
+// Budget exhaustion is this skill's ordinary failure, and the fix depends on which phase
+// spent the time. Without these numbers the only available diagnosis is a guess.
+
+const timing = map.run.timing || {};
+check('the run accounts for its own time',
+  timing.totalMs > 0 && Array.isArray(timing.phases) && timing.phases.length > 0,
+  JSON.stringify({ totalMs: timing.totalMs, phases: (timing.phases || []).length }));
+check('the clock is attributed to the screens that spent it',
+  Array.isArray(timing.byScreen) && timing.byScreen.length > 0
+    && timing.byScreen.every(row => row.ms >= 0 && row.actions > 0),
+  JSON.stringify(timing.byScreen));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
