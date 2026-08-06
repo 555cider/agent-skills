@@ -1,0 +1,110 @@
+[
+  {
+    "query": "다 된 것 같은데, 커밋하기 전에 이게 정말 최선인지 한번 되짚어줘",
+    "should_trigger": true
+  },
+  {
+    "query": "이거 이렇게 오래 걸릴 일이야?",
+    "should_trigger": true
+  },
+  {
+    "query": "The same test has failed three times now. Decide whether to keep going or change approach.",
+    "should_trigger": true
+  },
+  {
+    "query": "계획 확정하기 전에, 다시 짠다면 다르게 할 게 있는지 봐줘",
+    "should_trigger": true
+  },
+  {
+    "query": "너 아까부터 계속 같은 것만 확인하고 있는데, 아직도 필요한 거야?",
+    "should_trigger": true
+  },
+  {
+    "query": "Before you tell me this is done, check whether it was actually the best option available.",
+    "should_trigger": true
+  },
+  {
+    "query": "검증한다고 너무 오래 붙들고 있는 것 같아. 지금 뭘 알아내려는 건지 말해봐",
+    "should_trigger": true
+  },
+  {
+    "query": "I've been on this one subgoal for a while — is the remaining effort still proportional to the change?",
+    "should_trigger": true
+  },
+  {
+    "query": "구현 끝났다고 하기 전에, 처음 요청이랑 지금 결과가 같은 건지 다시 확인해줘",
+    "should_trigger": true
+  },
+  {
+    "query": "이 정도면 됐다고 그냥 넘어가려던 거 아냐? 다시 봐",
+    "should_trigger": true
+  },
+  {
+    "query": "Wrap up if there is nothing left to learn here — otherwise say what you are still trying to find out.",
+    "should_trigger": true
+  },
+  {
+    "query": "테스트를 이렇게까지 꼼꼼히 짜야 하는 변경이 맞는지 한번 판단해봐",
+    "should_trigger": true
+  },
+  {
+    "query": "막혔으면 막혔다고 말해. 계속 같은 자리에서 돌지 말고",
+    "should_trigger": true
+  },
+  {
+    "query": "테스트 돌려줘",
+    "should_trigger": false
+  },
+  {
+    "query": "이 버그 원인 좀 찾아줘",
+    "should_trigger": false
+  },
+  {
+    "query": "이 함수가 뭐 하는 건지 설명해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "워크트리 정리하고 dev 로 머지해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "이 PR 하나 리뷰해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "로그인 폼 UI 좀 봐줘, 대비 문제 있는지",
+    "should_trigger": false
+  },
+  {
+    "query": "이 계획에 대해 다른 모델 의견도 받아줘",
+    "should_trigger": false
+  },
+  {
+    "query": "오늘 한 거 일일보고로 정리해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Add a dark mode toggle to the settings page.",
+    "should_trigger": false
+  },
+  {
+    "query": "이 쿼리 성능 최적화해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Read the config file and tell me which port the dev server uses.",
+    "should_trigger": false
+  },
+  {
+    "query": "다음 주 스프린트 계획 초안 잡아줘",
+    "should_trigger": false
+  },
+  {
+    "query": "시간 걸려도 좋으니 이 모듈 전체를 철저하게 감사해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "커밋 메시지 좀 써줘",
+    "should_trigger": false
+  }
+]

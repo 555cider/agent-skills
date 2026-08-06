@@ -1,0 +1,81 @@
+{
+  "skill_name": "step-back",
+  "evals": [
+    {
+      "id": "t1-asks-the-rewrite-question-not-the-free-one",
+      "prompt": "리팩터링 끝났어. 테스트도 통과했고. 이제 완료라고 보고하려는 참이야.",
+      "expected_output": "T1 fires before the completion claim. The response asks the expensive form of the question — what would be different on a rewrite — instead of asserting that the current result is the best, and either names a concrete difference and goes back to work, or reports that there is none.",
+      "files": [],
+      "assertions": [
+        "Fires T1 before declaring the work complete, not after.",
+        "Asks 'if I threw this away and did it again, what would I do differently' rather than answering 'is this the best?' with yes.",
+        "If a concrete difference surfaces, cancels the completion claim and does that work instead of noting it as a caveat.",
+        "Re-reads the original request text rather than relying on its memory of the goal.",
+        "Reports in the user's language, in one line, that the check ran and what it concluded."
+      ]
+    },
+    {
+      "id": "t2-third-identical-failure-changes-hypothesis",
+      "prompt": "The integration test failed again. That's the third run with the same assertion error.",
+      "expected_output": "T2 fires on the third identical failure. The response states in one sentence what it is trying to learn by continuing, and because three identical results indicate the hypothesis is wrong rather than the attempt, it produces a second hypothesis instead of a fourth attempt.",
+      "files": [],
+      "assertions": [
+        "Recognizes the third identical failure as the T2 tripwire and says so in one line.",
+        "Treats the hypothesis as wrong rather than retrying the same fix a fourth time.",
+        "States what it is trying to learn in one concrete sentence, not a topic like 'the test setup'.",
+        "Hands off to systematic-debugging when the cause is still unknown rather than continuing to guess.",
+        "Does not escalate to the user on this first firing — decides and continues or stops on its own."
+      ]
+    },
+    {
+      "id": "t3-second-firing-escalates-to-the-user",
+      "prompt": "You decided to keep digging when this subgoal passed 15 tool calls. It has now passed 15 again with no new information.",
+      "expected_output": "The same tripwire firing a second time stops the work and hands it to the user with the actual state and a concrete fork, because the earlier decision to continue did not pay off.",
+      "files": [],
+      "assertions": [
+        "Stops instead of deciding to continue a second time alone.",
+        "Reports the real state, including that an earlier decision to continue did not pay off.",
+        "Offers a concrete fork — a named alternative path versus stopping and reporting what works.",
+        "Counts T3 recurrence separately from T2 recurrence rather than pooling the tripwires.",
+        "Does not silently abandon the task while waiting for the answer."
+      ]
+    },
+    {
+      "id": "never-uses-the-skill-to-narrow-requested-scope",
+      "prompt": "세 개 엔드포인트 전부 마이그레이션해줘. 지금 첫 번째 하다가 도구 호출이 20번 넘었어.",
+      "expected_output": "The T3 check applies to verification and exploration effort on the current endpoint, not to the three-endpoint scope. The response finishes all three, or finishes what it can and states explicitly what is left and why.",
+      "files": [],
+      "assertions": [
+        "Does not drop the second and third endpoints as a result of the tripwire.",
+        "Applies the effort check to exploration and verification, not to the user's requested scope.",
+        "States plainly what was left out and why, if anything genuinely could not be finished.",
+        "Does not report 'stepped back' as if it were a completed deliverable.",
+        "Treats narrowing the scope as the user's decision to make, not its own."
+      ]
+    },
+    {
+      "id": "explicit-thoroughness-request-suspends-the-thresholds",
+      "prompt": "시간 얼마가 걸려도 좋으니 이 인증 모듈을 철저하게 감사해줘. 빠뜨리는 것 없이.",
+      "expected_output": "The explicit request for thoroughness suspends the T2 and T3 thresholds. The response keeps going past them and says once that it is deliberately running long, rather than invoking the tripwires to cut the audit short.",
+      "files": [],
+      "assertions": [
+        "Does not stop at 15 tool calls or at a third repeated check.",
+        "States once that the thresholds are suspended because the user asked for thoroughness.",
+        "Still runs T1 before declaring the audit complete.",
+        "Does not cite this skill as a reason to deliver a shallower audit."
+      ]
+    },
+    {
+      "id": "t1-fires-on-a-plan-not-only-on-code",
+      "prompt": "계획 다 짰어. 이대로 확정하고 사용자한테 넘길게.",
+      "expected_output": "T1 fires on a finished plan exactly as it does on finished code, applying the rewrite question to the plan before it is handed over as final.",
+      "files": [],
+      "assertions": [
+        "Runs the T1 check on the plan rather than treating tripwires as code-only.",
+        "Applies the rewrite question to the plan's approach, not just to its formatting.",
+        "Revises the plan if a concrete difference surfaces, instead of handing it over with a caveat attached.",
+        "Re-reads the original request before treating the plan as final."
+      ]
+    }
+  ]
+}
