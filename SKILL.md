@@ -32,7 +32,7 @@ result, not a success.
 | --- | --- |
 | 1. Start | `scripts/start-worktree.sh <name>` — branch `worktree-<name>` from the local integration branch HEAD, then assert the base. |
 | 2. Work | `cd <path>`, implement, test. **Commit before finishing** so the worktree is clean. |
-| 3. Return | Move back to the integration branch (main worktree). Required: `finish` refuses to run from inside the worktree it is about to delete. |
+| 3. Return | Move back to the integration branch (main worktree), **as its own step**. Required: `finish` refuses to run from inside the worktree it is about to delete — and on Windows a shell that merely *started* inside it still locks the directory (see Traps). |
 | 4. Finish | `scripts/finish-worktree.sh -b worktree-<name> -m "…"` — squash merge, then remove worktree and branch. |
 | 5. Publish | After verifying: `git push <remote> <base>` (manual). |
 
@@ -46,6 +46,10 @@ result, not a success.
   the script stops — it does not fall back to the remote, because that fallback is the accident.
 - Default path: under an existing `.worktrees/` or `.claude/worktrees/`; warns when that
   directory is not gitignored.
+- An **empty** directory already sitting at the target path is reclaimed, because that is the
+  residue a locked finish leaves behind (see Traps) and refusing it would retire the name for
+  good. Anything with content in it still stops the run — `rmdir` refuses a non-empty directory,
+  so this can never delete real work.
 - After creation the new worktree HEAD is compared against the integration branch HEAD, and a
   mismatch fails the run.
 - If the local base trails its remote counterpart, that is **reported and the run continues** —
@@ -122,6 +126,9 @@ Two different leftovers get two different remedies:
   locked while a process holds it open) → `git worktree remove` now answers "is not a working
   tree"; the directory itself has to go. Finish handles the common form of this itself: if the
   leftover is empty it is simply `rmdir`-ed and the run succeeds.
+- **even the empty directory refuses to go** → this is **not** a failed cleanup and the run
+  **exits zero**. See the cwd trap below for why nothing in the run can clear it, and why the
+  residue blocks nothing.
 
 Behavior once the merge starts:
 
@@ -130,10 +137,26 @@ Behavior once the merge starts:
 - A failed commit (rejecting hook, or an empty diff because the changes are already in base)
   stops with the staged state and the recovery command spelled out. Nothing is removed.
 - A failed worktree removal or branch deletion prints what is left over and **exits non-zero**.
-  The squash commit is already on base at that point, so the run must not be repeated.
+  The squash commit is already on base at that point, so the run must not be repeated. The
+  empty-directory residue above is the one exception: it exits zero.
 
 ## Traps
 
+- **Windows: a cwd inside the worktree locks its directory.** Windows holds a handle on a
+  process's current directory, so while any process stands inside the worktree — the agent's own
+  persistent shell after a `cd`, a test runner, an editor — the directory itself cannot be
+  deleted. Its *contents* still go, so `git worktree remove` empties and deregisters the
+  worktree, then fails with `Permission denied` and leaves an empty directory.
+
+  The lock is bound to that process's lifetime, not to elapsed time. Retrying `rmdir` and
+  renaming the directory both fail while the holder is alive, and both succeed once it exits —
+  measured, not assumed. **Nothing finish can do during its own run clears it**, which is why
+  finish reports the residue and exits zero instead of calling it a failed cleanup, and why
+  `start` reclaims an empty directory at the target path rather than refusing it.
+
+  To avoid it entirely: leave the worktree in a **separate step** before running finish, so the
+  shell that invokes finish never had its cwd inside. Working with absolute paths instead of
+  `cd`-ing in avoids it too.
 - **junction/symlink `node_modules`**: frontend worktrees often link it. When
   `git worktree remove` fails, finish stops and reports it. Unlink first
   (`cmd //c rmdir <junction>` on Windows), then `git worktree prune`. Never delete with
@@ -152,3 +175,8 @@ Behavior once the merge starts:
   integration branch HEAD, which is the entire point.
 - Reading a non-zero finish as "the merge failed" — after cleanup warnings the merge already
   landed. Read the message and finish the cleanup by hand instead of re-running.
+- Reporting the empty-directory residue as a failed cleanup — it exits **zero**. Say the merge
+  landed and mention the leftover; do not re-run finish and do not present it as lost work.
+- Deleting a leftover empty directory by hand from a shell standing inside it — that shell is
+  usually what holds the lock. Run `rmdir` from somewhere else, or just leave it: the next
+  `start` under the same name reclaims it.

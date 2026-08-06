@@ -316,6 +316,7 @@ fi
 cleanup_failed="$tracked_restore_failed"
 WT_LEFTOVER=""          # directory that survived; decides which recovery advice applies
 WT_REGISTERED=0         # 1 = git still considers it a worktree (the junction case)
+WT_RESIDUE=""           # empty, deregistered directory that could not be removed — not a failure
 BRANCH_LEFTOVER=0
 if [ -n "$WT" ] && [ -d "$WT" ]; then
   if git worktree remove --force "$WT"; then
@@ -330,6 +331,20 @@ if [ -n "$WT" ] && [ -d "$WT" ]; then
     # directory, so this can never delete real work. (Do not probe with `rev-parse --git-dir`:
     # from any directory inside the repository that succeeds by finding the parent repo.)
     info "worktree removed: $WT (git left an empty directory behind; removed it)"
+  elif [ ! -e "$WT/.git" ] && [ -z "$(ls -A "$WT" 2>/dev/null)" ]; then
+    # Same Windows leftover as above, except the empty directory refuses to go too. Measured
+    # cause: a process has its current directory inside the worktree — usually the shell that
+    # cd'd in, a test run, or an editor — and Windows holds a handle on that directory for the
+    # life of that process. The lock is bound to that process, not to elapsed time, so nothing
+    # this run can do beats it: retrying rmdir and renaming the directory were both measured to
+    # fail while the holder is alive, and it clears on its own once that process exits.
+    #
+    # Nothing is at risk by this point. The squash landed, the branch is deleted below, git has
+    # deregistered the path (no .git file), and the directory is empty. start-worktree.sh
+    # reclaims an empty directory, so the residue does not even block reusing the name. Report
+    # it and succeed — calling this a failed cleanup would put a red light on every Windows run
+    # and train the reader to ignore the one that means something.
+    WT_RESIDUE="$WT"
   else
     cleanup_failed=1; WT_LEFTOVER="$WT"
     # A linked worktree always carries a .git file; its presence separates "git could not touch
@@ -345,6 +360,17 @@ if git branch -D "$BRANCH"; then
 else
   cleanup_failed=1; BRANCH_LEFTOVER=1
   echo "⚠️  could not delete the branch: $BRANCH" >&2
+fi
+
+if [ -n "$WT_RESIDUE" ]; then
+  echo >&2
+  echo "⚠️  an empty directory is left behind: $WT_RESIDUE" >&2
+  echo "    Everything that matters is done — the squash is on $BASE, the branch is gone, and" >&2
+  echo "    git no longer tracks this path. On Windows a directory cannot be deleted while any" >&2
+  echo "    process has its current directory inside it (a shell that cd'd in, a test run, an" >&2
+  echo "    editor). That handle outlives this run, so retrying here cannot clear it." >&2
+  echo "    Nothing is blocked: start-worktree.sh reclaims an empty directory. To remove it now," >&2
+  echo "    run this from a shell that is not standing in it:  rmdir \"$WT_RESIDUE\"" >&2
 fi
 
 if [ "$cleanup_failed" -ne 0 ]; then
