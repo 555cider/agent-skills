@@ -83,9 +83,40 @@ def validate_behavior_evals(skill: str, path: Path) -> None:
                 f"{rel}.evals[{index}].files must contain only strings")
 
 
+def line_endings_rules(path: Path) -> list[str]:
+    """Significant (non-comment, non-blank) lines of a .gitattributes file."""
+    text = path.read_text(encoding="utf-8")
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")]
+
+
+def validate_line_endings(skill: str, skill_dir: Path, expected: list[str]) -> None:
+    """Each skill carries its own copy of the root line-ending rules.
+
+    `git subtree split --prefix=skills/<name>` publishes only the skill directory, so the
+    monorepo's root .gitattributes never reaches split/<name> — the branch install.sh clones
+    for a normal install. Without a copy inside the skill, a Windows clone with
+    core.autocrlf=true checks the skill out as CRLF and its scripts break under any shell
+    stricter than Git Bash. Drift here is silent, so it is enforced rather than documented.
+    """
+    path = skill_dir / ".gitattributes"
+    require(path.is_file(),
+            f"{skill}/.gitattributes is missing "
+            "(the root copy does not reach split/<name>; see tests/validate-skill-evals.py)")
+    rules = line_endings_rules(path)
+    require(rules == expected,
+            f"{skill}/.gitattributes rules differ from the root .gitattributes: "
+            f"{rules} != {expected}")
+
+
 def main() -> int:
     skill_dirs = sorted(path for path in SKILLS.iterdir() if path.is_dir())
     require(skill_dirs, "no skills found")
+
+    root_attributes = ROOT / ".gitattributes"
+    require(root_attributes.is_file(), "root .gitattributes is missing")
+    expected_rules = line_endings_rules(root_attributes)
+    require(expected_rules, "root .gitattributes declares no rules")
 
     for skill_dir in skill_dirs:
         skill = skill_dir.name
@@ -96,6 +127,7 @@ def main() -> int:
         validate_behavior_evals(skill, eval_dir / "behavior-evals.json")
         # Every skill must ship an executable regression suite.
         require((skill_dir / "tests" / "run.sh").is_file(), f"{skill}/tests/run.sh is missing")
+        validate_line_endings(skill, skill_dir, expected_rules)
 
     print(f"OK skill evals ({len(skill_dirs)} skills)")
     return 0

@@ -1,0 +1,19 @@
+# This file becomes the root .gitattributes of this skill's split/<name> branch.
+#
+# install.sh clones split/<name> for a normal install, and `git subtree split
+# --prefix=skills/<name>` carries only this directory — the monorepo's root
+# .gitattributes never reaches that branch. Without this copy, a Windows clone with
+# core.autocrlf=true (the Git for Windows default) rewrites every file here to CRLF.
+# That is harmless under Git Bash, which tolerates \r, but it breaks the scripts the
+# moment they run anywhere stricter: a shebang becomes "/usr/bin/env bash\r" under
+# WSL, Linux, or macOS, and direct execution of .py and .mjs entry points fails the
+# same way. Skills are executed by whichever agent and shell the user runs, so the
+# checkout must not depend on who cloned it.
+#
+# Keep this identical to the monorepo root .gitattributes; tests/validate-skill-evals.py
+# enforces that.
+* text=auto eol=lf
+
+# Windows batch interpreters require CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf

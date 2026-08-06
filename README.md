@@ -219,7 +219,13 @@ local checkout while the split branch is still unpublished.
 ## Adding a new skill (maintainers)
 
 1. Create `skills/<new-skill>/SKILL.md` with the
-   [agentskills.io](https://agentskills.io/specification) frontmatter.
+   [agentskills.io](https://agentskills.io/specification) frontmatter, and copy
+   the root `.gitattributes` into `skills/<new-skill>/`. `git subtree split`
+   publishes only the skill directory, so the root copy never reaches
+   `split/<new-skill>` — without one inside the skill, a Windows clone with
+   `core.autocrlf=true` checks it out as CRLF and its scripts break under any
+   shell stricter than Git Bash. `tests/validate-skill-evals.py` fails the build
+   if the copy is missing or has drifted from the root rules.
 2. Commit and push to `main`.
 3. [`.github/workflows/split.yml`](.github/workflows/split.yml) runs
    `git subtree split --prefix=skills/<new-skill>` and force-pushes the
