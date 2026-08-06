@@ -582,9 +582,9 @@ if python3 - "$WORK/workers-1" "$WORK/workers-2" <<'PY'
 import json, pathlib, sys
 left, right = map(pathlib.Path, sys.argv[1:])
 for name in ("findings.json", "advisories.json"):
-    assert json.loads((left / name).read_text()) == json.loads((right / name).read_text()), name
+    assert json.loads((left / name).read_text(encoding="utf-8")) == json.loads((right / name).read_text(encoding="utf-8")), name
 def cells(path):
-    data = json.loads((path / "coverage.json").read_text())
+    data = json.loads((path / "coverage.json").read_text(encoding="utf-8"))
     return [(c["index"], c["route"], c["viewport"], c["theme"], c["state"], c["adaptation"], c["status"]) for c in data["matrix"]]
 assert cells(left) == cells(right), (cells(left), cells(right))
 PY

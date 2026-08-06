@@ -208,6 +208,59 @@ states are *meaningfully distinct* is judgment.
 - **[visual]** Hover/focus/active/selected affordance that resizes the component or relies
   on a color-only shift that vanishes in one theme. `Polish`–`Risk`.
 
+## Widget grammar & information scent  *([visual]/[hybrid])*
+
+The audit now measures the widget contracts it can settle from the DOM (`multiRowTabs`,
+`placeholderAsOnlyLabel`, `modalEscapeUnhandled`, `stackedDialogs`, `singleRadioInGroup`,
+`toggleInsideSubmitForm`, `orphanedFieldError`, `desktopHiddenNav`). What is left here is the
+part that needs a reader: whether the *right* widget was chosen, and whether its words carry
+enough scent to predict what happens next. Do not re-eyeball the measured ones.
+
+- **[visual]** Cross-dressing: links styled as buttons or buttons styled as links. Links go
+  places; buttons do things. When the two visual languages swap, users hesitate before every
+  click. `Risk` on a primary flow, else `Polish`.
+- **[visual]** Tabs used for a sequential process (checkout, onboarding, setup). Steps have an
+  order; tabs promise free movement between peers. Use a wizard with a visible step
+  indicator. `Risk`.
+- **[visual]** Content users must *compare* split across tabs. Flipping back and forth turns
+  recognition back into recall; a comparison table is the answer. `Risk`.
+- **[hybrid]** Does this modal earn its interruption — a genuinely blocking decision, an
+  irreversible consequence, or input without which nothing proceeds? An overlay greeting
+  arrivals before any value is delivered does not. `Risk`.
+- **[visual]** Confirmation fatigue: "Are you sure?" on reversible actions. Users learn to
+  dismiss reflexively, and the reflex also dismisses the confirmation that mattered. Prefer
+  undo. `Risk` when the same reflex guards a destructive action elsewhere.
+- **[visual]** Outcome labels beat OK/Cancel and Submit. "Delete 3 files" / "Keep files"
+  survives contexts where OK/Cancel collapses; "Place order" beats "Submit". `Risk` on
+  destructive or committing actions, else `Polish`.
+- **[visual]** Information scent in links and buttons: "Click here", "Learn more", "더보기"
+  predict nothing. Scanning users read roughly the first 11 characters, so front-load the
+  words that carry meaning, and make link text make sense out of context. `Polish`; `Risk`
+  when it is the only route to a primary task.
+- **[visual]** Icon-only controls outside the small universal set (magnifier, house, gear,
+  trash, close). Everything else is a hypothesis awaiting a test; a text label is the
+  cheapest usability insurance and teaches the icon until it can stand alone. `Polish`;
+  `Risk` when the control is destructive or on a primary flow.
+- **[visual]** Convention capital: a redrawn standard symbol spends collective learning
+  accumulated across products and sends the bill to every existing user. Redesigning a
+  learned icon for fashion is a cost, not a refresh. `Polish`.
+- **[hybrid]** Error copy: says what went wrong, precisely where, and the way forward,
+  without blaming the user ("illegal", "invalid user", "fatal", a bare error code). A toast
+  that self-dismisses is fine for "Message sent" and malpractice for an error the user must
+  act on — it evaporates mid-fix. `Risk`; `Fail` when recovery is impossible without it.
+- **[visual]** Notification rationing: every needless notification spends the trust the
+  important one will need. Badge counts run up on trivia train users to ignore badges.
+  `Polish`.
+- **[visual]** Field tax: every field costs completions, and optional ones still cost the
+  user a decision (notice it, interpret it, decide whether it applies, verify skipping is
+  safe). Ask what breaks if the field is deleted. `Polish`; `Risk` on a conversion path.
+- **[visual]** Two to four mutually exclusive options hidden in a dropdown. Seeing all the
+  choices beats an extra click plus a memory test. `Polish`.
+- **[hybrid]** Search, when the surface has one: is the box open rather than behind an icon,
+  wide enough to show the whole query (~27 characters), does Enter work, does the query
+  survive onto the results page? Reformulation is half of search behavior. `Risk` when
+  editing a query means retyping it.
+
 ## Charts & metrics interpretability  *([hybrid])*
 
 - **[hybrid]** A canvas, embedded chart, or shadow-root visualization first appears as

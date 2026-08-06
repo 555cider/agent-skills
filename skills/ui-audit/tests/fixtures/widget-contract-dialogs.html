@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stacked dialogs that ignore Escape</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px;font:16px/1.5 system-ui;color:#111827;background:#fff}
+  button{min-height:44px;min-width:120px;border:1px solid #1d4ed8;border-radius:8px;background:#1d4ed8;color:#fff;font:inherit}
+  .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10}
+  .dialog{position:fixed;left:50%;transform:translateX(-50%);width:340px;padding:20px;background:#fff;border:1px solid #6b7280;border-radius:12px}
+  #first{top:80px;z-index:20}
+  #second{top:320px;z-index:40}
+  .backdrop.second{z-index:30}
+  .actions{display:flex;gap:12px;margin-top:12px}
+</style></head><body>
+  <h1>Export workspace</h1>
+  <div class="backdrop" aria-hidden="true"></div>
+
+  <!-- The first dialog keeps no controls of its own: the second one covers this
+       region, and an unreachable control would be a hover-coverage error rather
+       than the stacking defect this fixture is about. -->
+  <div class="dialog" id="first" role="dialog" aria-modal="true" aria-labelledby="first-title">
+    <h2 id="first-title">Export workspace</h2>
+    <p>Preparing the export archive. This takes about a minute.</p>
+  </div>
+
+  <div class="backdrop second" aria-hidden="true"></div>
+
+  <!-- A second modal opens on top of the first, and neither answers Escape. -->
+  <div class="dialog" id="second" role="alertdialog" aria-modal="true" aria-labelledby="second-title">
+    <h2 id="second-title">Include deleted items?</h2>
+    <p>Deleted items are kept for 30 days and can still be restored.</p>
+    <div class="actions"><button id="second-no">Exclude them</button><button id="second-yes">Include them</button></div>
+  </div>
+
+  <script>
+    // Focus is trapped correctly inside the topmost dialog; only Escape is ignored,
+    // so the fixture isolates the Escape contract from the focus-trap contract.
+    const dialog = document.getElementById('second');
+    const stops = [...dialog.querySelectorAll('button')];
+    stops[0].focus();
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Tab') return;
+      if (event.shiftKey && document.activeElement === stops[0]) {
+        event.preventDefault(); stops[stops.length - 1].focus();
+      } else if (!event.shiftKey && document.activeElement === stops[stops.length - 1]) {
+        event.preventDefault(); stops[0].focus();
+      }
+    });
+  </script>
+</body></html>

@@ -66,8 +66,63 @@
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "light",
       "mustHit": [],
-      "mustNotHit": ["focusTrapLeak"],
-      "note": "A real forward/reverse keyboard trap passes even though background controls remain in the DOM."
+      "mustNotHit": ["focusTrapLeak", "modalEscapeUnhandled"],
+      "note": "A real forward/reverse keyboard trap passes even though background controls remain in the DOM, and trusted Escape cancels the dialog."
+    },
+    {
+      "file": "widget-contract.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "multiRowTabs", "matches": "Danger zone", "severity": "Risk", "confidence": "auto-measured", "note": "W1 seven tabs wrap into two rows on desktop" },
+        { "rule": "placeholderAsOnlyLabel", "matches": "Work email", "severity": "Risk", "confidence": "auto-measured", "note": "W2 aria-label duplicates the placeholder and no visible label exists" },
+        { "rule": "singleRadioInGroup", "matches": "agree-terms", "severity": "Risk", "confidence": "auto-measured", "note": "W3 a lone radio can be switched on but never off" },
+        { "rule": "toggleInsideSubmitForm", "matches": "weekly-digest", "severity": "Risk", "confidence": "auto-measured", "note": "W4 switch promises instant effect inside a Save-committed form" },
+        { "rule": "orphanedFieldError", "matches": "workspace", "severity": "Risk", "confidence": "auto-measured", "note": "W5 aria-invalid with no connected or adjacent error text" }
+      ],
+      "mustAdvise": [
+        { "rule": "desktopHiddenNav", "matches": "nav-toggle", "severity": "Polish", "review": "optional", "note": "W6 primary navigation hidden behind a hamburger on a desktop viewport" }
+      ],
+      "mustNotHit": ["modalEscapeUnhandled", "stackedDialogs"],
+      "note": "Widget-contract recall fixture. Every signal here is Risk or Polish by policy, so the runner must still exit 0."
+    },
+    {
+      "file": "widget-contract.html",
+      "viewport": { "width": 390, "height": 844, "isMobile": true, "dpr": 3 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "placeholderAsOnlyLabel", "matches": "Work email", "note": "viewport-independent contract still holds on mobile" }
+      ],
+      "mustNotHit": ["multiRowTabs"],
+      "mustNotAdvise": ["desktopHiddenNav"],
+      "note": "Precision: wrapped tabs and a hamburger are the right answer on a narrow screen, so neither rule may fire there."
+    },
+    {
+      "file": "widget-contract-clean.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [],
+      "mustNotHit": ["multiRowTabs", "placeholderAsOnlyLabel", "singleRadioInGroup", "toggleInsideSubmitForm", "orphanedFieldError", "stackedDialogs", "modalEscapeUnhandled"],
+      "mustNotAdvise": ["desktopHiddenNav"],
+      "note": "Precision gate: the same widgets built to contract must produce no widget-contract signal at all."
+    },
+    {
+      "file": "widget-contract-dialogs.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "stackedDialogs", "matches": "second", "severity": "Risk", "confidence": "auto-measured", "note": "two modals open at once, neither handed off with inert/aria-hidden" },
+        { "rule": "modalEscapeUnhandled", "matches": "second", "severity": "Fail", "confidence": "auto-measured", "note": "trusted Escape leaves the topmost dialog open" }
+      ],
+      "note": "The only new Fail: proven with trusted Escape input, so it gates completion."
+    },
+    {
+      "file": "escape-exempt.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [],
+      "mustNotHit": ["modalEscapeUnhandled"],
+      "note": "A documented data-ui-audit-escape-exempt reason suppresses the Escape contract; an empty reason would not."
     },
     {
       "file": "modal-wrong-wrap.html",
