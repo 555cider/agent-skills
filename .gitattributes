@@ -1,1 +1,17 @@
+# Check out LF everywhere, regardless of the cloner's core.autocrlf.
+#
+# With core.autocrlf=true — the Git for Windows installer's default — a fresh clone
+# rewrites every tracked file to CRLF. That is harmless under Git Bash, which tolerates
+# \r, but it breaks the scripts this repo ships the moment they run anywhere stricter:
+# a shebang becomes "/usr/bin/env bash\r" under WSL, Linux, or macOS, and direct
+# execution of the .py and .mjs entry points fails the same way. Skills are installed
+# into ~/.agents/skills and executed by whichever agent and shell the user runs, so the
+# checkout must not depend on who cloned it.
+#
+# text=auto still detects binaries and leaves them alone, so this stays correct for
+# assets added later.
+* text=auto eol=lf
+
+# Windows batch interpreters require CRLF.
 *.cmd text eol=crlf
+*.bat text eol=crlf
