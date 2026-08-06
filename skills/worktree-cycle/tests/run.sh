@@ -97,13 +97,14 @@ stash_count()   { git -C "$1" stash list | grep -c . ; }
 # real git. The cleanup-failure branch is otherwise unreachable in a test: it needs an OS-level
 # refusal to delete a directory.
 REAL_GIT="$(command -v git)"
+REAL_RMDIR="$(command -v rmdir)"
 make_git_stub() {
   mkdir -p "$WORK/bin"
   cat > "$WORK/bin/git" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "worktree" ] && [ "${2:-}" = "remove" ]; then
   case "${WTC_STUB_MODE:-}" in
-    remove-empty)
+    remove-empty|remove-empty-locked)
       # Reproduce what Windows actually does: git deregisters the worktree and deletes its
       # contents, then fails on the final rmdir because the directory is still held open.
       p="${@: -1}"
@@ -125,13 +126,28 @@ fi
 exec "$WTC_REAL_GIT" "$@"
 STUB
   chmod +x "$WORK/bin/git"
+
+  # The other half of the Windows leftover: even the empty directory refuses to go while a
+  # process still has its current directory inside it. That lock is bound to the holding
+  # process, not to elapsed time, so nothing the script can do during its own run beats it —
+  # retrying and renaming were both measured to fail. The stub makes that state reachable here.
+  cat > "$WORK/bin/rmdir" <<'STUB'
+#!/usr/bin/env bash
+if [ "${WTC_STUB_MODE:-}" = "remove-empty-locked" ]; then
+  echo "rmdir: failed to remove '${@: -1}': Device or resource busy" >&2
+  exit 1
+fi
+exec "$WTC_REAL_RMDIR" "$@"
+STUB
+  chmod +x "$WORK/bin/rmdir"
 }
 
 # with_git_stub <mode> <cwd> <script> [args...]
 with_git_stub() {
   mode="$1"; shift
   cwd="$1"; shift
-  ( cd "$cwd" && PATH="$WORK/bin:$PATH" WTC_STUB_MODE="$mode" WTC_REAL_GIT="$REAL_GIT" bash "$@" ) \
+  ( cd "$cwd" && PATH="$WORK/bin:$PATH" WTC_STUB_MODE="$mode" \
+      WTC_REAL_GIT="$REAL_GIT" WTC_REAL_RMDIR="$REAL_RMDIR" bash "$@" ) \
     >"$OUT" 2>"$ERR"
   EC=$?
 }
@@ -180,10 +196,33 @@ assert_exit_nonzero "start refuses when the local base branch is missing"
 assert_stderr_contains "start explains the missing local branch" "no local branch 'dev'"
 assert_no_dir "start created nothing on failure" "$repo/.worktrees/feat1"
 
-repo="$(new_repo start-existing-path)"
+# An empty directory at the target path is the residue Windows leaves behind when finish could
+# not rmdir the worktree (see the locked-leftover case below). Refusing it would make that
+# residue block the next start under the same name, so start reclaims it instead. rmdir refuses
+# a non-empty directory, so nothing real can be destroyed by this.
+repo="$(new_repo start-empty-leftover)"
 mkdir -p "$repo/.worktrees/feat1"
 run_in "$repo" "$START" feat1
-assert_exit_nonzero "start refuses an existing path"
+assert_exit "start reclaims an empty leftover directory" 0
+assert_dir "the worktree lands at the reclaimed path" "$repo/.worktrees/feat1"
+assert_eq "the reclaimed worktree still branches from local dev HEAD" \
+  "$(head_of "$repo" dev)" "$(head_of "$repo/.worktrees/feat1" HEAD)"
+
+repo="$(new_repo start-existing-path)"
+mkdir -p "$repo/.worktrees/feat1"
+printf 'keep me\n' > "$repo/.worktrees/feat1/keep.txt"
+run_in "$repo" "$START" feat1
+assert_exit_nonzero "start refuses an existing path that holds anything"
+assert_stderr_contains "the refusal names the path" "already exists"
+if [ -f "$repo/.worktrees/feat1/keep.txt" ]; then
+  pass "the refusal leaves the existing content untouched"; else
+  fail "the refusal leaves the existing content untouched" "keep.txt was destroyed"; fi
+
+repo="$(new_repo start-existing-file)"
+mkdir -p "$repo/.worktrees"
+printf 'not a directory\n' > "$repo/.worktrees/feat1"
+run_in "$repo" "$START" feat1
+assert_exit_nonzero "start refuses a plain file at the target path"
 
 repo="$(new_repo start-existing-branch)"
 git -C "$repo" branch worktree-feat1
@@ -399,6 +438,29 @@ assert_no_dir "the leftover empty directory is removed" "$wt"
 assert_eq "the merge still landed" "$((before + 1))" "$(count_commits "$repo" dev)"
 if branch_exists "$repo" worktree-feat1; then
   fail "the branch is still deleted" "branch still present"; else pass "the branch is still deleted"; fi
+
+# The same Windows leftover, but the directory is still locked when the script tries to finish
+# the job. Measured cause: a process — usually the agent's own shell after a cd, a test runner,
+# or an editor — has its current directory inside the worktree, and Windows holds a handle on it
+# for that process's lifetime. Retrying and renaming were both measured to fail during the run.
+# Everything that could be lost is already safe by then: the squash landed, the branch is gone,
+# and git has deregistered the worktree. What is left is an empty directory, and start reclaims
+# it, so this is residue rather than incomplete work — the run reports it and succeeds.
+repo="$(new_repo cleanup-empty-locked)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt" work.txt "one" "wip"
+before="$(count_commits "$repo" dev)"
+with_git_stub remove-empty-locked "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): locked empty shell"
+assert_exit "a locked empty leftover does not fail the run" 0
+assert_dir "the empty directory survives" "$wt"
+assert_eq "the merge still landed" "$((before + 1))" "$(count_commits "$repo" dev)"
+if branch_exists "$repo" worktree-feat1; then
+  fail "the branch is still deleted" "branch still present"; else pass "the branch is still deleted"; fi
+assert_stderr_contains "the report names the current-directory cause" "current directory"
+assert_stderr_contains "the report says the next start reclaims it" "start-worktree.sh"
+assert_stderr_not_contains "it is not reported as incomplete cleanup" "cleanup is incomplete"
+assert_stderr_not_contains "and does not warn against re-running" "do NOT re-run"
 
 # A worktree git genuinely could not touch (the junction case) stays a failure.
 repo="$(new_repo cleanup-hard-fail)"

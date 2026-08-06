@@ -70,7 +70,12 @@ directories yourself.
   Every guard runs before anything is modified, a merge conflict restores the
   main worktree untouched, untracked files the merge would overwrite are stashed
   rather than deleted, and incomplete cleanup exits non-zero with the remedy that
-  matches the actual leftover. Never pushes.
+  matches the actual leftover. The one leftover that is **not** treated as failure
+  is Windows' own: a process whose current directory sits inside the worktree locks
+  that directory for its lifetime, so git empties and deregisters the worktree but
+  cannot delete the directory — measured to defeat both retry and rename during the
+  run. That empty residue exits zero and is reclaimed by the next **start** under the
+  same name, so it never retires a worktree name. Never pushes.
 - [`skills/screen-map/`](skills/screen-map/README.md) — an agent-readable map of a web
   app: which screens exist and the concrete action that moves between any two. One
   crawl writes a **snapshot** (`.screen-map/map.json`) pinned to the app commit; maps

@@ -99,6 +99,15 @@ if [ -z "$WTPATH" ]; then
   elif [ -d "$MAIN/.claude/worktrees" ]; then WTPATH="$MAIN/.claude/worktrees/$NAME"
   else WTPATH="$MAIN/.worktrees/$NAME"; fi
 fi
+# An empty directory here is the residue finish leaves on Windows when it could not remove the
+# worktree directory itself (see finish-worktree.sh). That lock belongs to whichever process had
+# its current directory inside the worktree and outlives the finish run, so finish cannot clear
+# it. Refusing the path would let that residue block this worktree name for good, so reclaim it.
+# rmdir refuses a non-empty directory, which is exactly the guarantee needed here: real work
+# can never be destroyed by this, and anything else still falls through to the guard below.
+if [ -d "$WTPATH" ] && rmdir "$WTPATH" 2>/dev/null; then
+  echo "· reclaimed an empty leftover directory: $WTPATH"
+fi
 [ -e "$WTPATH" ] && die "already exists: $WTPATH"
 git show-ref --verify --quiet "refs/heads/$BR" && die "branch already exists: $BR"
 

@@ -62,6 +62,20 @@
       ]
     },
     {
+      "id": "empty-directory-residue-is-not-a-failed-cleanup",
+      "prompt": "워크트리 정리해줘. 방금까지 그 워크트리 안에서 작업하고 있었어. (Windows)",
+      "expected_output": "Finish exits zero, having merged, deleted the branch, and deregistered the worktree, leaving only an empty directory that Windows would not delete. The report says the cycle completed and mentions the leftover as residue — not as failed cleanup, and not as a reason to re-run.",
+      "files": [],
+      "assertions": [
+        "Reports the run as successful, because finish exits zero for an empty-directory leftover.",
+        "Does not describe the leftover as incomplete cleanup, lost work, or a reason to re-run finish.",
+        "Explains that a process whose current directory was inside the worktree held the lock, rather than guessing at a git fault.",
+        "Does not retry rmdir or rename inside the same run, since the lock lasts as long as the holding process.",
+        "Notes that the residue blocks nothing because start reclaims an empty directory at the same path.",
+        "Leaves the main worktree and the integration branch untouched apart from the squash commit."
+      ]
+    },
+    {
       "id": "untracked-collision-is-stashed-not-misdiagnosed",
       "prompt": "메인트리에 초안으로 만들어 둔 파일들이 있는데, 같은 경로를 워크트리에서 커밋했어. 이제 정리해줘.",
       "expected_output": "Finish detects that the incoming paths already exist untracked in the main worktree, stashes exactly those files, completes the squash merge, and reports the stash it left behind.",
