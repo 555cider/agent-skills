@@ -154,6 +154,7 @@ Only high-confidence measured signals appear here. `Polish` remains in the total
     "stateSetup": { "status": "not-configured", "actions": 0, "assertions": 0 },
     "keyboardProbe": { "status": "checked", "expected": 8, "visited": 8, "maxSteps": 120 },
     "hoverProbe": { "status": "not-applicable", "expected": 0, "checked": 0, "missing": 0 },
+    "escapeProbe": { "status": "checked", "dialogs": 1, "modalSelector": "div#confirm", "probed": 1, "closed": 1 },
     "rulesExpected": ["effectiveContrast", "stickyOverlapContent"],
     "rulesRun": ["effectiveContrast", "stickyOverlapContent"],
     "ruleCoverage": [{
@@ -170,7 +171,7 @@ Only high-confidence measured signals appear here. `Polish` remains in the total
     "suppressed": { "whitelist": 0, "baseline": 0, "perRuleCap": 0, "advisoryCap": 0, "byRule": {} },
     "counts": { "Fail": 0, "Risk": 0, "Polish": 0 },
     "advisoryTotals": { "required": 0, "optional": 0 },
-    "timings": { "navigationMs": 800, "stateSetupMs": 0, "detectMs": 80, "keyboardMs": 300, "pointerMs": 0, "screenshotMs": 20, "totalMs": 1250 },
+    "timings": { "navigationMs": 800, "stateSetupMs": 0, "detectMs": 80, "keyboardMs": 300, "pointerMs": 0, "escapeMs": 10, "screenshotMs": 20, "totalMs": 1250 },
     "status": "checked"
   }],
   "totals": { "Fail": 0, "Risk": 0, "Polish": 0 },
@@ -181,6 +182,8 @@ Only high-confidence measured signals appear here. `Polish` remains in the total
 Cells are sorted by configuration index even when workers run concurrently. Fresh browser contexts isolate cookies, local storage, cache, and service workers.
 
 `ruleCoverage[]` preserves the manifest proof for each `window.__uiAudit()` invocation in configured scroll order. Each entry records `scroll`, `phase`, `rulesExpected`, `rulesRun`, `rulesMissing`, `rulesSkipped`, and `checked | error`; error entries also include `error`. Missing/non-array manifest fields, an empty expected manifest, skipped rules, or expected rules absent from that report's run list are errors. The cell-level `rulesExpected`, `rulesRun`, `rulesMissing`, and `rulesSkipped` fields remain aggregate compatibility evidence, not the completeness decision. Any error entry makes the cell an error even when the cell-level unions look complete.
+
+`escapeProbe` records the trusted-Escape contract for the topmost modal in the cell: `checked` with `closed: 1` when the dialog dismissed, `checked` with `closed: 0` alongside a `modalEscapeUnhandled` Fail when it did not, and `not-applicable` when no modal was open or the dialog carried a non-empty `data-ui-audit-escape-exempt` reason. The probe is destructive — it closes dialogs — so the runner fires it last in the cell and reads no further evidence from the DOM afterwards. Any other status makes the cell an error.
 
 `interceptions` remains the schema-v2 aggregate match count for existing consumers. New consumers should use `stateMock.rules[]` to prove each declared rule. Each rule object retains `pattern`, normalized `method`, `minMatches`, observed `matches`, held-request count, and `checked | not-forced` status.
 

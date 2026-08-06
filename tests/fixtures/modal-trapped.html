@@ -13,7 +13,7 @@
   <div class="backdrop"></div>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="title">
     <h1 id="title">Confirm change</h1>
-    <p>The background remains focusable in the DOM, but trusted Tab input is trapped.</p>
+    <p>The background remains focusable in the DOM, but trusted Tab input is trapped, and Escape cancels.</p>
     <div class="dialog-actions"><button id="cancel">Cancel</button><button id="confirm">Confirm</button></div>
   </div>
   <script>
@@ -21,6 +21,7 @@
     const stops = [...dialog.querySelectorAll('button')];
     stops[0].focus();
     document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { dialog.remove(); return; }
       if (event.key !== 'Tab') return;
       if (event.shiftKey && document.activeElement === stops[0]) {
         event.preventDefault(); stops[stops.length - 1].focus();

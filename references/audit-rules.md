@@ -340,6 +340,94 @@ Segmented/tab/radio groups where the wrong item looks active.
   nested duplicate, whitelist, and baseline targets. `maxTargets` truncation or a probe
   error makes coverage incomplete instead of silently skipping targets.
 
+## multiRowTabs — `Risk` — auto-measured
+Wrapped tab strip. A standard widget promises a rule by its shape; a tab strip promises
+parallel panels whose positions stay put.
+- **Method:** for each `[role=tablist]`, bucket the visible `[role=tab]` rects by `rect.top`
+  with a 4px tolerance. Two or more buckets is a wrapped strip. Selecting a back-row tab
+  reshuffles the rows, so every other tab moves.
+- **Threshold:** `rows > 1` with at least one row holding two or more tabs.
+- **FP guards:** mobile cells and the `reflow-320` adaptation are exempt — wrapping is the
+  correct answer on a narrow screen. `aria-orientation=vertical` and a one-tab-per-row stack
+  (a vertical rail) are exempt. Fewer than three visible tabs is not reported.
+
+## placeholderAsOnlyLabel — `Risk` — auto-measured
+A field whose only visible naming text is its placeholder (WCAG 3.3.2).
+- **Method:** inspect visible controls with a non-empty `placeholder`. Pass when a visible
+  `<label>` wraps or references the control, or `aria-labelledby` resolves to a visible
+  non-empty element. Otherwise report when the control still carries an accessible name
+  (`aria-label`, `aria-labelledby`, `title`) — the placeholder is then the only label the
+  eye ever gets, and it disappears at the first keystroke.
+- **Threshold:** no visible label element + an accessible name present.
+- **FP guards:** `type=search` and controls inside `[role=search]` are exempt (the
+  magnifying-glass convention). Input types that render no placeholder are skipped.
+  Mutually exclusive with `unlabeledInput`, which owns the case where nothing names the
+  control at all. A visually-hidden label does not count as a visible label.
+
+## modalEscapeUnhandled — `Fail` — trusted auto-measurement
+Escape is the exit users try before reading anything.
+- **Method:** runner probe, not an in-page rule. After every rule pass, screenshot, and
+  other probe in the cell, focus the first tab stop inside the topmost visible
+  `[aria-modal=true]` dialog, send trusted `Escape` via CDP, settle, and re-read the visible
+  modal list. The dialog still being visible is a `Fail`.
+- **Destructive by design:** the probe closes dialogs, so it runs last and nothing reads the
+  post-Escape DOM as evidence. Cells are isolated browser contexts, so it cannot leak.
+- **Exemption:** `data-ui-audit-escape-exempt="<reason>"` on the dialog itself. An empty
+  attribute does not exempt it.
+- **Coverage guard:** `coverage.matrix[].escapeProbe` records status, dialog count, and
+  whether the dialog closed. A probe error marks the cell unverified rather than passing.
+
+## stackedDialogs — `Risk` — auto-measured
+- **Method:** count visible, non-exempt `[aria-modal=true]` dialogs (`role=dialog`,
+  `role=alertdialog`, `<dialog open>`). Two or more is a signal reported once on the
+  topmost, listing the others.
+- **Threshold:** `dialogs ≥ 2`.
+- **FP guards:** an outer dialog marked `inert` or `aria-hidden=true` is a correct handoff
+  and does not count. Closed `<dialog>` elements and hidden dialogs are skipped.
+
+## singleRadioInGroup — `Risk` — auto-measured
+A circle promises "pick exactly one of these"; a group of one cannot be deselected.
+- **Method:** group every `input[type=radio]` in the document — visible or not — by
+  (form scope, `name`). A visible enabled radio whose group has exactly one member is a
+  signal. An unnamed radio is its own group as far as the browser is concerned.
+- **Threshold:** `groupSize === 1`.
+- **FP guards:** a `[role=radiogroup]` ancestor holding more than one radio (a custom widget
+  managing selection) is exempt. Hidden siblings still count toward group size, so a
+  transient render is not reported.
+
+## toggleInsideSubmitForm — `Risk` — auto-measured
+A switch promises a light switch: it applies the moment it is flipped.
+- **Method:** a visible `[role=switch]` inside a `form`/`[role=form]` that also contains a
+  visible enabled submit control (`type === 'submit'` or `'image'`, so a bare `<button>`
+  counts). The screen then contradicts itself about when the setting takes effect.
+- **FP guards:** search forms, forms with no visible submit control, and
+  `data-ui-audit-toggle-exempt` are skipped.
+
+## orphanedFieldError — `Risk` — auto-measured
+An error message is a one-sentence recovery plan; "something is wrong" is not one (WCAG 3.3.1).
+- **Method:** a visible control with `aria-invalid="true"` and no error text of its own —
+  no `aria-errormessage`/`aria-describedby` resolving to a visible non-empty element, and no
+  visible `[role=alert]`/`.error`/`.field-error`/`.invalid-feedback`/`[data-ui-audit-error]`
+  inside its nearest field wrapper.
+- **Scope limit:** presence only. Whether the message sits *next to* the field is left to the
+  scrutiny checklist — wrapper structures vary too much to measure the distance reliably.
+- **FP guards:** hidden/disabled controls and `aria-invalid` absent or `false` are skipped.
+
+## desktopHiddenNav — optional advisory — auto-measured
+- **Method:** in a non-mobile, non-`reflow-320` cell with no visible
+  `nav`/`[role=navigation]`/`[role=menubar]` carrying three or more visible links, look for a
+  visible disclosure control whose `aria-controls` resolves to a hidden one of those
+  containers, or — when such a hidden container exists — whose label/class matches a
+  hamburger vocabulary (`hamburger`, `menu`, `nav-toggle`, `메뉴`, …) while not expanded.
+  Either way the container must hold at least three links: a small utility popup is not
+  top-level navigation. `[role=menu]` is deliberately excluded, because a closed dropdown
+  sits on almost every page and would make the vocabulary match fire everywhere.
+- **Threshold:** hidden top-level navigation on a pointer-capable desktop layout.
+- **FP guards:** mobile cells and `reflow-320` are exempt — that is where the hamburger
+  belongs. Any visible nav with three or more links suppresses it. Intent varies for app
+  rails and canvas tools, so it never escalates above `Polish`; `data-ui-audit-nav-exempt`
+  suppresses it explicitly.
+
 ## missingModalBackdrop — `Risk` — auto-measured
 - **Method:** Detects open modals (`[role=dialog]`, `[aria-modal=true]`) that lack a full-screen, semi-transparent z-index backdrop overlay to obscure background content.
 - **Threshold:** presence of open modal without a fixed/absolute full-screen overlay behind it. A backdrop candidate must cover at least 90% of the viewport, have semi-transparent background/opacity, and sit below the modal by z-index (or same z-index but earlier DOM order).

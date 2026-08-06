@@ -149,7 +149,15 @@
     ruleDef('buttonSelfHeightMismatch', ruleButtonHeightMismatch, 'document', 'heuristic'),
     ruleDef('stretchedIconDistortion', ruleStretchedIconDistortion, 'document', 'media'),
     ruleDef('missingClickableCursor', ruleMissingClickableCursor, 'document', 'heuristic'),
-    ruleDef('missingModalBackdrop', ruleMissingModalBackdrop, 'document', 'visibility')
+    ruleDef('missingModalBackdrop', ruleMissingModalBackdrop, 'document', 'visibility'),
+    // Widget contract: does the control keep the promise its own shape makes?
+    ruleDef('multiRowTabs', ruleMultiRowTabs, 'document', 'widget-contract'),
+    ruleDef('placeholderAsOnlyLabel', rulePlaceholderAsOnlyLabel, 'document', 'widget-contract', 'WCAG 3.3.2'),
+    ruleDef('stackedDialogs', ruleStackedDialogs, 'document', 'widget-contract'),
+    ruleDef('singleRadioInGroup', ruleSingleRadioInGroup, 'document', 'widget-contract'),
+    ruleDef('toggleInsideSubmitForm', ruleToggleInsideSubmitForm, 'document', 'widget-contract'),
+    ruleDef('orphanedFieldError', ruleOrphanedFieldError, 'document', 'widget-contract', 'WCAG 3.3.1'),
+    ruleDef('desktopHiddenNav', ruleDesktopHiddenNav, 'document', 'widget-contract')
   ];
 
   function ruleDef(name, fn, phase, category, standard) {
@@ -1654,8 +1662,209 @@
     });
   }
 
+  // -------------------------- widget contract --------------------------
+  // A standard widget promises a rule by its own shape: a square says "pick any", a
+  // circle "pick exactly one", a toggle "this applies now", a tab strip "parallel
+  // panels at one level". These rules check that promise. They are about semantics,
+  // not pixels, so none of them re-measure what the rendering rules above already do.
+
+  function ruleMultiRowTabs(ctx) {
+    // Narrow layouts wrap legitimately; the spatial-memory argument is a desktop one.
+    if (ctx.isMobile || ctx.cfg.adaptation === 'reflow-320') return;
+    qsa('[role=tablist]').forEach(function (list) {
+      if (!isVisible(list) || isExempt(list)) return;
+      if (list.getAttribute('aria-orientation') === 'vertical') return;
+      var tabs = qsa('[role=tab]', list).filter(function (t) { return isVisible(t) && !isExempt(t); });
+      if (tabs.length < 3) return;
+      var rows = [];
+      tabs.forEach(function (tab) {
+        var top = tab.getBoundingClientRect().top;
+        var row = null;
+        for (var i = 0; i < rows.length; i++) if (Math.abs(rows[i].top - top) <= 4) { row = rows[i]; break; }
+        if (row) row.tabs.push(tab); else rows.push({ top: top, tabs: [tab] });
+      });
+      if (rows.length < 2) return;
+      // One tab per row is a vertical rail, not a wrapped horizontal strip.
+      if (rows.every(function (r) { return r.tabs.length === 1; })) return;
+      ctx.findings.push(mk('multiRowTabs', 'Risk', 'auto-measured', cssPath(list),
+        'Tab strip wraps onto more than one row. Selecting a back-row tab reshuffles the rows, so the position users memorized for every other tab moves.',
+        { rows: rows.length, tabs: tabs.length, labels: tabs.slice(0, 8).map(labelText) }, { rows: 1 }, rectOf(list),
+        'Keep tabs to one row: shorten labels to 1-2 words, reduce the tab count, or move the overflow behind a menu or a different navigation pattern.'));
+    });
+  }
+
+  function rulePlaceholderAsOnlyLabel(ctx) {
+    var PLACEHOLDER_TYPES = { text: 1, email: 1, url: 1, tel: 1, password: 1, number: 1, date: 1,
+      'datetime-local': 1, month: 1, week: 1, time: 1 };
+    qsa('input[placeholder],textarea[placeholder]').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      if (!(el.getAttribute('placeholder') || '').trim()) return;
+      var type = (el.getAttribute('type') || 'text').toLowerCase();
+      // The magnifying-glass search box is an accepted convention; everything else
+      // owes the user a label that survives the first keystroke.
+      if (type === 'search' || el.closest('[role=search],form[role=search]')) return;
+      if (el.tagName === 'INPUT' && !PLACEHOLDER_TYPES[type]) return;
+      if (visibleLabelText(el)) return;
+      // No visible label at all. `unlabeledInput` already owns the case where nothing
+      // names the control; this rule owns the one that is programmatically named but
+      // visually labelled by placeholder text only.
+      if (!el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby') && !el.getAttribute('title')) return;
+      ctx.findings.push(mk('placeholderAsOnlyLabel', 'Risk', 'auto-measured', cssPath(el),
+        'Field has no persistent visible label. The placeholder is the only visible naming text and it disappears as soon as the user types, so the field is unlabeled exactly while it is being filled in and reviewed.',
+        { placeholder: (el.getAttribute('placeholder') || '').trim().slice(0, 60),
+          accessibleNameSource: el.getAttribute('aria-labelledby') ? 'aria-labelledby' : (el.getAttribute('aria-label') ? 'aria-label' : 'title') },
+        {}, rectOf(el),
+        'Add a persistent visible <label> outside the field. Keep the placeholder for format examples only.'));
+    });
+  }
+
+  function ruleStackedDialogs(ctx) {
+    var open = qsa('[aria-modal=true],dialog[open]').filter(function (d) {
+      if (!isVisible(d) || isExempt(d)) return false;      // isExempt covers inert / aria-hidden handoff
+      if (d.tagName === 'DIALOG') return d.hasAttribute('open');
+      var role = d.getAttribute('role');
+      return role === 'dialog' || role === 'alertdialog';
+    });
+    if (open.length < 2) return;
+    var top = open[open.length - 1];
+    ctx.findings.push(mk('stackedDialogs', 'Risk', 'auto-measured', cssPath(top),
+      'More than one modal dialog is open at once. Each modal taxes working memory with the task it interrupted; stacking them means the user must hold two suspended tasks to answer one question.',
+      { dialogs: open.length, selectors: open.map(cssPath).slice(0, 4) }, { dialogs: 1 }, rectOf(top),
+      'Resolve or dismiss the first dialog before opening the second, or merge them into one decision. If the outer dialog is genuinely handed off, mark it inert/aria-hidden.'));
+  }
+
+  function ruleSingleRadioInGroup(ctx) {
+    // Group by (form scope, name) over ALL radios, visible or not: a hidden sibling
+    // still makes the group a real group, and reporting on a transient render is noise.
+    var groups = {};
+    qsa('input[type=radio]').forEach(function (radio) {
+      var key = formKey(radio) + '::' + (radio.name || '');
+      (groups[key] = groups[key] || []).push(radio);
+    });
+    qsa('input[type=radio]').forEach(function (radio) {
+      if (!isVisible(radio) || isExempt(radio)) return;
+      // An unnamed radio is its own group as far as the browser is concerned, but a
+      // custom radiogroup widget may still be managing selection across siblings.
+      var group = radio.closest('[role=radiogroup]');
+      if (group && qsa('[role=radio],input[type=radio]', group).length > 1) return;
+      if (!radio.name) {
+        report(radio, 1, 'the radio has no name attribute, so it forms a group of one');
+        return;
+      }
+      var siblings = groups[formKey(radio) + '::' + radio.name] || [];
+      if (siblings.length === 1) report(radio, siblings.length, 'no other radio shares this name');
+    });
+
+    function report(radio, size, why) {
+      ctx.findings.push(mk('singleRadioInGroup', 'Risk', 'auto-measured', cssPath(radio),
+        'Radio button is the only member of its group (' + why + '). A radio cannot be deselected once touched, so this control can be switched on but never back off.',
+        { groupName: radio.name || null, groupSize: size }, { groupSize: 2 }, rectOf(radio),
+        'Use a checkbox for a standalone on/off choice, or give the group the sibling options it implies (adding an explicit "None" option when abstaining is legitimate).'));
+    }
+  }
+
+  function ruleToggleInsideSubmitForm(ctx) {
+    qsa('[role=switch]').forEach(function (toggle) {
+      if (!isVisible(toggle) || isExempt(toggle)) return;
+      if (toggle.hasAttribute('data-ui-audit-toggle-exempt')) return;
+      var form = toggle.closest('form,[role=form]');
+      if (!form || form.matches('[role=search]') || form.closest('[role=search]')) return;
+      var submit = qsa('button,input[type=submit],input[type=image]', form).filter(function (b) {
+        return b.type === 'submit' || b.type === 'image';
+      }).filter(function (b) { return isVisible(b) && !isExempt(b); })[0];
+      if (!submit) return;
+      ctx.findings.push(mk('toggleInsideSubmitForm', 'Risk', 'auto-measured', cssPath(toggle),
+        'Toggle switch sits inside a form that commits through a submit button. A switch promises a light-switch effect that applies the moment it is flipped, so the screen contradicts itself about when the setting takes effect.',
+        { submitControl: cssPath(submit), submitLabel: labelText(submit) }, {}, rectOf(toggle),
+        'Use a checkbox when a submit button commits the choice, or apply the toggle immediately and drop it from the submitted form.'));
+    });
+  }
+
+  function ruleOrphanedFieldError(ctx) {
+    qsa('[aria-invalid=true]').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      if (!el.matches('input,select,textarea,[role=textbox],[role=combobox],[role=spinbutton],[contenteditable=true]')) return;
+      if (referencedVisibleText(el, 'aria-errormessage') || referencedVisibleText(el, 'aria-describedby')) return;
+      var wrapper = el.closest('.field,.form-field,.form-group,.form-row,.input-group,label') || el.parentElement;
+      if (wrapper && qsa('[role=alert],.error,.error-message,.field-error,.invalid-feedback,[data-ui-audit-error]', wrapper)
+        .some(function (n) { return isVisible(n) && (n.innerText || '').trim(); })) return;
+      ctx.findings.push(mk('orphanedFieldError', 'Risk', 'auto-measured', cssPath(el),
+        'Field is marked invalid but carries no error text of its own. The user is told something is wrong without being told what, where, or how to recover.',
+        { ariaInvalid: 'true', ariaDescribedby: el.getAttribute('aria-describedby') || null,
+          ariaErrormessage: el.getAttribute('aria-errormessage') || null }, {}, rectOf(el),
+        'Put a specific message next to the offending field and connect it with aria-describedby or aria-errormessage. Say what went wrong and how to fix it, without blaming the user.'));
+    });
+  }
+
+  function ruleDesktopHiddenNav(ctx) {
+    // Small screens are exactly where a hamburger is the right answer.
+    if (ctx.isMobile || ctx.cfg.adaptation === 'reflow-320') return;
+    // Deliberately excludes [role=menu]: a closed dropdown popup is on almost every
+    // page and is not the site's top-level navigation. Only containers that hold a
+    // real link set count, in either direction.
+    var navSelector = 'nav,[role=navigation],[role=menubar]';
+    function navLinkCount(nav) {
+      return qsa('a,[role=link],[role=menuitem]', nav).filter(function (link) {
+        return !isExempt(link) && (link.textContent || '').trim();
+      }).length;
+    }
+    var hasVisibleNav = qsa(navSelector).some(function (nav) {
+      if (!isVisible(nav) || isExempt(nav)) return false;
+      return qsa('a,[role=link],[role=menuitem]', nav).filter(function (link) {
+        return isVisible(link) && !isExempt(link);
+      }).length >= 3;
+    });
+    if (hasVisibleNav) return;
+    var hiddenNavExists = qsa(navSelector).some(function (nav) {
+      return !isVisible(nav) && navLinkCount(nav) >= 3;
+    });
+    var toggle = qsa('button,[role=button],a[aria-controls],[aria-expanded]').filter(function (el) {
+      if (!isVisible(el) || isExempt(el) || el.hasAttribute('data-ui-audit-nav-exempt')) return false;
+      var controlled = el.getAttribute('aria-controls')
+        ? document.getElementById(el.getAttribute('aria-controls'))
+        : null;
+      if (controlled && controlled.matches(navSelector) && !isVisible(controlled) && navLinkCount(controlled) >= 3) return true;
+      if (!hiddenNavExists) return false;
+      if (el.getAttribute('aria-expanded') === 'true') return false;
+      var hint = (labelText(el) + ' ' + (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '') + ' ' +
+        (el.getAttribute('aria-label') || '')).toLowerCase();
+      return /hamburger|menu-?(toggle|button|btn)?|nav-?(toggle|button|btn)|navigation|메뉴|네비|내비/.test(hint);
+    })[0];
+    if (!toggle) return;
+    ctx.findings.push(mk('desktopHiddenNav', 'Polish', 'auto-measured', cssPath(toggle),
+      'Top-level navigation is hidden behind a disclosure control on a pointer-capable desktop layout. Navigation users cannot see is navigation they do not use, and the screen has the room to show it.',
+      { toggleLabel: labelText(toggle) || (toggle.getAttribute('aria-label') || ''),
+        controls: toggle.getAttribute('aria-controls') || null }, {}, rectOf(toggle),
+      'Show top-level navigation inline on desktop and reserve the hamburger for small viewports. If this surface is deliberately chrome-free (an app rail, a canvas tool), mark it data-ui-audit-nav-exempt.'));
+  }
+
   // ------------------------------ helpers ------------------------------
   function qsa(sel, root2) { return Array.prototype.slice.call((root2 || document).querySelectorAll(sel)); }
+  function labelText(el) { return ((el && (el.innerText || el.textContent)) || '').trim().replace(/\s+/g, ' ').slice(0, 40); }
+  function formKey(el) {
+    if (!el.form) return 'doc';
+    var forms = Array.prototype.indexOf.call(document.forms, el.form);
+    return 'form:' + forms;
+  }
+  function referencedVisibleText(el, attr) {
+    var ids = (el.getAttribute(attr) || '').trim().split(/\s+/).filter(Boolean);
+    return ids.some(function (id) {
+      var target = document.getElementById(id);
+      // A visually-hidden target is not a label the user can read while typing, and
+      // not an error message they can see next to the field.
+      return !!target && isVisible(target) && !isExempt(target) &&
+        !!(target.innerText || target.textContent || '').trim();
+    });
+  }
+  function visibleLabelText(el) {
+    var wrapping = el.closest('label');
+    if (wrapping && isVisible(wrapping) && !isExempt(wrapping) && (wrapping.innerText || '').trim()) return true;
+    if (el.id) {
+      var associated = document.querySelector('label[for="' + cssEscape(el.id) + '"]');
+      if (associated && isVisible(associated) && !isExempt(associated) && (associated.innerText || '').trim()) return true;
+    }
+    return referencedVisibleText(el, 'aria-labelledby');
+  }
   function hasOwnText(el) {
     for (var i = 0; i < el.childNodes.length; i++) {
       var c = el.childNodes[i];

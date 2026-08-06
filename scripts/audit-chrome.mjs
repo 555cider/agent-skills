@@ -574,7 +574,7 @@ function stateMockSnapshot(proof) {
 
 function keyboardFinding(rule, selector, message, measured, rect, suggestedFix, options = {}) {
   return { rule, severity: options.severity || 'Fail', confidence: options.confidence || 'auto-measured',
-    category: 'keyboard', standard: options.standard || null, selector, message,
+    category: options.category || 'keyboard', standard: options.standard || null, selector, message,
     measured, threshold: options.threshold || {}, rect: rect || null, suggestedFix };
 }
 
@@ -666,6 +666,43 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
   const baselineKeys = new Set((baselineEntries || []).filter(item => item && typeof item === 'object')
     .map(item => `${item.rule}|${item.selector}`));
   return { findings: findings.filter(finding => !baselineKeys.has(`${finding.rule}|${finding.selector}`)), proof };
+}
+
+// Escape closes dialogs, so this probe is destructive by design. It must run after
+// every rule pass, screenshot, and other probe in the cell; nothing may read the
+// post-Escape DOM as evidence for anything else.
+async function runEscapeProbe(cdp, sessionId, config = {}, whitelist = [], baselineEntries = []) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('keyboardProbe must be an object');
+  const settle = Number(config.settleMs ?? 0);
+  const plan = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.escapePlan(${JSON.stringify(whitelist || [])})`);
+  if (!plan.present) {
+    return { findings: [], proof: { status: 'not-applicable', reason: 'no visible modal dialog in this cell', dialogs: 0, probed: 0, closed: 0 } };
+  }
+  if (plan.exempt) {
+    return { findings: [], proof: { status: 'not-applicable', reason: `dialog is exempt: ${plan.exemptReason}`,
+      dialogs: plan.visibleModalCount, modalSelector: plan.selector, probed: 0, closed: 0 } };
+  }
+  // A user presses Escape with their attention — and focus — inside the dialog.
+  await runtimeJson(cdp, sessionId, 'window.__uiAuditKeyboardProbe.focusModalBoundary("first")');
+  await dispatchKey(cdp, sessionId, 'Escape');
+  if (settle) await sleep(settle); else await nextFrame(cdp, sessionId);
+  const result = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.escapeResult(${JSON.stringify(plan.selector)})`);
+  const findings = [];
+  if (result.stillOpen && !plan.whitelisted) {
+    findings.push(keyboardFinding('modalEscapeUnhandled', plan.selector,
+      'Modal dialog stays open after trusted Escape. Escape is the exit users try before reading anything, so a dialog that ignores it holds the interrupted task hostage to finding the right button.',
+      { stillOpen: true, tabbableCount: plan.tabbableCount, visibleModalCount: result.visibleModalCount },
+      plan.rect,
+      'Close the dialog on Escape and treat it as cancel, leaving the underlying task untouched. If it genuinely must not be dismissible, mark it data-ui-audit-escape-exempt="<reason>".',
+      { standard: 'ARIA APG modal dialog', category: 'widget-contract' }));
+  }
+  const baselineKeys = new Set((baselineEntries || []).filter(item => item && typeof item === 'object')
+    .map(item => `${item.rule}|${item.selector}`));
+  return {
+    findings: findings.filter(finding => !baselineKeys.has(`${finding.rule}|${finding.selector}`)),
+    proof: { status: 'checked', dialogs: plan.visibleModalCount, modalSelector: plan.selector,
+      probed: 1, closed: result.stillOpen ? 0 : 1 }
+  };
 }
 
 function pointerFinding(group) {
@@ -880,7 +917,7 @@ try {
     const url = baseUrl + route;
     const identity = { route, viewport: vp.name, theme, state, adaptation };
     const cell = { ...identity, index: spec.index };
-    const timings = { navigationMs: 0, stateSetupMs: 0, detectMs: 0, keyboardMs: 0, pointerMs: 0, screenshotMs: 0, totalMs: 0 };
+    const timings = { navigationMs: 0, stateSetupMs: 0, detectMs: 0, keyboardMs: 0, pointerMs: 0, escapeMs: 0, screenshotMs: 0, totalMs: 0 };
     const cellStarted = Date.now();
     const cellFindings = [];
     const cellAdvisories = [];
@@ -1003,6 +1040,22 @@ try {
         addSignal(signal, cellFindings, cellAdvisories);
       }
 
+      // Destructive: Escape closes the dialog, so this is the last thing that
+      // touches the page in this cell. No evidence is read from the DOM after it.
+      const escapeStarted = Date.now();
+      let escape;
+      try {
+        escape = await runEscapeProbe(cdp, sessionId, keyboardCfg, auditCfg.whitelist || [], baseline);
+      } catch (error) {
+        escape = { findings: [], proof: { status: 'error', reason: String(error && error.message || error), dialogs: 0, probed: 0, closed: 0 } };
+      }
+      timings.escapeMs = Date.now() - escapeStarted;
+      cell.escapeProbe = escape.proof;
+      for (const signal of escape.findings) {
+        signal.scroll = 'escape'; signal.cell = identity;
+        addSignal(signal, cellFindings, cellAdvisories);
+      }
+
       const dedupedFindings = dedupeSignals(cellFindings);
       const dedupedAdvisories = capOptionalAdvisories(
         dedupeSignals(cellAdvisories),
@@ -1032,6 +1085,8 @@ try {
         cell.status = 'error'; cell.error = 'keyboard probe incomplete: ' + (keyboard.proof.reason || keyboard.proof.status);
       } else if (!['checked', 'not-applicable'].includes(pointer.proof.status)) {
         cell.status = 'error'; cell.error = 'hover probe incomplete: ' + (pointer.proof.reason || pointer.proof.status);
+      } else if (!['checked', 'not-applicable'].includes(escape.proof.status)) {
+        cell.status = 'error'; cell.error = 'escape probe incomplete: ' + (escape.proof.reason || escape.proof.status);
       } else {
         const mockProved = cell.stateMock.status === 'checked';
         const stateChecked = mock.proof.explicit

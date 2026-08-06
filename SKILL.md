@@ -1,6 +1,6 @@
 ---
 name: ui-audit
-description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots. Run it for visual QA, responsive or zoom/reflow checks, contrast and overflow defects, keyboard focus/focus-ring review, target sizing, modal containment, async action feedback, hover affordance, or any claim that a rendered screen is done. It measures the live DOM first and separates confirmed defects from visual-review advisories.
+description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots. Run it for visual QA, responsive or zoom/reflow checks, contrast and overflow defects, keyboard focus/focus-ring review, target sizing, modal containment and Escape dismissal, async action feedback, hover affordance, or standard-widget semantics such as wrapped tab strips, placeholder-only labels, radio/checkbox/toggle choice models, and hidden desktop navigation — or any claim that a rendered screen is done. It measures the live DOM first and separates confirmed defects from visual-review advisories.
 license: MIT
 compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium browser with rendered DOM access.
 ---
@@ -8,6 +8,8 @@ compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium bro
 # UI Audit
 
 Catch frontend defects that look plausible in source but fail in the rendered screen. Measure the live DOM first; reserve visual judgment for signals that CSSOM and geometry cannot settle reliably.
+
+This runs on two axes. **Rendering** asks whether the screen was drawn correctly — contrast, overflow, clipping, collapse, focus rings, target size, overlap, stability. **Widget contract** asks a different question: whether each standard control keeps the promise its own shape makes. A square says "pick any", a circle "pick exactly one", a toggle "this applies now", a tab strip "parallel panels whose positions stay put", a label "this text will still be here while you type". A screen can pass every pixel measurement and still lie about its own rules.
 
 Use the user's language in reports. Group results by failure mode, not discovery order.
 
@@ -101,6 +103,10 @@ Leave the pending cell unverified when the mutation cannot be held deterministic
 - The 24–44px mobile comfort range is an optional advisory, not a conformance failure.
 - The detector intentionally does not recurse into open shadow roots or inspect pixels/semantics inside `iframe`, `canvas`, `object`, or `embed`. Every visible such surface produces a required `uninspectedSurface` advisory. Resolve it with separate rendered evidence, or add `data-ui-audit-surface-exempt="<reason>"` to that exact host only when equivalent evidence already exists; an empty reason does not exempt it.
 
+- Widget-contract rules that depend on screen size — `multiRowTabs` and `desktopHiddenNav` — are skipped on mobile cells and in `reflow-320`. Wrapped tabs and a hamburger are the correct answer on a narrow screen, not a defect.
+- `modalEscapeUnhandled` is proven with trusted `Escape` input and is the only widget-contract `Fail`. The probe closes dialogs, so it runs last in the cell; nothing reads the post-Escape DOM as evidence. Its result lives in `coverage.matrix[].escapeProbe`, and a probe error marks the cell unverified instead of passing. A dialog that genuinely must not be dismissible uses `data-ui-audit-escape-exempt="<reason>"`; an empty reason does not exempt it.
+- Other widget-contract exemptions are `data-ui-audit-toggle-exempt` (a switch that really is deferred by design) and `data-ui-audit-nav-exempt` (an app rail or canvas tool with no top-level navigation to show).
+
 WCAG text contrast is a confirmed `Fail` below 4.5:1 for normal text or 3:1 for large text, including currently rendered placeholder text. Audit placeholders only while `:placeholder-shown`, and composite computed `::placeholder` opacity into its foreground alpha. A gradient, image, element/ancestor opacity, filter, blend mode, mask, inset shadow, backdrop filter, or otherwise indeterminate paint chain remains a required visual advisory because CSSOM cannot prove the final composited pixels.
 
 ## Output and completion gate
@@ -168,5 +174,8 @@ When adding a failure mode, put deterministic measurement in code and add `mustH
 - Treating a typography recommendation such as 1.5 body line-height or one sans-serif family as a WCAG failure.
 - Suppressing broad selectors before investigating a shared-component root cause.
 - Claiming a modal trap from DOM structure without trusted forward and reverse Tab input.
+- Reading the DOM after the Escape probe and treating it as cell evidence; the probe closes dialogs on purpose and runs last for that reason.
+- Reporting wrapped tabs or a hamburger on a mobile cell; both rules are desktop-only by design.
+- Treating a placeholder as the field's label. `unlabeledInput` covers a control with no accessible name at all; `placeholderAsOnlyLabel` covers the aria-labeled control whose only *visible* naming text vanishes at the first keystroke.
 - Evaluating `audit.js` after navigation and assuming CLS was measured; install `__uiAuditInstallCLS()` on the new document as the runner does.
 - Treating document top/bottom coverage or a populated DOM fixture as proof that a nested-scroll decision state was reached.

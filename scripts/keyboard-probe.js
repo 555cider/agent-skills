@@ -70,12 +70,31 @@
     });
   }
 
+  // A named radio group is ONE sequential tab stop: the browser focuses the checked
+  // member, or the first member when none is checked, and arrow keys move within the
+  // group. Counting every radio inflates the expected stop count and makes any page
+  // with a radio group report incomplete keyboard coverage.
+  function collapseRadioGroups(list) {
+    var chosen = {};
+    list.forEach(function (el) {
+      if (!el.matches('input[type=radio]') || !el.name) return;
+      var key = (el.form ? 'form:' + Array.prototype.indexOf.call(document.forms, el.form) : 'doc') + '::' + el.name;
+      if (!chosen[key] || (el.checked && !chosen[key].checked)) chosen[key] = el;
+    });
+    return list.filter(function (el) {
+      if (!el.matches('input[type=radio]') || !el.name) return true;
+      var key = (el.form ? 'form:' + Array.prototype.indexOf.call(document.forms, el.form) : 'doc') + '::' + el.name;
+      return chosen[key] === el;
+    });
+  }
+
   function tabbables(scope) {
     var all = [];
     walkRoots(scope || document, all);
     all = all.filter(function (el) {
       return isTabbable(el) && (!scope || scope === document || composedContains(scope, el));
     });
+    all = collapseRadioGroups(all);
     return all.map(function (el, order) {
       return { el: el, order: order, tabIndex: el.tabIndex };
     }).sort(function (a, b) {
@@ -365,6 +384,36 @@
     return { ok: active === target, target: cssPath(target), active: cssPath(active) };
   }
 
+  // Escape is destructive: it closes the dialog. The driver must call these last,
+  // after every rule pass, screenshot, and other probe in the cell has finished.
+  function escapePlan(whitelist) {
+    var modal = topModal();
+    if (!modal) return { present: false, visibleModalCount: 0 };
+    var exempt = modal.getAttribute('data-ui-audit-escape-exempt');
+    var reason = typeof exempt === 'string' ? exempt.trim() : '';
+    var rect = modal.getBoundingClientRect();
+    return {
+      present: true,
+      selector: cssPath(modal),
+      visibleModalCount: visibleModals().length,
+      // An empty attribute is not an exemption, matching the uninspectedSurface rule.
+      exempt: !!reason,
+      exemptReason: reason || null,
+      whitelisted: matchesWhitelist(modal, whitelist),
+      tabbableCount: tabbables(modal).length,
+      rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height }
+    };
+  }
+
+  function escapeResult(selector) {
+    var open = visibleModals().map(cssPath);
+    return {
+      stillOpen: open.indexOf(selector) >= 0,
+      visibleModalCount: open.length,
+      openSelectors: open.slice(0, 4)
+    };
+  }
+
   function traversalPlan() {
     var modal = topModal();
     var scope = modal || document;
@@ -389,6 +438,8 @@
     version: 1,
     modalPlan: modalPlan,
     focusModalBoundary: focusModalBoundary,
+    escapePlan: escapePlan,
+    escapeResult: escapeResult,
     traversalPlan: traversalPlan,
     focusTraversalStart: focusTraversalStart,
     inspectActive: inspectActive,

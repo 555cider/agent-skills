@@ -242,6 +242,39 @@
         "Treats a missing rulesExpected, rulesRun, or rulesSkipped array as malformed coverage.",
         "Does not let evidence from another scroll position satisfy the incomplete report."
       ]
+    },
+    {
+      "id": "escape-failure-gates-completion",
+      "prompt": "The audit reports modalEscapeUnhandled as a Fail on the confirm dialog. The dialog has a Cancel button, so ship it.",
+      "expected_output": "Keeps the audit blocked: Escape was proven with trusted keyboard input, a Cancel button is not a substitute, and the only ways out are fixing the handler or a documented data-ui-audit-escape-exempt reason.",
+      "files": [],
+      "assertions": [
+        "Does not downgrade the measured Fail because a Cancel button exists.",
+        "States that the finding came from trusted Escape input, not DOM structure.",
+        "Offers the documented exemption attribute with a reason as the only alternative to fixing it."
+      ]
+    },
+    {
+      "id": "desktop-hamburger-is-advisory",
+      "prompt": "The audit flagged desktopHiddenNav on our marketing site. Is the build failing because of it?",
+      "expected_output": "Explains that desktopHiddenNav is an optional Polish advisory that never blocks the completion gate, and that hiding top-level navigation on desktop is a judgment call the team can accept or exempt.",
+      "files": [],
+      "assertions": [
+        "Says the advisory does not gate completion or change the exit code.",
+        "Does not present it as a WCAG or conformance failure.",
+        "Mentions data-ui-audit-nav-exempt or an accepted baseline as the way to record the decision."
+      ]
+    },
+    {
+      "id": "mobile-wrapped-tabs-are-not-a-defect",
+      "prompt": "Our tab strip wraps to two rows on phones. Add it to the defect list.",
+      "expected_output": "Declines to report it: multiRowTabs is measured only on pointer-capable desktop cells because wrapping is the correct behavior on a narrow screen, and checks whether the desktop cell wraps instead.",
+      "files": [],
+      "assertions": [
+        "Does not report wrapped tabs from a mobile cell as a finding.",
+        "Explains that the rule is skipped on mobile and reflow-320 by design.",
+        "Redirects to the desktop cell, where the spatial-memory cost is real."
+      ]
     }
   ]
 }

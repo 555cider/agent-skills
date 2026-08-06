@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Documented non-dismissible dialog</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px;font:16px/1.5 system-ui;color:#111827;background:#fff}
+  button{min-height:44px;min-width:120px;border:1px solid #1d4ed8;border-radius:8px;background:#1d4ed8;color:#fff;font:inherit}
+  .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5)}
+  .dialog{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:340px;padding:20px;background:#fff;border:1px solid #6b7280;border-radius:12px}
+  .actions{display:flex;gap:12px;margin-top:12px}
+</style></head><body>
+  <h1>Workspace</h1>
+  <div class="backdrop" aria-hidden="true"></div>
+  <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="title"
+       data-ui-audit-escape-exempt="Session has expired; the user must sign in again or sign out, so dismissing without a choice would leave a dead screen.">
+    <h2 id="title">Your session expired</h2>
+    <p>Sign in again to keep working, or sign out to end the session.</p>
+    <div class="actions"><button id="sign-out">Sign out</button><button id="sign-in">Sign in</button></div>
+  </div>
+  <script>
+    const dialog = document.querySelector('.dialog');
+    const stops = [...dialog.querySelectorAll('button')];
+    stops[0].focus();
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Tab') return;
+      if (event.shiftKey && document.activeElement === stops[0]) {
+        event.preventDefault(); stops[stops.length - 1].focus();
+      } else if (!event.shiftKey && document.activeElement === stops[stops.length - 1]) {
+        event.preventDefault(); stops[0].focus();
+      }
+    });
+  </script>
+</body></html>
