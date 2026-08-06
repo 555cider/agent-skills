@@ -84,6 +84,20 @@ directories yourself.
   executed under any flag, though their edges are still recorded. Later sessions
   ask `route --to '/orders/:id'` and get an executable action sequence that was
   walked end to end, plus a freshness verdict against the current commit.
+- [`skills/step-back/`](skills/step-back/) — the two ways effort goes wrong, treated
+  as one dial: shipping the first thing that worked, and still verifying something
+  that was fine forty tool calls ago. The premise is that the judgment already
+  exists — an agent asked mid-grind whether the work should be taking this long
+  answers *no*, and is right — and what is missing is a moment when that judgment
+  runs. So the skill fixes three **countable** tripwires (about to declare done; the
+  same failure or check for the third time; one subgoal past 15 tool calls) and
+  replaces the free question with an expensive one: not "was this the best?" but
+  "what would I do differently on a rewrite?", and not "should I keep going?" but
+  "what am I trying to learn, in one sentence?". A first firing is decided alone and
+  reported in one line; the **same** tripwire firing twice goes to the human, because
+  the earlier decision to continue has already been shown wrong. Prompt only — no
+  scripts, no hooks — and explicitly not permission to narrow the scope the user
+  asked for.
 
 ## Install
 
