@@ -20,9 +20,10 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { launchBrowser, Page, sleep } from './browser.mjs';
 import {
-  SCHEMA_VERSION, classifyAction, fingerprintSignature, normalizePath, pathFromEntrypoints,
-  renderMarkdown, routeTemplate, routeToSteps, shortestSafePath, stateById, stateKey, stateKind,
-  stateTitle, statesByRoute, transitionsFrom,
+  SCHEMA_VERSION, authTarget, classifyAction, fingerprintSignature, normalizePath,
+  pathFromEntrypoints, renderMarkdown, replayPathKey, routeTemplate, routeToSteps,
+  shortestSafePath, stateById, stateKey, stateKind, stateTitle, statesByRoute,
+  transitionsFrom,
 } from './model.mjs';
 
 const EXIT_OK = 0, EXIT_NO_ANSWER = 1, EXIT_ERROR = 2, EXIT_REFUSED = 3;
@@ -94,6 +95,7 @@ function loadConfig(configPath) {
   config.budget = { ...DEFAULT_BUDGET, ...(config.budget || {}) };
   config.actionPolicy = config.actionPolicy || {};
   config.viewport = config.viewport || { width: 1280, height: 900 };
+  config.storageSeed = config.storageSeed || null;
   config.__dir = dirname(absolute);
   config.__path = absolute;
   return config;
@@ -302,6 +304,28 @@ async function commandCrawl(options) {
   const keyOf = observation =>
     stateKey(routeTemplate(observation.pathname, config), fingerprintSignature(observation.fingerprint));
 
+  /**
+   * Where the clock went. Running out of `maxMillis` is the ordinary way this skill
+   * fails, and without a record the only available answer to "why" is a guess — which is
+   * how the wrong thing gets optimised while the real cost sits untouched. Every number
+   * below is wall time actually spent, attributed to the phase that spent it.
+   */
+  const clock = { ms: new Map(), n: new Map(), byState: new Map() };
+  function spend(label, ms) {
+    clock.ms.set(label, (clock.ms.get(label) || 0) + ms);
+    clock.n.set(label, (clock.n.get(label) || 0) + 1);
+  }
+  async function timed(label, fn) {
+    const started = Date.now();
+    try { return await fn(); } finally { spend(label, Date.now() - started); }
+  }
+  function chargeState(stateId, ms) {
+    const row = clock.byState.get(stateId) || { ms: 0, actions: 0 };
+    row.ms += ms;
+    row.actions += 1;
+    clock.byState.set(stateId, row);
+  }
+
   async function walk(page, path) {
     let observation = null;
     for (const transition of path) {
@@ -326,11 +350,17 @@ async function commandCrawl(options) {
     return { ok: true, observation };
   }
 
+  /** state id -> the replay path that failed, and why. See `reachState`. */
+  const replayFailures = new Map();
+
   /** Walk to `state` the way the map claims it can be walked, then prove we arrived. */
   async function reachState(page, state) {
     const wanted = stateKey(state.route, state.signature);
-    const current = await page.observe().catch(() => null);
-    if (current && keyOf(current) === wanted) return { ok: true, observation: current };
+    const current = await timed('reach.observe', () => page.observe().catch(() => null));
+    if (current && keyOf(current) === wanted) {
+      spend('reach.already-here', 0);
+      return { ok: true, observation: current };
+    }
 
     if (replayVerify) {
       // Walking from wherever we are is still a verified click path, and it avoids
@@ -340,37 +370,62 @@ async function commandCrawl(options) {
         const here = states.find(entry => stateKey(entry.route, entry.signature) === keyOf(current));
         const local = here && shortestSafePath(live(), here.id, state.id);
         if (local && local.length) {
-          const walked = await walk(page, local);
+          const walked = await timed('reach.local-walk', () => walk(page, local));
           if (walked.ok && keyOf(walked.observation) === wanted) {
             return { ok: true, observation: walked.observation };
           }
+          spend('reach.local-walk-wasted', 0);
         }
       }
 
       const resolved = pathFromEntrypoints(live(), state.id);
       if (resolved) {
+        // A screen the crawl cannot re-enter fails the same way for every action it
+        // owns, and each attempt costs a full navigate + settle. On a stateful app —
+        // an editor whose own saves change what the entrypoint renders — that is where
+        // the entire clock goes: one dead screen with two hundred buttons spends the
+        // budget proving the same verdict two hundred times. Remember the verdict per
+        // resolved path, so a path the map has since grown a better route to is still
+        // retried, and an unchanged one is answered without touching the browser.
+        const pathKey = replayPathKey(resolved);
+        const remembered = replayFailures.get(state.id);
+        if (remembered && remembered.pathKey === pathKey) {
+          spend('reach.replay-skipped', 0);
+          return { ok: false, reason: remembered.reason, viaCache: true };
+        }
+
         const origin = byId(resolved.origin);
-        await page.navigate(baseOrigin + (origin?.evidence.urlSample || '/'));
-        // `navigate` returns at load; a client-rendered app has not drawn its
-        // navigation yet. Clicking here finds nothing and reads as a broken map.
-        const landed = await page.settle();
+        const landed = await timed('reach.replay-load', async () => {
+          await page.navigate(baseOrigin + (origin?.evidence.urlSample || '/'));
+          // `navigate` returns at load; a client-rendered app has not drawn its
+          // navigation yet. Clicking here finds nothing and reads as a broken map.
+          return page.settle();
+        });
+        const rememberFailure = reason => {
+          replayFailures.set(state.id, { pathKey, reason });
+          return { ok: false, reason };
+        };
         if (!resolved.path.length) {
           return keyOf(landed) === wanted
             ? { ok: true, observation: landed }
-            : { ok: false, reason: 'entrypoint did not reproduce the mapped screen' };
+            : rememberFailure('entrypoint did not reproduce the mapped screen');
         }
-        const walked = await walk(page, resolved.path);
+        const walked = await timed('reach.replay-walk', () => walk(page, resolved.path));
+        // A click that would not resolve can be a control that simply had not drawn
+        // yet; that is not a structural verdict, so it is not remembered.
         if (!walked.ok) return walked;
         if (keyOf(walked.observation) === wanted) return { ok: true, observation: walked.observation };
-        return { ok: false, reason: 'replay landed on a different screen' };
+        return rememberFailure('replay landed on a different screen');
       }
     }
 
     // No safe click path (only possible with --allow-mutating). A page-kind state may
     // still be URL-addressable; anything else is honestly unreachable.
     if (state.kind === 'page') {
-      await page.navigate(baseOrigin + state.evidence.urlSample);
-      const observation = await page.settle();
+      const observation = await timed('reach.direct-url', async () => {
+        await page.navigate(baseOrigin + state.evidence.urlSample);
+        return page.settle();
+      });
       const arrived = stateKey(routeTemplate(observation.pathname, config), fingerprintSignature(observation.fingerprint));
       if (arrived === stateKey(state.route, state.signature)) {
         state.reachable = 'direct-url';
@@ -382,18 +437,22 @@ async function commandCrawl(options) {
 
   const browser = await launchBrowser({ headless: options.headed !== true, noSandbox: options.noSandbox === true });
   let page;
+  /** The action in hand when a fatal error lands — an error nobody can locate costs more than the bug. */
+  let lastAttempt = null;
   try {
-    page = await Page.open(browser.cdp, { viewport: config.viewport });
+    page = await Page.open(browser.cdp, { viewport: config.viewport, storageSeed: config.storageSeed });
 
     if (config.auth) {
-      await runAuth(page, config, baseOrigin);
+      await timed('setup.auth', () => runAuth(page, config, baseOrigin));
       const state = await page.storageState();
       writeFileSync(join(config.__dir, 'storage-state.json'), JSON.stringify(state, null, 2));
     }
 
     for (const entry of config.entrypoints) {
-      await page.navigate(baseOrigin + entry);
-      const observation = await page.settle();
+      const observation = await timed('setup.entrypoint', async () => {
+        await page.navigate(baseOrigin + entry);
+        return page.settle();
+      });
       const { state, isNew } = registerState(observation);
       if (!entrypoints.includes(state.id)) entrypoints.push(state.id);
       if (isNew) registerActions(state, observation);
@@ -409,23 +468,30 @@ async function commandCrawl(options) {
       const transition = transitions.find(entry => entry.id === item.transitionId);
       if (!state || !transition) continue;
 
+      lastAttempt = { screen: state.route, title: state.title, action: item.actionKey, transition: transition.id };
+      const actionStartedAt = Date.now();
       const reached = await reachState(page, state);
       if (!reached.ok) {
         transition.status = 'blocked';
         transition.blockedReason = reached.reason;
+        transition.ms = Date.now() - actionStartedAt;
+        chargeState(state.id, transition.ms);
         continue;
       }
 
-      const clicked = await page.click(item.actionKey, transition.action.cssFallback);
+      const clicked = await timed('act.click', () => page.click(item.actionKey, transition.action.cssFallback));
       if (clicked.via === 'css') transition.action.fallbackUsed = true;
       if (!clicked.ok) {
         transition.status = 'failed';
         transition.blockedReason = 'could not resolve the element: ' + clicked.reason;
+        chargeState(state.id, Date.now() - actionStartedAt);
         continue;
       }
       executed += 1;
 
-      const after = await page.settle();
+      const after = await timed('act.settle', () => page.settle());
+      transition.ms = Date.now() - actionStartedAt;
+      chargeState(state.id, transition.ms);
       let afterOrigin = null;
       try { afterOrigin = new URL(after.url).origin; } catch { afterOrigin = null; }
       if (afterOrigin && afterOrigin !== baseOrigin) {
@@ -442,9 +508,19 @@ async function commandCrawl(options) {
       if (isNew) registerActions(target, after);
     }
   } catch (error) {
+    // Where it died is most of the diagnosis. `harvest script never became ready` is
+    // true of a crashed tab, a download, a PDF and a page that simply loaded slowly,
+    // and the message alone cannot tell them apart.
+    let at = null;
+    try { at = page ? await page.evaluateJson('({url:location.href,title:document.title,ready:!!(window.__screenMap&&window.__screenMap.ready)})') : null; }
+    catch (probeFailure) { at = { unreachable: probeFailure.message }; }
     try { if (page) await page.close(); } catch { /* closing anyway */ }
     await browser.close();
-    fail(EXIT_ERROR, error.message);
+    fail(EXIT_ERROR, error.message, {
+      lastAttempt,
+      at,
+      progress: { states: states.length, executed, queued: queue.length },
+    });
   }
 
   const frontier = queue.map(item => {
@@ -452,14 +528,44 @@ async function commandCrawl(options) {
     return `${state ? state.route : item.stateId} :: ${item.actionKey}`;
   });
 
+  const finishedAt = new Date().toISOString();
+  const timing = {
+    totalMs: Date.parse(finishedAt) - Date.parse(startedAt),
+    phases: [...clock.ms.entries()]
+      .map(([label, ms]) => ({ label, ms, count: clock.n.get(label) || 0 }))
+      .sort((a, b) => b.ms - a.ms || b.count - a.count),
+    // Which screen the clock was spent on, not which screen it produced: a screen whose
+    // every action costs a walk from an entrypoint is the thing to narrow or drop.
+    byScreen: [...clock.byState.entries()]
+      .map(([id, row]) => {
+        const state = byId(id);
+        return { route: state?.route || id, title: state?.title || '', ...row };
+      })
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 8),
+    // An average hides a bimodal cost. Two actions that each open a 3D editor and
+    // thirty that toggle a panel average out to a number describing neither, and the
+    // fix for one is not the fix for the other.
+    slowest: transitions
+      .filter(transition => transition.ms > 0)
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 10)
+      .map(transition => ({
+        from: byId(transition.from)?.route || transition.from,
+        action: transition.action?.name || transition.action?.kind || '?',
+        status: transition.status,
+        ms: transition.ms,
+      })),
+  };
+
   const info = gitInfo(config.__dir);
   const map = {
     schema: SCHEMA_VERSION,
     app: { baseUrl: config.baseUrl, commit: info.commit, dirty: info.dirty },
     run: {
       id: 'run-' + startedAt.replace(/[-:.]/g, '').slice(0, 15),
-      startedAt, finishedAt: new Date().toISOString(),
-      replayVerify, allowMutating, budgetHit,
+      startedAt, finishedAt,
+      replayVerify, allowMutating, budgetHit, timing,
       dialogs: page ? page.dialogs : [],
     },
     states, transitions, entrypoints,
@@ -483,7 +589,7 @@ async function commandCrawl(options) {
 
   out({
     ok: true, map: mapFile, report: join(config.__dir, 'map.md'),
-    coverage: map.coverage, budgetHit,
+    coverage: map.coverage, budgetHit, timing,
     notExecuted: transitions.filter(transition => transition.status !== 'verified')
       .map(transition => ({ from: byId(transition.from)?.route, action: transition.action.name, class: transition.class, reason: transition.blockedReason })),
   });
@@ -493,7 +599,7 @@ async function runAuth(page, config, baseOrigin) {
   for (const step of config.auth.steps || []) {
     switch (step.kind) {
       case 'goto':
-        await page.navigate(baseOrigin + normalizePath(step.path || '/'));
+        await page.navigate(baseOrigin + authTarget(step.path || '/'));
         await page.settle();
         break;
       case 'fill':
@@ -698,7 +804,7 @@ async function commandVerify(options) {
   const browser = await launchBrowser({ headless: options.headed !== true, noSandbox: options.noSandbox === true });
   let page;
   try {
-    page = await Page.open(browser.cdp, { viewport: config.viewport });
+    page = await Page.open(browser.cdp, { viewport: config.viewport, storageSeed: config.storageSeed });
     const storagePath = join(dirname(path), 'storage-state.json');
     const origin = stateById(map, best.resolved.origin);
     await page.navigate(baseUrl.origin + (origin?.evidence.urlSample || '/'));

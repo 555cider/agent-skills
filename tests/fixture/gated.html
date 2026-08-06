@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>가려진 화면</title></head>
+<body>
+  <main>
+    <h1>가려진 화면</h1>
+    <nav aria-label="주요"><a href="/items">상품 목록</a></nav>
+  </main>
+
+  <!-- The shape every product tour, welcome card and cookie strip takes: the decision
+       is made during mount, from storage, and the backdrop swallows clicks meant for
+       the screen behind. Storage seeded after the first load arrives too late. -->
+  <div id="tour" role="dialog" aria-label="둘러보기" hidden>
+    <button type="button" id="tourstart">둘러보기 시작</button>
+  </div>
+
+  <script>
+    if (localStorage.getItem('tour-done') !== 'true') {
+      document.getElementById('tour').hidden = false;
+      document.querySelector('main').setAttribute('aria-hidden', 'true');
+    }
+  </script>
+</body>
+</html>

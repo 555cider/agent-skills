@@ -9,6 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { countsTowardSettle, storageSeedSource } from './model.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HARVEST_SOURCE = readFileSync(join(HERE, 'harvest.js'), 'utf8');
@@ -150,7 +151,7 @@ export class Page {
     this.idleSince = Date.now();
   }
 
-  static async open(cdp, { viewport = { width: 1280, height: 900 } } = {}) {
+  static async open(cdp, { viewport = { width: 1280, height: 900 }, storageSeed = null } = {}) {
     const { browserContextId } = await cdp.send('Target.createBrowserContext');
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId });
     const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
@@ -162,19 +163,41 @@ export class Page {
     await cdp.send('Emulation.setDeviceMetricsOverride',
       { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: false }, sessionId);
     await cdp.send('Page.setDownloadBehavior', { behavior: 'deny' }, sessionId);
+
+    // Welcome cards, product tours and cookie strips decide whether to appear while the
+    // app mounts, from storage it reads on that first render. Seeding afterwards is too
+    // late: the overlay is already up and its backdrop already swallowing the crawler's
+    // clicks, so the crawl maps a modal instead of the screen behind it. Seeding on every
+    // new document means no page is ever rendered unseeded — including replays.
+    const seed = storageSeedSource(storageSeed);
+    if (seed) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: seed }, sessionId);
+
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: HARVEST_SOURCE }, sessionId);
 
     // Fingerprint stability alone marks a skeleton screen as settled: the DOM holds
     // still for a few hundred ms while the data request is in flight, and the crawler
     // records the loading state as a screen of its own. Track in-flight requests so
     // "settled" also means the app stopped fetching.
-    const started = () => { page.inflight += 1; };
-    const finished = () => {
+    //
+    // Only requests that can carry new content are counted — see `countsTowardSettle`
+    // for why, and for what Playwright does differently. Measured against a Vite app,
+    // counting everything meant `inflight` never returned to zero at all, so every
+    // settle ran to its timeout and the crawl paid seconds per action to re-learn what
+    // it already knew within one.
+    const counted = new Set();
+    page.cleanups.push(cdp.listen('Network.requestWillBeSent', sessionId, params => {
+      // A redirect re-fires for the same id; counting it twice leaks the counter up.
+      if (counted.has(params.requestId)) return;
+      if (!countsTowardSettle(params.type)) return;
+      counted.add(params.requestId);
+      page.inflight += 1;
+    }));
+    const finished = params => {
+      if (!counted.delete(params.requestId)) return;
       page.inflight = Math.max(0, page.inflight - 1);
       page.completions += 1;
       if (page.inflight === 0) page.idleSince = Date.now();
     };
-    page.cleanups.push(cdp.listen('Network.requestWillBeSent', sessionId, started));
     page.cleanups.push(cdp.listen('Network.loadingFinished', sessionId, finished));
     page.cleanups.push(cdp.listen('Network.loadingFailed', sessionId, finished));
 

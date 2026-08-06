@@ -52,6 +52,7 @@ const server = createServer((req, res) => {
     visits += 1;
     return send(res, 200, page('index.html').replace('{{VISITS}}', String(visits)));
   }
+  if (path === '/gated') return send(res, 200, page('gated.html'));
   if (path === '/items') return send(res, 200, page('items.html'));
   if (/^\/items\/\d+$/.test(path)) return send(res, 200, page('item.html'));
   if (path === '/cart') return send(res, 200, page('cart.html'));
