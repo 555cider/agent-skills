@@ -60,7 +60,22 @@
   <p class="plain-contact">문의: help@example.com · 02-1234-5678</p>
   <!-- 통과: 각각 mailto:, tel: 로 연결되어 있다 -->
   <p class="linked-contact">담당: <a href="mailto:ok@example.com">ok@example.com</a> · <a href="tel:+8229998888">02-9999-8888</a></p>
+  <!-- 결함: 국제 표기 연락처도 평문이면 똑같이 누르지 못한다 -->
+  <p class="intl-contact">Overseas: support@example.com · +1 202-555-0173 · (555) 123-4567</p>
   <!-- 통과: 긴 숫자열 안에 전화번호 모양이 들어 있어도 연락처가 아니다 -->
-  <p class="account-no">입금 계좌: 1002-123-456789 · 정산 기준일 2026-01-15</p>
+  <p class="account-no">입금 계좌: 1002-123-456789 · 정산 기준일 2026-01-15 · ISBN 978-3-16-148410-0 · v1.2.3 · 09:00-18:00</p>
+
+  <h2>Overseas settlement</h2>
+  <!-- 결함: 유럽식 자릿점 표기도 수치 열이므로 끝쪽 정렬이어야 한다 -->
+  <table>
+    <thead>
+      <tr><th>Vendor</th><th>Betrag</th><th class="num">Menge</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Aurora GmbH</td><td>1.240.000,50</td><td class="num">12</td></tr>
+      <tr><td>Borealis SARL</td><td>96.000,00</td><td class="num">3</td></tr>
+      <tr><td>Cirrus Ltd</td><td>480.000,25</td><td class="num">7</td></tr>
+    </tbody>
+  </table>
 </main>
 </body></html>

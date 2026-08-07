@@ -490,20 +490,36 @@ Dialog actions the user cannot see when the dialog opens.
 
 ## numericColumnAlignment — `Polish` — auto-measured
 - **Method:** per column of a data table with three or more uniform body rows, parse the visible
-  cell values. When at least `80%` are quantitative (optional sign, currency symbol, thousands
-  grouping, decimal, trailing `%` or a short Korean unit) the column's computed `text-align` must
+  cell values. When at least `80%` are quantitative the column's computed `text-align` must
   resolve to the end edge. Anchored on the header cell so two offending columns stay distinct.
+- **Locale coverage:** the parser accepts all three common grouping conventions —
+  `1,240,000.50` (en/ko/ja), `1.240.000,50` (de/es/it/pt), and `1 240 000,50`
+  (fr/ru/sv/pl, including NBSP, narrow NBSP, thin space, and the Swiss apostrophe). Currency is
+  matched with the Unicode `\p{Sc}` property, so every single-character sign counts, plus a list
+  of letter-written codes (`USD`, `CHF`, `kr`, `zł`, `Kč`, …). The unit list carries Korean and
+  English/SI suffixes symmetrically, so an English column is recognized on the same terms as a
+  Korean one.
 - **Threshold:** numeric ratio `≥ 0.8` and computed alignment of `left`/`start` in an LTR column.
 - **FP guards:** columns containing any date- or time-shaped value are skipped, as are
   `center`-aligned columns, rows with column spans, and RTL columns whose `start` is already the
   end edge for digits.
 
 ## unlinkedContactInfo — `Polish` — auto-measured
-- **Method:** TreeWalker over visible text nodes for email addresses and phone numbers. The phone
-  pattern requires a leading `0` area code or `+` country code **and** separators, plus a digit
-  boundary on both ends so it cannot start inside a longer run — a bank account number such as
-  `1002-123-456789` otherwise contains a phone-shaped substring. Dates and grouped amounts cannot
-  match. Reported once per containing element.
+- **Method:** TreeWalker over visible text nodes for email addresses and phone numbers. Reported
+  once per containing element.
+- **Phone shapes:** a union of the real international forms, not the Korean one alone — a `+`
+  country code with any grouping, the NANP `555-123-4567` / `(555) 123-4567`, and a national
+  trunk-`0` number with either grouped (`02-1234-5678`, `020 7946 0958`, `01 42 68 53 00`) or
+  single-block (`030 12345678`, `010-12345678`) subscriber digits. Every match must then hold
+  `7`–`15` digits, the E.164 range.
+- **Email:** Unicode-aware (`\p{L}`/`\p{N}`), so internationalized addresses with non-ASCII local
+  parts and IDN domains are recognized, not only ASCII ones. A bare `@handle` has no local part
+  and a host without a dotted TLD does not match.
+- **FP guards:** digit boundaries on both ends stop the pattern starting inside a longer run — a
+  bank account number such as `1002-123-456789` otherwise contains a phone-shaped substring — and
+  a trailing-colon guard stops an opening-hours `09:00` being absorbed as another group. ISO and
+  European dates, grouped amounts, ISBNs, IPs, semver strings, US ZIP+4, and SSN-shaped `3-2-4`
+  runs are all excluded by the shapes plus the digit-count filter.
 - **FP guards:** any text already inside an `a[href]`, plus `pre`, `code`, `kbd`, `samp`,
   `textarea`, and `option` scopes, are excluded. Placeholder attributes are never scanned because
   they are not text nodes.
@@ -538,9 +554,13 @@ Dialog actions the user cannot see when the dialog opens.
 
 ## flagAsLanguageIndicator — `Polish` — auto-measured
 - **Method:** a control whose label, `aria-label`, `name`, `id`, or class matches a language
-  vocabulary (`lang`, `language`, `locale`, `i18n`, `언어`, `다국어`) and that contains either a
-  regional-indicator flag emoji pair or an `img`/`svg`/`use` whose `src`/`alt`/`href`/class
-  matches `flag`/`국기`.
+  vocabulary and that contains either a regional-indicator flag emoji pair or an `img`/`svg`/`use`
+  whose `src`/`alt`/`href`/class matches `flag`/`국기`.
+- **Vocabulary:** the defect is universal, so the vocabulary is too — `lang`/`language`/`locale`/
+  `i18n` plus `langue`, `sprache`, `idioma`, `lingua`, `taal`, `språk`, `kieli`, `nyelv`, `język`,
+  `jazyk`, `bahasa`, `ngôn`, `язык`, `мова`, `言語`, `语言`, `語言`, `언어`, `다국어`, `ภาษา`,
+  `لغة`. An English-and-Korean list would only ever report English and Korean products.
+  Word-boundary guards keep `landing`, `slang`, and `label` from matching.
 - **Threshold:** presence of a flag cue in a language control. A flag names a country, not a
   language, so a shared language across countries leaves some readers without a flag of their own.
 

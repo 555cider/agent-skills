@@ -2015,6 +2015,23 @@
   }
 
   function ruleNumericColumnAlignment(ctx) {
+    // Grouping and decimal marks are locale-specific: 1,240,000.50 (en/ko), 1.240.000,50
+    // (de/es/it/pt), 1 240 000,50 (fr/ru/sv/pl). All three are quantitative and all three
+    // belong on the end edge, so the parser recognizes each rather than only the en/ko one.
+    var NUMBER_FORMS = [
+      /^\d+$/,
+      /^\d+[.,]\d+$/,
+      /^\d{1,3}(,\d{3})+(\.\d+)?$/,
+      /^\d{1,3}(\.\d{3})+(,\d+)?$/,
+      /^\d{1,3}( \d{3})+([.,]\d+)?$/
+    ];
+    // \p{Sc} covers every single-character currency sign (won, dollar, euro, yen, pound,
+    // rupee, ruble, lira, shekel, ...); CURRENCY_CODE covers the ones written as letters.
+    // Units are listed symmetrically so an English column is recognized on the same terms
+    // as a Korean one.
+    var CURRENCY_CODE = '(?:USD|EUR|KRW|JPY|CNY|GBP|CHF|SEK|NOK|DKK|PLN|CZK|BRL|INR|RUB|TRY|AUD|CAD|NZD|HKD|SGD|TWD|THB|VND|IDR|MYR|PHP|MXN|ZAR|kr|z\u0142|K\u010d)';
+    var UNIT = /\s?(?:%|\uFF05|\u00B0|\u2103|\u2109|\uAC1C|\uAC74|\uBA85|\uC6D0|\uC810|\uC704|\uD68C|\uBC30|\uB144|\uC6D4|\uC77C|\uC2DC\uAC04|\uBD84|\uCD08|kg|g|km|m|cm|mm|t|ha|L|ml|KB|MB|GB|TB|px|pt|pcs|ea|hrs?|min|sec|days?|items?)$/;
+
     dataTables().forEach(function (table) {
       var rows = bodyRows(table).filter(function (row) {
         return !qsa('td,th', row).some(function (cell) { return (parseInt(cell.getAttribute('colspan'), 10) || 1) > 1; });
@@ -2049,7 +2066,7 @@
         'Numeric column is start-aligned, so the digit places do not line up and the reader cannot compare magnitudes by shape.',
         { column: index + 1, header: header.text, textAlign: align, numericCells: numeric, sampledCells: values.length },
         { textAlign: 'right' }, rectOf(cells[0]),
-        'Right-align quantitative columns (and their headers) and keep nominal text columns start-aligned.'));
+        'Align quantitative columns (and their headers) to the end edge — right in a left-to-right table — and keep nominal text columns start-aligned.'));
     }
 
     function headerFor(table, index) {
@@ -2059,25 +2076,41 @@
     }
 
     function isNumericLike(value) {
-      var cleaned = value.replace(/[\s ]/g, '')
-        .replace(/^[(+\-−]?[₩$€¥£]?/, '')
-        .replace(/[)%]$/, '')
-        .replace(/(원|개|건|명|회|점|위|배|초|분|시간)$/, '');
-      return /^\d{1,3}(,\d{3})*(\.\d+)?$/.test(cleaned) || /^\d+(\.\d+)?$/.test(cleaned);
+      var cleaned = value
+        .replace(/[\u00A0\u202F\u2009\u0027]/g, ' ')   // NBSP, narrow/thin space, Swiss apostrophe
+        .trim()
+        .replace(/^[(+\-\u2212]/, '')
+        .replace(/\)$/, '')
+        .replace(new RegExp('^' + CURRENCY_CODE + '\\s?'), '')
+        .replace(new RegExp('\\s?' + CURRENCY_CODE + '$'), '')
+        .replace(/^\p{Sc}\s?/u, '')
+        .replace(/\s?\p{Sc}$/u, '')
+        .replace(UNIT, '')
+        .trim();
+      if (!cleaned) return false;
+      return NUMBER_FORMS.some(function (form) { return form.test(cleaned); });
     }
 
     function isDateLike(value) {
       return /\d{4}[-./]\d{1,2}[-./]\d{1,2}/.test(value) || /\d{1,2}[-./]\d{1,2}[-./]\d{2,4}/.test(value) ||
-        /\d{1,2}:\d{2}/.test(value);
+        /\d{1,2}:\d{2}/.test(value) || /\d{4}\s?[\u5E74\uB144]/.test(value);
     }
   }
 
   function ruleUnlinkedContactInfo(ctx) {
-    var EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-    // Requires a leading 0 or +country so that dates and grouped amounts cannot match, and
-    // digit boundaries on both ends so the pattern cannot start inside a longer run — an
-    // account number like 1002-123-456789 otherwise yields a phone-shaped substring.
-    var PHONE = /(?<![\d-])(?:\+\d{1,3}[-\s]?)?(?:\(0\d{1,2}\)|0\d{1,2})[-\s]\d{3,4}[-\s]\d{4}(?![\d-])/g;
+    // Unicode-aware so internationalized addresses (non-ASCII local parts and IDN domains)
+    // are recognized, not only ASCII ones.
+    var EMAIL = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.\p{L}{2,}/gu;
+    // Phone shapes differ by country, so the pattern is a union of the real ones rather than
+    // the Korean form alone: +country (any grouping), the NANP 3-3-4, and a national trunk-0
+    // number with either grouped or single-block subscriber digits (KR/JP/UK/DE/FR/CN).
+    // Digit boundaries on both ends stop it starting inside a longer run — an account number
+    // like 1002-123-456789 otherwise yields a phone-shaped substring — and the trailing colon
+    // guard stops an opening-hours "09:00" being absorbed as another group.
+    var PHONE = /(?<![\d-])(?:\+\d{1,3}(?:[-.\s]?\(?\d{1,4}\)?){1,5}|\(\d{2,4}\)[-.\s]?\d{3,4}[-.\s]?\d{3,4}|\d{3}[-.]\d{3}[-.]\d{4}|\(?0\d{1,3}\)?[-.\s]\d{2,4}(?:[-.\s]\d{2,4}){1,3}|\(?0\d{1,3}\)?[-.\s]\d{5,9})(?![\d\-:])/g;
+    // E.164 allows at most 15 digits and no real number has fewer than 7. The length filter
+    // is what keeps the looser shapes above from reporting version strings or short ranges.
+    var PHONE_MIN_DIGITS = 7, PHONE_MAX_DIGITS = 15;
     var reported = [];
     var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
       acceptNode: function (node) {
@@ -2090,7 +2123,10 @@
     for (var node = walker.nextNode(); node; node = walker.nextNode()) {
       var text = node.textContent || '';
       var emails = text.match(EMAIL) || [];
-      var phones = text.match(PHONE) || [];
+      var phones = (text.match(PHONE) || []).filter(function (candidate) {
+        var count = (candidate.match(/\d/g) || []).length;
+        return count >= PHONE_MIN_DIGITS && count <= PHONE_MAX_DIGITS;
+      }).map(function (candidate) { return candidate.trim(); });
       if (!emails.length && !phones.length) continue;
       var host = node.parentElement;
       if (reported.indexOf(host) >= 0) continue;
@@ -2183,7 +2219,18 @@
   }
 
   function ruleFlagAsLanguageIndicator(ctx) {
-    var LANG = /(^|[^a-z])lang(uage)?([^a-z]|$)|locale|i18n|언어|다국어/i;
+    // The defect is universal, so the vocabulary that finds the control must be too: a
+    // switcher labelled "Sprache" or "语言" hides the same flag problem as one labelled
+    // "언어", and an en+ko list would only ever report Korean and English products.
+    var LANG = new RegExp([
+      '(^|[^a-z])lang(uage)?([^a-z]|$)', 'locale', 'i18n',
+      'langue', 'sprache', 'idioma', 'lingua', 'taal', 'spr[åa]k', 'kieli', 'nyelv',
+      'j[eę]zyk', 'jazyk', 'bahasa', 'ngôn',
+      'язык', 'мова',
+      '言語', '语言', '語言',
+      '언어', '다국어',
+      'ภาษา', 'لغة'
+    ].join('|'), 'i');
     var FLAG_EMOJI = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
     qsa('select,button,[role=button],[role=combobox],[role=menu],[role=listbox],a').forEach(function (el) {
       if (!isVisible(el) || isExempt(el)) return;
