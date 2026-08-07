@@ -20,7 +20,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { launchBrowser, Page, sleep } from './browser.mjs';
 import {
-  SCHEMA_VERSION, authTarget, classifyAction, fingerprintSignature, normalizePath,
+  SCHEMA_VERSION, authTarget, classifyAction, fingerprintSignature, mutatingDetour, normalizePath,
   pathFromEntrypoints, playwrightExpr, renderMarkdown, replayPathKey, routeTemplate, routeToSteps,
   shortestSafePath, stateById, stateKey, stateKind, stateTitle, statesByRoute,
   transitionsFrom,
@@ -65,7 +65,7 @@ function fail(code, message, extra = {}) {
 
 // ---------- config ----------
 
-const DEFAULT_BUDGET = { maxStates: 60, maxActions: 300, maxMillis: 600000, listSamples: 3 };
+const DEFAULT_BUDGET = { maxStates: 60, maxActions: 300, maxMillis: 600000, listSamples: 3, checkpointEvery: 10 };
 
 function interpolate(value) {
   if (typeof value !== 'string') return value;
@@ -237,6 +237,9 @@ async function commandCrawl(options) {
   const queue = [];
   let executed = 0;
   let budgetHit = null;
+  let page = null;
+  /** Set by SIGINT so the loop stops between actions instead of mid-CDP-call. */
+  let interrupted = false;
 
   const live = () => ({ states, transitions, entrypoints });
   const byId = id => states.find(state => state.id === id) || null;
@@ -368,6 +371,110 @@ async function commandCrawl(options) {
     clock.byState.set(stateId, row);
   }
 
+  const mapFile = join(config.__dir, 'map.json');
+  // The commit the crawl actually ran against, read before the first click rather than
+  // after the last one: a map is a statement about one revision of the app. `gitInfo`
+  // wants the map path, not its directory — it excludes exactly the files it names.
+  const appInfo = gitInfo(mapFile);
+
+  /**
+   * The map as it stands right now. Callable mid-crawl, because a crawl that dies at
+   * minute nine of a ten-minute budget used to lose every screen it had walked. `hit`
+   * carries the reason the run stopped — `incomplete` means it has not stopped yet, and
+   * a file left saying that is a file whose crawl never came back.
+   */
+  function snapshot(hit) {
+    const finishedAt = new Date().toISOString();
+    const timing = {
+      totalMs: Date.parse(finishedAt) - Date.parse(startedAt),
+      phases: [...clock.ms.entries()]
+        .map(([label, ms]) => ({ label, ms, count: clock.n.get(label) || 0 }))
+        .sort((a, b) => b.ms - a.ms || b.count - a.count),
+      // Which screen the clock was spent on, not which screen it produced: a screen whose
+      // every action costs a walk from an entrypoint is the thing to narrow or drop.
+      byScreen: [...clock.byState.entries()]
+        .map(([id, row]) => {
+          const state = byId(id);
+          return { route: state?.route || id, title: state?.title || '', ...row };
+        })
+        .sort((a, b) => b.ms - a.ms)
+        .slice(0, 8),
+      // An average hides a bimodal cost. Two actions that each open a 3D editor and
+      // thirty that toggle a panel average out to a number describing neither, and the
+      // fix for one is not the fix for the other.
+      slowest: transitions
+        .filter(transition => transition.ms > 0)
+        .sort((a, b) => b.ms - a.ms)
+        .slice(0, 10)
+        .map(transition => ({
+          from: byId(transition.from)?.route || transition.from,
+          action: transition.action?.name || transition.action?.kind || '?',
+          status: transition.status,
+          ms: transition.ms,
+        })),
+    };
+
+    return {
+      schema: SCHEMA_VERSION,
+      app: { baseUrl: config.baseUrl, commit: appInfo.commit, dirty: appInfo.dirty },
+      run: {
+        id: 'run-' + startedAt.replace(/[-:.]/g, '').slice(0, 15),
+        startedAt, finishedAt,
+        replayVerify, allowMutating, budgetHit: hit, timing,
+        dialogs: page ? page.dialogs : [],
+      },
+      states, transitions, entrypoints,
+      coverage: {
+        states: states.length,
+        actionsSeen: transitions.length,
+        executed,
+        // `blocked` used to hold every non-verified transition, so `sampled` and
+        // `unexplored` were counted inside it and again beside it. Two fields now, each
+        // meaning what it says: the honest total, and the narrow status.
+        notExecuted: transitions.filter(transition => transition.status !== 'verified').length,
+        blocked: transitions.filter(transition => transition.status === 'blocked').length,
+        unexplored: transitions.filter(transition => transition.status === 'unexplored').length,
+        sampled: transitions.filter(transition => transition.status === 'sampled').length,
+        failed: transitions.filter(transition => transition.status === 'failed').length,
+        frontier: queue.map(item => {
+          const state = byId(item.stateId);
+          return `${state ? state.route : item.stateId} :: ${item.actionKey}`;
+        }),
+      },
+    };
+  }
+
+  function persist(map) {
+    mkdirSync(config.__dir, { recursive: true });
+    writeFileSync(mapFile, JSON.stringify(map, null, 2));
+    writeFileSync(join(config.__dir, 'map.md'), renderMarkdown(map, freshnessOf(map, mapFile)));
+    return mapFile;
+  }
+
+  // A ten-minute budget is a long time to hold everything in memory and nothing on
+  // disk. Checkpoint often enough that a crash costs seconds of walking, not minutes.
+  const checkpointEvery = Math.max(1, Number(config.budget.checkpointEvery) || 10);
+  let sinceCheckpoint = 0;
+
+  /**
+   * Progress on stderr, never stdout — stdout is the JSON contract. Ten silent minutes
+   * are indistinguishable from a hang, and the cure an agent reaches for is a second
+   * crawl on top of the first.
+   */
+  const quiet = options.quiet === true || options.quiet === 'true';
+  function progress(line) { if (!quiet) process.stderr.write(line + '\n'); }
+
+  let step = 0;
+  /** One line per action, with the outcome and what is still queued behind it. */
+  function trace(state, actionKey, transition) {
+    const reason = transition.blockedReason
+      ? ' — ' + (transition.blockedReason.length > 120
+        ? transition.blockedReason.slice(0, 117) + '…' : transition.blockedReason)
+      : '';
+    progress(`[${step}] ${state.route} :: ${actionKey} → ${transition.status}`
+      + (transition.ms ? ` ${transition.ms}ms` : '') + ` (queue ${queue.length})` + reason);
+  }
+
   async function walk(page, path) {
     let observation = null;
     for (const transition of path) {
@@ -482,8 +589,23 @@ async function commandCrawl(options) {
     return { ok: false, reason: 'no safe path and not URL-addressable' };
   }
 
+  // Ctrl-C on a crawl in progress used to throw the whole walk away. Write what is
+  // known, mark it `interrupted` so nobody mistakes it for a finished map, then let the
+  // loop stop between actions so the browser is closed properly. A second Ctrl-C means
+  // the caller is not willing to wait for that.
+  process.on('SIGINT', () => {
+    if (interrupted) { process.stderr.write('interrupted twice — exiting now\n'); process.exit(130); }
+    interrupted = true;
+    budgetHit = 'interrupted';
+    try {
+      persist(snapshot('interrupted'));
+      process.stderr.write(`interrupted — partial map written to ${mapFile}; press Ctrl-C again to exit now\n`);
+    } catch (error) {
+      process.stderr.write(`interrupted — could not write the partial map: ${error.message}\n`);
+    }
+  });
+
   const browser = await launchBrowser({ headless: options.headed !== true, noSandbox: options.noSandbox === true });
-  let page;
   /** The action in hand when a fatal error lands — an error nobody can locate costs more than the bug. */
   let lastAttempt = null;
   try {
@@ -508,15 +630,20 @@ async function commandCrawl(options) {
     }
 
     while (queue.length) {
+      if (interrupted) { budgetHit = 'interrupted'; break; }
       if (Date.now() > deadline) { budgetHit = 'maxMillis'; break; }
       if (executed >= config.budget.maxActions) { budgetHit = 'maxActions'; break; }
       if (states.length >= config.budget.maxStates) { budgetHit = 'maxStates'; break; }
+
+      if (sinceCheckpoint >= checkpointEvery) { persist(snapshot('incomplete')); sinceCheckpoint = 0; }
+      sinceCheckpoint += 1;
 
       const item = queue.shift();
       const state = byId(item.stateId);
       const transition = transitions.find(entry => entry.id === item.transitionId);
       if (!state || !transition) continue;
 
+      step += 1;
       lastAttempt = { screen: state.route, title: state.title, action: item.actionKey, transition: transition.id };
       const actionStartedAt = Date.now();
       const reached = await reachState(page, state);
@@ -525,6 +652,7 @@ async function commandCrawl(options) {
         transition.blockedReason = reached.reason;
         transition.ms = Date.now() - actionStartedAt;
         chargeState(state.id, transition.ms);
+        trace(state, item.actionKey, transition);
         continue;
       }
 
@@ -534,7 +662,9 @@ async function commandCrawl(options) {
       if (!clicked.ok) {
         transition.status = 'failed';
         transition.blockedReason = 'could not resolve the element: ' + clicked.reason;
-        chargeState(state.id, Date.now() - actionStartedAt);
+        transition.ms = Date.now() - actionStartedAt;
+        chargeState(state.id, transition.ms);
+        trace(state, item.actionKey, transition);
         continue;
       }
       executed += 1;
@@ -555,6 +685,7 @@ async function commandCrawl(options) {
       if (afterOrigin && afterOrigin !== baseOrigin) {
         transition.status = 'blocked';
         transition.blockedReason = 'left-origin';
+        trace(state, item.actionKey, transition);
         await page.navigate(baseOrigin + (byId(entrypoints[0])?.evidence.urlSample || '/'));
         continue;
       }
@@ -564,6 +695,7 @@ async function commandCrawl(options) {
       transition.status = 'verified';
       transition.lastVerifiedAt = new Date().toISOString();
       if (isNew) registerActions(target, after);
+      trace(state, item.actionKey, transition);
     }
   } catch (error) {
     // Where it died is most of the diagnosis. `harvest script never became ready` is
@@ -572,82 +704,32 @@ async function commandCrawl(options) {
     let at = null;
     try { at = page ? await page.evaluateJson('({url:location.href,title:document.title,ready:!!(window.__screenMap&&window.__screenMap.ready)})') : null; }
     catch (probeFailure) { at = { unreachable: probeFailure.message }; }
+    // The walk up to here is real work and still true. Keep it, labelled `crashed` so
+    // nobody reads a half-map as a whole one, and say where it went.
+    let partial = null;
+    try { partial = persist(snapshot('crashed')); } catch { /* the error below matters more */ }
     try { if (page) await page.close(); } catch { /* closing anyway */ }
     await browser.close();
     fail(EXIT_ERROR, error.message, {
       lastAttempt,
       at,
+      partialMap: partial,
       progress: { states: states.length, executed, queued: queue.length },
     });
   }
 
-  const frontier = queue.map(item => {
-    const state = byId(item.stateId);
-    return `${state ? state.route : item.stateId} :: ${item.actionKey}`;
-  });
-
-  const finishedAt = new Date().toISOString();
-  const timing = {
-    totalMs: Date.parse(finishedAt) - Date.parse(startedAt),
-    phases: [...clock.ms.entries()]
-      .map(([label, ms]) => ({ label, ms, count: clock.n.get(label) || 0 }))
-      .sort((a, b) => b.ms - a.ms || b.count - a.count),
-    // Which screen the clock was spent on, not which screen it produced: a screen whose
-    // every action costs a walk from an entrypoint is the thing to narrow or drop.
-    byScreen: [...clock.byState.entries()]
-      .map(([id, row]) => {
-        const state = byId(id);
-        return { route: state?.route || id, title: state?.title || '', ...row };
-      })
-      .sort((a, b) => b.ms - a.ms)
-      .slice(0, 8),
-    // An average hides a bimodal cost. Two actions that each open a 3D editor and
-    // thirty that toggle a panel average out to a number describing neither, and the
-    // fix for one is not the fix for the other.
-    slowest: transitions
-      .filter(transition => transition.ms > 0)
-      .sort((a, b) => b.ms - a.ms)
-      .slice(0, 10)
-      .map(transition => ({
-        from: byId(transition.from)?.route || transition.from,
-        action: transition.action?.name || transition.action?.kind || '?',
-        status: transition.status,
-        ms: transition.ms,
-      })),
-  };
-
-  const mapFile = join(config.__dir, 'map.json');
-  const info = gitInfo(mapFile);
-  const map = {
-    schema: SCHEMA_VERSION,
-    app: { baseUrl: config.baseUrl, commit: info.commit, dirty: info.dirty },
-    run: {
-      id: 'run-' + startedAt.replace(/[-:.]/g, '').slice(0, 15),
-      startedAt, finishedAt,
-      replayVerify, allowMutating, budgetHit, timing,
-      dialogs: page ? page.dialogs : [],
-    },
-    states, transitions, entrypoints,
-    coverage: {
-      states: states.length,
-      actionsSeen: transitions.length,
-      executed,
-      blocked: transitions.filter(transition => transition.status !== 'verified').length,
-      sampled: transitions.filter(transition => transition.status === 'sampled').length,
-      frontier,
-    },
-  };
+  const map = snapshot(budgetHit);
 
   try { if (page) await page.close(); } catch { /* closing anyway */ }
   await browser.close();
+  persist(map);
 
-  mkdirSync(config.__dir, { recursive: true });
-  writeFileSync(mapFile, JSON.stringify(map, null, 2));
-  writeFileSync(join(config.__dir, 'map.md'), renderMarkdown(map, freshnessOf(map, mapFile)));
+  progress(`done: ${map.coverage.states} screens, ${executed} actions executed`
+    + `, ${map.coverage.notExecuted} not executed${budgetHit ? ` (stopped on ${budgetHit})` : ''}`);
 
   out({
     ok: true, map: mapFile, report: join(config.__dir, 'map.md'),
-    coverage: map.coverage, budgetHit, timing,
+    coverage: map.coverage, budgetHit, timing: map.run.timing,
     notExecuted: transitions.filter(transition => transition.status !== 'verified')
       .map(transition => ({ from: byId(transition.from)?.route, action: transition.action.name, class: transition.class, reason: transition.blockedReason })),
   });
@@ -669,9 +751,18 @@ async function runAuth(page, config, baseOrigin) {
             `(()=>{const el=document.querySelector(${JSON.stringify(step.selector)});if(!el)return{ok:false};el.click();return{ok:true};})()`);
           if (!clicked?.ok) throw new Error(`auth step: no element matched ${step.selector}`);
         } else {
-          const key = `${step.actionKind || 'click'}:${step.role || 'button'}:${step.name || ''}`;
-          const clicked = await page.click(key);
-          if (!clicked.ok) throw new Error(`auth step: could not click ${key} (${clicked.reason})`);
+          // A login form's button is a `submit`, not a `click`, so the obvious step —
+          // and the one this skill's own example writes — used to fail `not-found` on
+          // the single most common auth flow there is. `actionKind` still pins it when
+          // a screen holds both; without one, try the kinds a control can have.
+          const kinds = step.actionKind ? [step.actionKind] : ['click', 'submit'];
+          const keys = kinds.map(kind => `${kind}:${step.role || 'button'}:${step.name || ''}`);
+          let clicked = { ok: false, reason: 'no keys tried' };
+          for (const key of keys) {
+            clicked = await page.click(key);
+            if (clicked.ok) break;
+          }
+          if (!clicked.ok) throw new Error(`auth step: could not click ${keys.join(' or ')} (${clicked.reason})`);
         }
         await page.settle();
         break;
@@ -725,8 +816,21 @@ function commandRoute(options) {
     }
   }
   if (!best) {
-    fail(EXIT_NO_ANSWER, `no safe path to ${normalizePath(options.to)}`,
-      { hint: 'the screen exists in the map but no verified safe transition chain reaches it' });
+    // A path that exists but runs through a mutating step is still worth naming. The
+    // caller cannot replay it, but they can decide to walk it once by hand — and
+    // without this they would go looking for a screen the crawl already reached.
+    let detour = null;
+    for (const target of targets) {
+      for (const origin of origins) {
+        detour = detour || mutatingDetour(map, target.id, options.from ? origin : null);
+      }
+    }
+    fail(EXIT_NO_ANSWER, `no safe path to ${normalizePath(options.to)}`, {
+      hint: detour
+        ? 'the screen was reached during the crawl, but only through a step that is not reproducible; walk it by hand or re-crawl with a policy that makes that step safe'
+        : 'the screen exists in the map but no verified transition chain reaches it',
+      mutatingPath: detour || undefined,
+    });
   }
 
   const freshness = freshnessOf(map, path);

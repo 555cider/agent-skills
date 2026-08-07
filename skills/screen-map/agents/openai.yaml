@@ -1,0 +1,4 @@
+interface:
+  display_name: "Screen Map"
+  short_description: "Answer \"how do I get to X\" in a local web app with a click path that was actually walked."
+  default_prompt: "Use $screen-map when you need to reach a screen, run a flow, or write a browser test against a local web app and do not already know the click path: read .screen-map/map.json with `route --to` before crawling, check `status` for freshness, and crawl only when there is no map or the app has moved. Report what the map does not cover — a budget hit, a blocked edge, a sampled list, a leftover frontier — and never present a stale route as fact."

@@ -1,7 +1,21 @@
 # screen-map — an agent-readable map of a web app
 
 Date: 2026-08-04
-Status: accepted
+Status: accepted, with three points superseded by the implementation
+
+The record below is the design as accepted. Three parts of it are no longer what
+the skill does, and `skills/screen-map/references/` is the authority on those:
+
+- **"Unclassifiable means destructive"** became `mutating`, gated behind
+  `--allow-mutating` and configurable via `actionPolicy.unknownActionClass`.
+  Refusing every unrecognized control outright left ordinary apps unmappable;
+  the reasoning is in `references/action-policy.md`.
+- **`kind: "page" | "dialog" | "panel"`** became `"page" | "overlay"`. A dropdown
+  and a modal differ in markup, not in what a crawl must do about them.
+- **"an existing map is reused as the crawl *plan*"** is **not implemented.**
+  Every re-crawl is a fresh breadth-first walk, and there is no `--resume` that
+  picks up the leftover `coverage.frontier`. The snapshot argument below still
+  holds; only the cost claim attached to it is unearned.
 
 ## Problem
 
