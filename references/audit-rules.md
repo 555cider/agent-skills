@@ -542,10 +542,13 @@ Dialog actions the user cannot see when the dialog opens.
   link means the comparison is not conclusive. A purely visual highlight with no programmatic
   marker is still reported — the state has to reach assistive technology too.
 
-## disabledTab — `Risk` — auto-measured
+## disabledTab — optional advisory — auto-measured
 - **Method:** a visible `[role=tab]` matching `[disabled]` or `[aria-disabled=true]`.
 - **Note:** the shared `isExempt` helper drops disabled controls by design, so this rule reads the
-  disabled state directly. Here it is the finding, not a reason to skip.
+  disabled state directly. Here it is the signal, not a reason to skip.
+- **Severity:** `Polish`, never higher. Mainstream design systems document a disabled tab as a
+  supported state, so whether the strip should carry one is a judgment call the team makes —
+  the same reasoning that keeps `desktopHiddenNav` advisory.
 - **FP guards:** tabs inside `aria-hidden`/`inert`/`hidden` subtrees are skipped.
 
 ## nestedTabs — `Polish` — auto-measured

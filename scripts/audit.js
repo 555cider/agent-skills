@@ -2200,7 +2200,10 @@
       if (!isVisible(tab)) return;
       if (tab.closest('[aria-hidden=true],[inert],[hidden]')) return;
       if (!tab.matches('[disabled],[aria-disabled=true]')) return;
-      ctx.findings.push(mk('disabledTab', 'Risk', 'auto-measured', cssPath(tab),
+      // Polish, not Risk: mainstream design systems document a disabled tab as a supported
+      // state, so this is a judgment signal about what the strip teaches, not a measured
+      // defect. Same reasoning as desktopHiddenNav.
+      ctx.findings.push(mk('disabledTab', 'Polish', 'auto-measured', cssPath(tab),
         'Tab is rendered in a disabled state. A tab that cannot be selected still costs a scan and teaches nothing about why it is unavailable or what would unlock it.',
         { label: labelText(tab), disabled: tab.hasAttribute('disabled') ? 'attribute' : 'aria-disabled' }, {}, rectOf(tab),
         'Remove the tab when it does not apply, or keep it selectable and explain the unavailable state inside its panel.'));

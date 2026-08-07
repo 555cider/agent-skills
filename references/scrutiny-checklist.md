@@ -226,7 +226,7 @@ states are *meaningfully distinct* is judgment.
 The audit now measures the widget contracts it can settle from the DOM (`multiRowTabs`,
 `placeholderAsOnlyLabel`, `modalEscapeUnhandled`, `modalActionsOutOfView`, `stackedDialogs`,
 `singleRadioInGroup`, `toggleInsideSubmitForm`, `missingIndeterminateState`, `selectAutoSubmit`,
-`orphanedFieldError`, `desktopHiddenNav`, `navCurrentUnmarked`, `disabledTab`, `nestedTabs`,
+`orphanedFieldError`, `desktopHiddenNav`, `navCurrentUnmarked`, `nestedTabs`,
 `flagAsLanguageIndicator`, `accordionPanelScroll`). What is left here is the part that needs a
 reader: whether the *right* widget was chosen, and whether its words carry enough scent to
 predict what happens next. Do not re-eyeball the measured ones.
@@ -234,6 +234,10 @@ predict what happens next. Do not re-eyeball the measured ones.
 - **[visual]** Cross-dressing: links styled as buttons or buttons styled as links. Links go
   places; buttons do things. When the two visual languages swap, users hesitate before every
   click. `Risk` on a primary flow, else `Polish`.
+- **[auto]** A disabled tab is an optional `disabledTab` advisory, not a defect — several
+  design systems support the state. Judge the case: does the strip explain why the tab is
+  unavailable and what would unlock it, or would removing it until it applies be honest?
+  `Polish`; `Risk` when the disabled tab holds the only route to a primary task.
 - **[visual]** Tabs used for a sequential process (checkout, onboarding, setup). Steps have an
   order; tabs promise free movement between peers. Use a wizard with a visible step
   indicator. `Risk`.
