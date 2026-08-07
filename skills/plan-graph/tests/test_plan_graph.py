@@ -26,6 +26,30 @@ from plan_graph.store import (  # noqa: E402
 )
 
 
+def _symlinks_usable() -> bool:
+    """Whether this process can actually create one, not whether the API exists.
+
+    `os.symlink` is present on Windows and raises WinError 1314 unless the account holds
+    SeCreateSymbolicLinkPrivilege — off by default outside Developer Mode. Guarding on
+    `hasattr` therefore let two tests run and error out on every ordinary Windows
+    checkout, which is indistinguishable in CI output from the security check they
+    protect having broken.
+    """
+    if not hasattr(os, "symlink"):
+        return False
+    with tempfile.TemporaryDirectory() as probe:
+        target = Path(probe) / "target"
+        target.mkdir()
+        try:
+            os.symlink(target, Path(probe) / "link", target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+    return True
+
+
+SYMLINKS_USABLE = _symlinks_usable()
+
+
 class PlanGraphCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="plan-graph-test-")
@@ -401,7 +425,7 @@ x
         payload, _ = self.run_cli("doctor")
         self.assertEqual(payload["diagnostics"], [])
 
-    @unittest.skipIf(not hasattr(os, "symlink"), "symlinks unavailable")
+    @unittest.skipUnless(SYMLINKS_USABLE, "this OS or account cannot create symlinks")
     def test_symlink_store_is_rejected(self) -> None:
         outside = self.root / "outside"
         outside.mkdir()
@@ -411,7 +435,7 @@ x
         payload, _ = self.run_cli("doctor", expect=1)
         self.assertEqual(payload["diagnostics"][0]["code"], "symlink_store")
 
-    @unittest.skipIf(not hasattr(os, "symlink"), "symlinks unavailable")
+    @unittest.skipUnless(SYMLINKS_USABLE, "this OS or account cannot create symlinks")
     def test_symlink_agents_parent_is_rejected_without_traversal(self) -> None:
         outside = self.root / "outside-agents"
         (outside / "plans").mkdir(parents=True)
@@ -420,6 +444,27 @@ x
         codes = [item["code"] for item in payload["diagnostics"]]
         self.assertIn("symlink_store", codes)
         self.assertEqual(payload["data"]["counts"]["plans"], 0)
+
+    def test_cli_writes_utf8_whatever_the_console_codepage_is(self) -> None:
+        """Plan titles and queries are routinely non-ASCII, and the JSON must survive.
+
+        Python picks the locale encoding for a redirected stdout on Windows, so this CLI
+        emitted cp949 there while writing `ensure_ascii=False`. The caller does not even
+        get an error: `subprocess.run` loses the decode exception in its reader thread and
+        returns `stdout=None`, which reads as "the command printed nothing".
+        """
+        self.create("simulation-core", tags=("시뮬레이션",), title="시뮬레이션 접지")
+        env = os.environ.copy()
+        # The fix has to work unprompted; the escape hatch would hide its absence.
+        env.pop("PYTHONIOENCODING", None)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "context", "--query", "시뮬레이션", "--root", str(self.root), "--json"],
+            cwd=SKILL, capture_output=True, text=True, encoding="utf-8", env=env,
+            timeout=20, stdin=subprocess.DEVNULL, check=False,
+        )
+        self.assertIsNotNone(result.stdout, "stdout failed to decode as UTF-8")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("시뮬레이션", result.stdout)
 
     def test_routing_path_escape_is_rejected(self) -> None:
         self.create("one", tags=("one",))
