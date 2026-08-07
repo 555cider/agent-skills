@@ -570,7 +570,29 @@ def run(args: argparse.Namespace) -> int:
     return handlers[args.command](args, root, store)
 
 
+def _force_utf8_streams() -> None:
+    """Emit UTF-8 no matter what the console codepage is.
+
+    Python picks the *locale* encoding for a redirected stdout on Windows — cp949 on a
+    Korean install, cp1252 on a Western one. Plan titles, tags and queries are routinely
+    non-ASCII, so the JSON this tool exists to be piped into arrives as mojibake, or the
+    reader dies decoding it. Worse, `subprocess.run(..., encoding="utf-8")` swallows that
+    decode error in its reader thread and hands back `stdout=None`, which reads as "the
+    command produced nothing" rather than "the bytes were unreadable".
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            # A stream that cannot be reconfigured is one we did not open; leave it be.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
