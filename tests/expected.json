@@ -386,7 +386,9 @@
       "mustAdvise": [
         { "rule": "emptyDataCell", "severity": "Polish", "review": "optional", "note": "blank cell cannot distinguish missing from zero" },
         { "rule": "numericColumnAlignment", "matches": "금액", "review": "optional", "note": "start-aligned money column" },
-        { "rule": "unlinkedContactInfo", "matches": "plain-contact", "review": "optional", "note": "email and phone rendered as plain text" }
+        { "rule": "numericColumnAlignment", "matches": "Betrag", "review": "optional", "note": "de/es/it/pt grouping (1.240.000,50) is recognized as quantitative too" },
+        { "rule": "unlinkedContactInfo", "matches": "plain-contact", "review": "optional", "note": "email and phone rendered as plain text" },
+        { "rule": "unlinkedContactInfo", "matches": "intl-contact", "review": "optional", "note": "+country and NANP numbers are recognized, not only the Korean form" }
       ],
       "mustNotHit": [
         { "rule": "imageMissingAlt", "matches": "img.photo" },
@@ -395,10 +397,11 @@
       ],
       "mustNotAdvise": [
         { "rule": "numericColumnAlignment", "matches": "수량" },
+        { "rule": "numericColumnAlignment", "matches": "Menge" },
         { "rule": "unlinkedContactInfo", "matches": "linked-contact" },
         { "rule": "unlinkedContactInfo", "matches": "account-no" }
       ],
-      "note": "alt=\"\" is a decoration declaration and passes; only a missing attribute fails. Right-aligned numerics and mailto:/tel: links are the pass cases."
+      "note": "alt=\"\" is a decoration declaration and passes; only a missing attribute fails. Right-aligned numerics and mailto:/tel: links are the pass cases. account-no holds an account number, ISO date, ISBN, semver, and an hours range that must never read as a phone number."
     },
     {
       "file": "krds-navigation.html",
@@ -412,7 +415,8 @@
       ],
       "mustAdvise": [
         { "rule": "nestedTabs", "review": "optional", "note": "tablist inside a tabpanel" },
-        { "rule": "flagAsLanguageIndicator", "review": "optional", "note": "flag emoji standing in for a language" }
+        { "rule": "flagAsLanguageIndicator", "matches": "lang-switch", "review": "optional", "note": "flag emoji standing in for a language" },
+        { "rule": "flagAsLanguageIndicator", "matches": "sprache", "review": "optional", "note": "the switcher vocabulary is not English/Korean only" }
       ],
       "mustNotHit": ["multiRowTabs"],
       "mustNotAdvise": ["desktopHiddenNav"],
