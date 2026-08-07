@@ -2,13 +2,37 @@
 
 import { createServer } from 'node:http';
 
-import { launchBrowser, Page } from '../scripts/browser.mjs';
+import { SandboxRefused, launchBrowser, Page } from '../scripts/browser.mjs';
 
 let pass = 0;
 let fail = 0;
 function check(name, condition, detail = '') {
   if (condition) { pass += 1; console.log('PASS  ' + name); }
   else { fail += 1; console.log('FAIL  ' + name + (detail ? '\n        ' + detail : '')); }
+}
+
+// ---------- running as root ----------
+//
+// No browser is launched here: the guard fires before Chrome is even located, which is
+// what makes it testable anywhere. It has to stay a *distinguishable* refusal, because
+// the suite's Chrome-absence skip reads the class name — collapse the two and a machine
+// with a perfectly good Chrome reports twenty checks as "skipped" and exits green.
+{
+  const realGetuid = process.getuid;
+  const realEnv = process.env.SCREEN_MAP_NO_SANDBOX;
+  process.getuid = () => 0;
+  delete process.env.SCREEN_MAP_NO_SANDBOX;
+  let refusal = null;
+  try { await launchBrowser({ headless: true }); }
+  catch (error) { refusal = error; }
+  check('as root, launching a browser is refused rather than silently unsandboxed',
+    refusal instanceof SandboxRefused, refusal ? refusal.constructor.name : 'nothing was thrown');
+  check('the refusal names both ways out, since a container cannot stop being root',
+    /--no-sandbox/.test(refusal?.message || '') && /SCREEN_MAP_NO_SANDBOX/.test(refusal?.message || ''),
+    JSON.stringify(refusal?.message));
+  if (realEnv === undefined) delete process.env.SCREEN_MAP_NO_SANDBOX;
+  else process.env.SCREEN_MAP_NO_SANDBOX = realEnv;
+  if (realGetuid) process.getuid = realGetuid; else delete process.getuid;
 }
 
 const html = '<!doctype html><html><body><main><h1>Final</h1>'

@@ -90,16 +90,26 @@ class CDP {
   }
 }
 
+/** Distinguishable so a caller can tell "no Chrome here" from "Chrome refuses to run this way". */
+export class SandboxRefused extends Error {}
+
 export async function launchBrowser({ headless = true, noSandbox = false } = {}) {
   // Chrome's sandbox refuses to start as root, and the only way past it is to turn the
   // sandbox off — for a tool that drives a browser through pages it was pointed at, on
   // an account that can do anything. Refuse by default and make the trade explicit.
-  if (typeof process.getuid === 'function' && process.getuid() === 0 && !noSandbox) {
-    throw new Error('Chrome cannot sandbox itself as root. Re-run as an unprivileged user, '
-      + 'or pass --no-sandbox once you have accepted that the crawled pages run unsandboxed.');
+  //
+  // The environment variable exists because running as root is normal inside a container
+  // and this skill is invoked as a subprocess many times over: a flag would have to be
+  // threaded through every one of those calls, and a caller who cannot pass it would be
+  // left with no way to say yes at all.
+  const allowNoSandbox = noSandbox || process.env.SCREEN_MAP_NO_SANDBOX === '1';
+  if (typeof process.getuid === 'function' && process.getuid() === 0 && !allowNoSandbox) {
+    throw new SandboxRefused('Chrome cannot sandbox itself as root. Re-run as an unprivileged user, '
+      + 'or accept that the crawled pages run unsandboxed: pass --no-sandbox, or set '
+      + 'SCREEN_MAP_NO_SANDBOX=1 for a whole session.');
   }
-  if (noSandbox) {
-    process.stderr.write('WARNING: Chrome sandbox disabled by --no-sandbox. Crawl only local pages you trust.\n');
+  if (allowNoSandbox) {
+    process.stderr.write('WARNING: Chrome sandbox disabled. Crawl only local pages you trust.\n');
   }
   const bin = findChrome();
   const profile = mkdtempSync(join(tmpdir(), 'screen-map-'));
@@ -108,7 +118,7 @@ export async function launchBrowser({ headless = true, noSandbox = false } = {})
     '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank',
   ];
-  if (noSandbox) args.splice(1, 0, '--no-sandbox');
+  if (allowNoSandbox) args.splice(1, 0, '--no-sandbox');
 
   const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   let wsUrl;

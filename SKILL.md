@@ -77,6 +77,12 @@ safety gate.
 On Git Bash, a lone `--to '/settings'` is rewritten to a Windows path before Node sees it. Pass the
 route without the leading slash (`--to settings`) or set `MSYS_NO_PATHCONV=1`.
 
+As root — inside most containers and many CI images — Chrome cannot sandbox itself, and anything
+that opens a browser (`crawl`, `verify`) refuses rather than silently dropping the sandbox. Re-run
+as an unprivileged user, or accept the trade explicitly: `--no-sandbox` on one command, or
+`SCREEN_MAP_NO_SANDBOX=1` for a session that shells out repeatedly. Either way the pages being
+crawled run unsandboxed on an account that can do anything, so only point it at a local app.
+
 ## Building a map
 
 1. Confirm the target is a disposable local environment with data the user is willing to lose.
