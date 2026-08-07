@@ -36,12 +36,21 @@ Use the user's language in reports.
 
 ## Answering "how do I get to X"
 
-Resolve paths relative to this skill directory. Every command prints JSON.
+**Run from the app repository, calling the script by absolute path.** The script lives in this
+skill directory but resolves `.screen-map/` against the working directory, and freshness is judged
+by the git commit of the directory holding the map — so a command run from the skill directory
+looks for a map that is not there and exits `1 no map at …`.
 
 ```bash
-node scripts/screen-map.mjs status
-node scripts/screen-map.mjs route --to '/announcements/:id'
+cd /path/to/the/app                       # the repo the map describes
+node /path/to/skills/screen-map/scripts/screen-map.mjs status
+node /path/to/skills/screen-map/scripts/screen-map.mjs route --to '/announcements/:id'
 ```
+
+If changing directory is not an option, point every command at the map instead: `--dir <path>`
+names the `.screen-map` directory, `--map <path>` names `map.json` outright. Both accept relative
+paths, resolved against the working directory. `crawl` takes neither — it writes beside its
+`--config` file.
 
 `route` returns the ordered steps, a pasteable Playwright snippet, and `confidence`. Execute those
 steps with whatever browser tooling is at hand. If a step fails, stop trusting the map: run
@@ -50,11 +59,17 @@ steps with whatever browser tooling is at hand. If a step fails, stop trusting t
 Other queries:
 
 ```bash
-node scripts/screen-map.mjs state   --route '/announcements'   # screens at a route, dialogs included
-node scripts/screen-map.mjs actions --route '/announcements'   # every edge with class, status, reason
-node scripts/screen-map.mjs verify  --to '/cart'               # replay the stored route in a browser
-node scripts/screen-map.mjs report                             # regenerate map.md for a human
+screen-map state   --route '/announcements'          # screens at a route, dialogs included
+screen-map actions --route '/announcements'          # every edge with class, status, reason
+screen-map route   --to '/cart' --from '/checkout'   # a path from somewhere other than an entrypoint
+screen-map verify  --to '/cart'                      # replay the stored route in a browser
+screen-map report                                    # regenerate map.md for a human
+screen-map invalidate --transition t7 --reason '…'   # downgrade an edge that stopped working
 ```
+
+When `route` answers `no safe path`, read the rest of the payload before concluding the screen is
+unreachable: a `mutatingPath` means the crawl did get there, through a step that cannot be replayed.
+Walk it by hand, or add that one action to `actionPolicy.allow` and re-crawl.
 
 Exit codes: `0` success · `1` no answer (unknown route, no safe path) · `2` error · `3` refused by a
 safety gate.
@@ -81,7 +96,7 @@ route without the leading slash (`--to settings`) or set `MSYS_NO_PATHCONV=1`.
      ] },
      "routeTemplates": { "overrides": [{ "match": "/p/*", "template": "/p/:slug" }] },
      "actionPolicy": { "deny": [], "allow": [], "unknownActionClass": "mutating" },
-     "budget": { "maxStates": 60, "maxActions": 300, "maxMillis": 600000, "listSamples": 3 }
+     "budget": { "maxStates": 60, "maxActions": 300, "maxMillis": 600000, "listSamples": 3, "checkpointEvery": 10 }
    }
    ```
 
@@ -117,9 +132,19 @@ route without the leading slash (`--to settings`) or set `MSYS_NO_PATHCONV=1`.
 4. Crawl:
 
    ```bash
-   node scripts/screen-map.mjs crawl --config .screen-map/config.json
-   node scripts/screen-map.mjs crawl --config .screen-map/config.json --allow-mutating   # opt-in
+   node /path/to/skills/screen-map/scripts/screen-map.mjs crawl --config .screen-map/config.json
+   node /path/to/skills/screen-map/scripts/screen-map.mjs crawl --config .screen-map/config.json --allow-mutating
    ```
+
+   `crawl` writes `map.json` and `map.md` next to the `--config` file, not into the working
+   directory. It prints one line per action to **stderr** — `[7] /items :: click:button:필터 →
+   verified 809ms (queue 8)` — while stdout stays the JSON result; `--quiet` silences it. A crawl
+   that goes minutes without a line is stuck, not slow. Do not start a second crawl to find out.
+
+   The map is written to disk every `budget.checkpointEvery` actions (default 10), so a crash or a
+   Ctrl-C keeps the walking already done. Any such file says why it stopped in `run.budgetHit`:
+   `incomplete` (a checkpoint whose crawl never reported finishing), `interrupted` (Ctrl-C), or
+   `crashed`. Treat all three as partial and re-crawl; only `null` means the map is whole.
 
 5. Read `map.md`, confirm the screen names make sense, and commit `map.json` and `map.md`. A commit
    containing only those generated artifacts remains fresh; later app or config changes make it stale.

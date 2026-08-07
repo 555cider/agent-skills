@@ -10,7 +10,9 @@ expensive, it loses its place, and everything it worked out dies with the sessio
 one exploration so the next session starts with `route --to '/announcements/:id'` and three
 executable steps.
 
-The design record is `docs/superpowers/specs/2026-08-04-screen-map-design.md`.
+The design record is `docs/superpowers/specs/2026-08-04-screen-map-design.md` in the monorepo. It is
+not part of the published skill — installs clone the `split/screen-map` branch, which carries this
+directory and nothing above it — so the path only resolves for maintainers working in the monorepo.
 
 ## Layout
 

@@ -116,6 +116,20 @@ check('each skipped link states the cap and the total',
   JSON.stringify(sampledLinks.map(transition => transition.blockedReason)));
 check('coverage counts the sampled edges', map.coverage.sampled === 2, JSON.stringify(map.coverage.sampled));
 
+// `blocked` once held every non-verified transition, so the sampled links above were
+// counted twice — once under their own name and once inside `blocked`. The two must
+// now be disjoint, and the parts must add up to the total.
+const cov = map.coverage;
+check('the not-executed total is reported separately from the blocked status',
+  typeof cov.notExecuted === 'number' && typeof cov.blocked === 'number',
+  JSON.stringify(cov));
+check('sampled edges are no longer counted inside blocked',
+  cov.blocked + cov.unexplored + cov.sampled + cov.failed === cov.notExecuted,
+  JSON.stringify(cov));
+check('the not-executed total matches the transitions that were never verified',
+  cov.notExecuted === map.transitions.filter(transition => transition.status !== 'verified').length,
+  JSON.stringify(cov));
+
 // ---------- identity survives a drifting label ----------
 
 const toList = map.transitions.find(transition =>
@@ -124,6 +138,24 @@ check('the link whose badge count changes on every visit is still walked',
   toList?.status === 'verified', JSON.stringify(toList && { status: toList.status, reason: toList.blockedReason }));
 check('its action key drops the badge count',
   !!toList && !/\d/.test(toList.action.key), JSON.stringify(toList?.action.key));
+
+// The other kind of drift: wording, which dropping numbers cannot normalize. The key
+// recorded on the first visit cannot match on the second, so the only way this edge
+// gets walked is the recorded CSS position — and `map-schema.md` promises the map says
+// so. Three checks, because "fallbackUsed is false" and "the map is right" look alike
+// from a distance: the flag must be on here, the click must actually have landed, and
+// the flag must be off on an edge that resolved by name.
+const stash = map.transitions.filter(transition => transition.action.cssFallback === '#stash');
+check('the link whose wording changes between visits is recorded exactly once',
+  stash.length === 1, 'got ' + stash.length);
+check('an element found by CSS position instead of its name is reported as such',
+  stash[0]?.action.fallbackUsed === true,
+  JSON.stringify(stash[0] && { name: stash[0].action.name, fallbackUsed: stash[0].action.fallbackUsed }));
+check('the CSS fallback actually landed — the edge is walked, not merely attempted',
+  stash[0]?.status === 'verified' && stateOf(stash[0]?.to)?.route === '/cart',
+  JSON.stringify(stash[0] && { status: stash[0].status, reason: stash[0].blockedReason }));
+check('an element found by its own name is not reported as a fallback',
+  toList?.action.fallbackUsed === false, JSON.stringify(toList?.action.fallbackUsed));
 
 // ---------- graph integrity ----------
 

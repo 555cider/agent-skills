@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><title>로그인</title>
+  <style>
+    /* A consent strip drawn over everything, the way real ones are. A coordinate click
+       lands on this, not on the button underneath — which is the entire reason
+       `auth.steps` offers a `selector` click as well as `role` + `name`. */
+    #consent { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 9; }
+  </style>
+</head>
+<body>
+  <div id="consent"></div>
+  <main>
+    <h1>로그인</h1>
+    <form method="post" action="/login">
+      <label>메일 <input id="email" name="email" type="email"></label>
+      <label>암호 <input id="password" name="password" type="password"></label>
+      <button id="submit" type="submit">로그인</button>
+    </form>
+  </main>
+
+  <script>
+    // `?stuck=1` keeps the strip up forever, so only a DOM click reaches the button.
+    // Otherwise it clears on its own and both kinds of click work.
+    if (!new URLSearchParams(location.search).has('stuck')) {
+      setTimeout(() => document.getElementById('consent').remove(), 700);
+    }
+  </script>
+</body>
+</html>

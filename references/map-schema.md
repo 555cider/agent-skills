@@ -18,7 +18,17 @@ record in the file belongs to the same app commit.
     "startedAt": "…", "finishedAt": "…",
     "replayVerify": true,     // false means routes were not walked end to end
     "allowMutating": false,
-    "budgetHit": null,        // "maxStates" | "maxActions" | "maxMillis" when the crawl was cut short
+    "timing": {               // where the wall clock went; running out of it is the ordinary failure
+      "totalMs": 214300,
+      "phases":   [{ "label": "act.settle", "ms": 98000, "count": 118 }],   // by phase, descending
+      "byScreen": [{ "route": "/orders", "title": "…", "ms": 61000, "actions": 34 }],
+      "slowest":  [{ "from": "/orders", "action": "내보내기", "status": "verified", "ms": 4100 }]
+    },
+    "budgetHit": null,        // why the crawl stopped short; null means it finished
+                              //   "maxStates" | "maxActions" | "maxMillis" — a ceiling the caller set
+                              //   "incomplete" — a mid-crawl checkpoint; the run never reported finishing
+                              //   "interrupted" — stopped by hand (Ctrl-C)
+                              //   "crashed" — the crawl died with an error
     "dialogs": []             // javascript dialogs encountered and auto-cancelled
   },
 
@@ -54,14 +64,17 @@ record in the file belongs to the same app commit.
     "status": "verified",            // "verified" | "unexplored" | "sampled" | "blocked" | "failed"
     "blockedReason": null,
     "lastVerifiedAt": "…",
-    "invalidatedAt": "…"             // present only after `invalidate`
+    "invalidatedAt": "…",            // present only after `invalidate`
+    "ms": 412                        // wall time this edge cost: reaching the screen, the
+                                     // click, and settling. Absent on edges never attempted.
   }],
 
   "entrypoints": ["s0"],
 
   "coverage": {
-    "states": 24, "actionsSeen": 118, "executed": 71, "blocked": 12,
-    "sampled": 17,                                    // list links capped, see below
+    "states": 24, "actionsSeen": 118, "executed": 71,
+    "notExecuted": 41,                                // every edge that is not `verified`
+    "unexplored": 18, "sampled": 17, "blocked": 6, "failed": 0,   // and its parts; these sum to it
     "frontier": ["/orders :: click:button:내보내기"]   // queued but never reached
   }
 }
@@ -85,6 +98,10 @@ means the crawler could not or would not go there. `failed` means it was tried a
 Sampling is why a twenty-row list does not cost twenty replays. It is a deliberate cap, recorded on
 every skipped edge; raise `budget.listSamples` when the rows genuinely lead somewhere different.
 
+**`coverage.notExecuted` is the total; `blocked` is one status inside it.** They used to be the same
+number under the second name, so `sampled` was counted twice — beside `blocked` and again inside it.
+Read `notExecuted` for "how much of the app was never pressed" and the four status counts for why.
+
 **Only `verified` + `safe` transitions are used for routing.** A path containing a mutating step is
 not reproducible, so `route` will report no path rather than hand back something that works once.
 
@@ -95,6 +112,12 @@ real app it is large. Query it.
 different node from `/items`. Use `state --route` to see all of them and `kind` to tell them apart.
 An app with one global user menu therefore grows one `overlay` node per route; that is accurate, not
 duplication.
+
+**Overlay detection needs a `<main>`.** A true modal is found by `aria-modal`, but a dropdown or
+popover is recognized only by the page having gone `aria-hidden` behind it — and the element checked
+for that is `main, [role="main"]`. An app without one never reports an `overlay` node: the menu's
+items and the background behind it are harvested as one screen, so the map gains transitions that
+only exist while the menu is open. Adding the landmark to the app is the fix.
 
 **The signature is structure, not content.** It hashes landmarks, form identities, input field
 names, the open overlay, and the selected tab. Headings are excluded: on a detail screen the `h1` is
@@ -111,3 +134,9 @@ to list position.
 
 **`frontier` is not decoration.** A non-empty frontier or a non-null `budgetHit` means the map is
 incomplete, and any claim of coverage has to say so.
+
+**A map on disk is not proof a crawl finished.** `crawl` checkpoints every
+`budget.checkpointEvery` actions so a crash does not cost the whole walk, and it writes one last
+file on Ctrl-C and on a fatal error. Those files are structurally identical to a finished map and
+differ only in `run.budgetHit` — `incomplete`, `interrupted`, `crashed`. Read that field before
+reading anything else.

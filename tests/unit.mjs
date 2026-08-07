@@ -150,6 +150,60 @@ eq('a destructive name in a nav is still refused',
 eq('a form submit inside a nav is still mutating',
   classOf({ kind: 'submit', role: 'button', name: '적용', inNav: true }), 'mutating');
 
+// ---------- lexicon boundaries ----------
+//
+// Matching used to be a bare substring test, which is wrong in both directions and
+// wrong in a different way per language. Every case below was produced by calling
+// classifyAction on a name that a real app actually uses.
+//
+// A safe false positive is the worse half: `safe` runs during an ordinary crawl with
+// no --allow-mutating, so "an action is executed only when it is positively
+// recognized as safe" became false the moment a button was named `Install`.
+
+const link = name => ({ kind: 'link', role: 'link', name, href: 'http://x/y', external: false });
+const button = name => ({ kind: 'click', role: 'button', name });
+
+// `all` inside a longer word must not promote an unknown button to safe.
+eq('Install is not safe just because it contains "all"', classOf(button('Install')), 'mutating');
+eq('Uninstall is not safe either', classOf(button('Uninstall')), 'mutating');
+eq('Rollback is not safe just because it contains "back"', classOf(button('Rollback')), 'mutating');
+eq('Research is not safe just because it contains "search"', classOf(button('Research')), 'mutating');
+eq('Review is not safe just because it contains "view"', classOf(button('Review')), 'mutating');
+
+// The same words still work when they really are the word.
+eq('Show all is still safe', classOf(button('Show all')), 'safe');
+eq('Go back is still safe', classOf(button('Go back')), 'safe');
+eq('View details is still safe', classOf(button('View details')), 'safe');
+
+// Destructive false positives cost coverage: a nav link that is never followed is a
+// screen the map never learns about. Korean noun compounds are where this bites —
+// 게시판 is a bulletin board, not the verb 게시.
+eq('게시판 is a board, not the act of publishing', classOf(link('게시판')), 'safe');
+eq('게시글 목록 is a listing', classOf(link('게시글 목록')), 'safe');
+eq('승인 대기 목록 is a view of things awaiting approval', classOf(link('승인 대기 목록')), 'safe');
+eq('전송 내역 is a log of sends, not a send', classOf(link('전송 내역')), 'safe');
+eq('정지 이력 is a history view', classOf(link('정지 이력')), 'safe');
+eq('배포 이력 is a history view', classOf(link('배포 이력')), 'safe');
+eq('Open dropdown is not a "drop"', classOf(button('Open dropdown')), 'mutating');
+eq('Payment methods is not a "pay"', classOf(link('Payment methods')), 'safe');
+eq('Banner is not a "ban"', classOf(button('Banner')), 'mutating');
+
+// …and the verbs they were shadowing are still caught.
+eq('게시 is still destructive', classOf(button('게시')), 'destructive');
+eq('게시하기 is still destructive', classOf(button('게시하기')), 'destructive');
+eq('승인 is still destructive', classOf(button('승인')), 'destructive');
+eq('전송 is still destructive', classOf(button('전송')), 'destructive');
+eq('배포 is still destructive', classOf(button('배포')), 'destructive');
+eq('Drop table is still destructive', classOf(button('Drop table')), 'destructive');
+eq('Ban user is still destructive', classOf(button('Ban user')), 'destructive');
+eq('Pay now is still destructive', classOf(button('Pay now')), 'destructive');
+eq('an inflected destructive verb is still caught',
+  classOf(button('Deletes everything')), 'destructive');
+eq('a destructive link is still refused before the link rule',
+  classOf(link('삭제')), 'destructive');
+eq('취소하기 stays destructive while 취소 stays safe',
+  [classOf(button('취소하기')), classOf(button('취소'))], ['destructive', 'safe']);
+
 // ---------- graph ----------
 
 const map = {
@@ -206,6 +260,21 @@ const markdown = renderMarkdown(map, { status: 'fresh', detail: 'app commit matc
 check('report lists every screen', map.states.every(state => markdown.includes(state.route)));
 check('report calls out actions that were never executed', markdown.includes('## Not executed'));
 check('report records freshness', markdown.includes('Freshness'));
+
+// `blocked` used to be the count of *everything* not executed, so a map that sampled
+// 17 list links reported them once under `sampled` and again under `blocked`. The
+// report now names the honest total and breaks it down by the status that produced it.
+const counted = renderMarkdown({
+  ...map,
+  coverage: { states: 4, actionsSeen: 9, executed: 4, notExecuted: 5, unexplored: 1, sampled: 3, blocked: 1, failed: 0, frontier: [] },
+}, { status: 'fresh' });
+check('the report names the not-executed total, not the blocked count',
+  counted.includes('5 not executed'), counted);
+check('the report breaks that total down by status',
+  counted.includes('1 unexplored, 3 sampled, 1 blocked'), counted);
+check('a map written before the split still renders its old field',
+  renderMarkdown({ ...map, coverage: { states: 1, actionsSeen: 2, executed: 1, blocked: 1 } }, {})
+    .includes('1 not executed'));
 
 // ---------- diagram ----------
 //

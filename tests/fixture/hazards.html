@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>위험 요소</title></head>
+<body>
+  <main>
+    <h1>위험 요소</h1>
+
+    <!-- Three things that wedge or damage a crawl, on one screen so one crawl proves
+         all three. Each is named so the policy classifies it the way a real app's
+         equivalent would be — the point is what the driver does next, not the name. -->
+
+    <!-- An unanswered confirm() locks CDP and takes the whole crawl down with it. The
+         driver cancels it, which also means the guarded work must not happen. -->
+    <p><button id="ask" type="button">전체 보기</button></p>
+
+    <!-- Script-opened windows are the ones the driver has to neutralize: nothing is
+         attached to them, so left open they take the input the crawl believes it is
+         sending here. The driver closes them, which means this button changes nothing
+         observable — the honest record is an edge back to this same screen. -->
+    <p><button id="pop" type="button">장바구니 새 창 보기</button></p>
+
+    <!-- A `target=_blank` *link* is not that case. Chrome navigates the driven tab, so
+         the crawl sees an ordinary navigation and there is nothing to neutralize. The
+         fixture keeps one so that stays true rather than assumed. -->
+    <p><a href="/leaf" target="_blank" rel="noreferrer">설명 문서</a></p>
+
+    <!-- A download navigates nowhere, so a crawl that follows it simply stalls with a
+         file on disk and no screen to observe. -->
+    <p><a href="/report.csv" download="report.csv">보고서</a></p>
+  </main>
+
+  <script>
+    document.getElementById('ask').addEventListener('click', () => {
+      // Cancelled means false, so this never runs. If it ever does, the fixture server
+      // counts it and the test fails — a dialog nobody answered is not a dialog handled.
+      if (confirm('전체를 보시겠습니까?')) {
+        fetch('/__click?name=confirmed', { method: 'POST' });
+      }
+    });
+    document.getElementById('pop').addEventListener('click', () => window.open('/cart', '_blank'));
+  </script>
+</body>
+</html>

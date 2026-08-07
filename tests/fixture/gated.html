@@ -15,7 +15,11 @@
   </div>
 
   <script>
-    if (localStorage.getItem('tour-done') !== 'true') {
+    // Either store dismisses it. Real apps split about evenly between the two, and the
+    // seed has to reach both — a seed that only ever fills localStorage is half a seed.
+    const dismissed = localStorage.getItem('tour-done') === 'true'
+      || sessionStorage.getItem('tour-done') === 'true';
+    if (!dismissed) {
       document.getElementById('tour').hidden = false;
       document.querySelector('main').setAttribute('aria-hidden', 'true');
     }

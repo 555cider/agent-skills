@@ -91,6 +91,16 @@ class CDP {
 }
 
 export async function launchBrowser({ headless = true, noSandbox = false } = {}) {
+  // Chrome's sandbox refuses to start as root, and the only way past it is to turn the
+  // sandbox off — for a tool that drives a browser through pages it was pointed at, on
+  // an account that can do anything. Refuse by default and make the trade explicit.
+  if (typeof process.getuid === 'function' && process.getuid() === 0 && !noSandbox) {
+    throw new Error('Chrome cannot sandbox itself as root. Re-run as an unprivileged user, '
+      + 'or pass --no-sandbox once you have accepted that the crawled pages run unsandboxed.');
+  }
+  if (noSandbox) {
+    process.stderr.write('WARNING: Chrome sandbox disabled by --no-sandbox. Crawl only local pages you trust.\n');
+  }
   const bin = findChrome();
   const profile = mkdtempSync(join(tmpdir(), 'screen-map-'));
   const args = [
@@ -341,6 +351,9 @@ export class Page {
       { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 }, this.sessionId);
     await this.cdp.send('Input.dispatchMouseEvent',
       { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 }, this.sessionId);
+    // `via` has to survive back to the caller: it is the only evidence that the control
+    // was found by CSS position rather than by name, and map.json publishes that as
+    // `fallbackUsed` so a reader can tell which routes are the brittle ones.
     return { ok: true, via: target.via };
   }
 

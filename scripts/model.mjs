@@ -197,10 +197,79 @@ export const DEFAULT_SAFE_PATTERNS = [
   'list', 'home', 'refresh', 'reload', 'all', 'open menu', 'menu', 'skip',
 ];
 
-function matchesAny(name, patterns) {
-  const haystack = String(name || '').toLowerCase();
+/**
+ * A name whose head noun is a viewing word names a *screen*, not the verb inside it.
+ * Korean puts that head last, so `승인 대기 목록` is a list of things awaiting
+ * approval and `전송 내역` is a log of sends — both were classified `destructive` by
+ * the verbs they contain, which meant a crawl never followed them and the map never
+ * learned the screens behind them.
+ *
+ * This only ever *suppresses* a destructive match; it never promotes anything. The
+ * action is then judged by the remaining rules, so a bare button still lands on
+ * `mutating` rather than `safe`.
+ */
+export const DEFAULT_VIEW_NOUNS = [
+  '목록', '리스트', '이력', '내역', '현황', '조회', '통계', '요약', '상세', '정보', '보기', '화면', '페이지',
+  'list', 'history', 'log', 'report', 'summary', 'details', 'detail', 'info', 'status', 'page', 'view',
+];
+
+/**
+ * Hangul has no word boundary, so `\b` does nothing to it: `/\b게시\b/` still matches
+ * `게시판`. What bounds a Korean verb stem is the set of endings that may legally
+ * follow it — `게시하기` is the verb, `게시판` is a different noun that happens to
+ * start with the same two syllables. Anything else in Hangul directly after the stem
+ * means this is not that verb.
+ */
+const KO_VERB_TAIL = '(?:하기|하다|하는|하며|하고|하여|해서|해요|합니다|됩니다|했[가-힣]*|하겠[가-힣]*'
+  + '|하시[가-힣]*|되었[가-힣]*|한|할|함|해|됨|된|되기)?';
+
+/**
+ * English destructive verbs match their inflections too: failing closed on `Deletes`
+ * costs one unexplored edge, missing it costs data. The safe lexicon deliberately
+ * does *not* inflect — every extra thing it matches is an extra thing that gets
+ * clicked without --allow-mutating.
+ */
+const EN_INFLECTION = '(?:s|es|d|ed|ing)?';
+
+const HANGUL = /[가-힣]/;
+const patternCache = new Map();
+
+function escapeRegExp(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function boundedPattern(pattern, inflect) {
+  const cacheKey = (inflect ? 'i:' : 'x:') + pattern;
+  const cached = patternCache.get(cacheKey);
+  if (cached) return cached;
+  const source = escapeRegExp(String(pattern));
+  const built = HANGUL.test(pattern)
+    ? new RegExp(source + KO_VERB_TAIL + '(?![가-힣])')
+    : new RegExp('\\b' + source + (inflect ? EN_INFLECTION : '') + '\\b', 'i');
+  patternCache.set(cacheKey, built);
+  return built;
+}
+
+/**
+ * Substring matching was the original implementation, and it was wrong in both
+ * directions at once. `Install` contained `all` and came back **safe** — executed
+ * during an ordinary crawl, which is precisely what the policy promises never
+ * happens. `게시판` contained `게시` and came back **destructive**, so a bulletin
+ * board was never opened.
+ */
+function matchesAny(name, patterns, inflect = false) {
+  const haystack = String(name || '');
   if (!haystack) return false;
-  return patterns.some(pattern => haystack.includes(String(pattern).toLowerCase()));
+  return patterns.some(pattern => boundedPattern(pattern, inflect).test(haystack));
+}
+
+function looksLikeAView(name, nouns) {
+  const trimmed = String(name || '').trim().toLowerCase();
+  if (!trimmed) return false;
+  return nouns.some(noun => {
+    const lower = String(noun).toLowerCase();
+    return HANGUL.test(noun)
+      ? trimmed.endsWith(lower)
+      : new RegExp('\\b' + escapeRegExp(lower) + 's?$').test(trimmed);
+  });
 }
 
 /**
@@ -213,6 +282,7 @@ function matchesAny(name, patterns) {
 export function classifyAction(action = {}, policy = {}) {
   const destructive = policy.destructivePatterns || DEFAULT_DESTRUCTIVE_PATTERNS;
   const safe = policy.safePatterns || DEFAULT_SAFE_PATTERNS;
+  const viewNouns = policy.viewNouns || DEFAULT_VIEW_NOUNS;
   const unknownClass = policy.unknownActionClass === 'destructive' ? 'destructive' : 'mutating';
 
   if ((policy.deny || []).includes(action.key)) {
@@ -224,8 +294,18 @@ export function classifyAction(action = {}, policy = {}) {
   if (action.download) {
     return { class: 'destructive', classifiedBy: 'download', reason: 'download link' };
   }
-  if (matchesAny(action.name, destructive)) {
-    return { class: 'destructive', classifiedBy: 'lexicon', reason: 'name matches destructive lexicon' };
+  // A same-origin link whose name reads destructive stays refused: `GET /delete?id=1`
+  // exists, and the markup cannot tell it apart from a navigation. The reason says it
+  // was a link so a human reviewing map.md can see the one case worth an
+  // `actionPolicy.allow` entry.
+  if (matchesAny(action.name, destructive, true) && !looksLikeAView(action.name, viewNouns)) {
+    return {
+      class: 'destructive',
+      classifiedBy: 'lexicon',
+      reason: action.kind === 'link' && action.href && !action.external
+        ? 'name matches destructive lexicon (same-origin link: a GET that deletes cannot be told apart from a navigation)'
+        : 'name matches destructive lexicon',
+    };
   }
   // Off-origin links are harmless to *record* but are never followed, so classifying
   // them as safe keeps the map honest without widening the crawl.
@@ -273,11 +353,12 @@ export function transitionsFrom(map, stateId) {
  * Replay paths are safe-only by design: a path containing a mutating step is not
  * reproducible, and a route the map hands out must be walkable again.
  */
-export function shortestSafePath(map, fromStateId, toStateId) {
+export function shortestSafePath(map, fromStateId, toStateId, { safeOnly = true } = {}) {
   if (fromStateId === toStateId) return [];
   const outgoing = new Map();
   for (const transition of map.transitions || []) {
-    if (transition.class !== 'safe' || transition.status !== 'verified' || !transition.to) continue;
+    if (transition.status !== 'verified' || !transition.to) continue;
+    if (safeOnly && transition.class !== 'safe') continue;
     if (!outgoing.has(transition.from)) outgoing.set(transition.from, []);
     outgoing.get(transition.from).push(transition);
   }
@@ -301,15 +382,36 @@ export function shortestSafePath(map, fromStateId, toStateId) {
 }
 
 /** Shortest safe path from any entrypoint, preferring the shortest overall. */
-export function pathFromEntrypoints(map, toStateId, fromStateId = null) {
+export function pathFromEntrypoints(map, toStateId, fromStateId = null, options = {}) {
   const origins = fromStateId ? [fromStateId] : (map.entrypoints || []);
   let best = null;
   let bestOrigin = null;
   for (const origin of origins) {
-    const path = shortestSafePath(map, origin, toStateId);
+    const path = shortestSafePath(map, origin, toStateId, options);
     if (path && (best === null || path.length < best.length)) { best = path; bestOrigin = origin; }
   }
   return best === null ? null : { origin: bestOrigin, path: best };
+}
+
+/**
+ * Why there was no route. "No safe path" is true of a screen nobody ever reached and of
+ * one reached through a wizard's Save button, and the reader's next move is different:
+ * the first needs a wider crawl, the second needs to accept a one-shot path. Refusing to
+ * hand back a non-reproducible route is right; refusing to say it exists is not.
+ */
+export function mutatingDetour(map, toStateId, fromStateId = null) {
+  const resolved = pathFromEntrypoints(map, toStateId, fromStateId, { safeOnly: false });
+  if (!resolved) return null;
+  const steps = resolved.path.filter(transition => transition.class !== 'safe');
+  if (!steps.length) return null;
+  return {
+    length: resolved.path.length,
+    via: steps.map(transition => ({
+      from: stateById(map, transition.from)?.route || transition.from,
+      action: transition.action?.name || transition.action?.key || '?',
+      class: transition.class,
+    })),
+  };
 }
 
 // ---------- rendering ----------
@@ -506,8 +608,26 @@ export function renderMarkdown(map, freshness = {}) {
   lines.push(`- Crawled: ${map.run?.finishedAt || map.run?.startedAt || 'unknown'}`);
   if (freshness.status) lines.push(`- Freshness: **${freshness.status}**${freshness.detail ? ` — ${freshness.detail}` : ''}`);
   const coverage = map.coverage || {};
-  lines.push(`- Coverage: ${coverage.states ?? 0} states, ${coverage.actionsSeen ?? 0} actions seen, ${coverage.executed ?? 0} executed, ${coverage.blocked ?? 0} not executed`);
-  if (map.run?.budgetHit) lines.push(`- **Budget hit: ${map.run.budgetHit}** — the map is incomplete.`);
+  // Maps crawled before `blocked` was split into its parts still carry the old field.
+  const notExecutedCount = coverage.notExecuted ?? coverage.blocked ?? 0;
+  const breakdown = ['unexplored', 'sampled', 'blocked', 'failed']
+    .filter(key => coverage[key]).map(key => `${coverage[key]} ${key}`).join(', ');
+  lines.push(`- Coverage: ${coverage.states ?? 0} states, ${coverage.actionsSeen ?? 0} actions seen, `
+    + `${coverage.executed ?? 0} executed, ${notExecutedCount} not executed${breakdown ? ` (${breakdown})` : ''}`);
+  // A crawl stops for two different kinds of reason, and conflating them misleads: a
+  // budget is a ceiling the caller set and can raise, while the rest mean the run never
+  // came back — the map on disk is whatever had been walked at that moment.
+  const STOPPED_EARLY = {
+    incomplete: 'this crawl was still running when the file was written; it never reported finishing',
+    interrupted: 'the crawl was stopped by hand (Ctrl-C)',
+    crashed: 'the crawl died with an error',
+  };
+  if (map.run?.budgetHit) {
+    const early = STOPPED_EARLY[map.run.budgetHit];
+    lines.push(early
+      ? `- **Stopped early: ${map.run.budgetHit}** — ${early}. The map is partial.`
+      : `- **Budget hit: ${map.run.budgetHit}** — the map is incomplete.`);
+  }
   lines.push('');
 
   const diagram = renderMermaid(map);

@@ -106,6 +106,22 @@ check('invalidate never adds states or transitions',
   after.states.length === before.states.length && after.transitions.length === before.transitions.length,
   JSON.stringify({ states: after.states.length, transitions: after.transitions.length }));
 
+// ---------- the shell rewrote the argument ----------
+//
+// Git Bash turns a lone `/settings` into `C:/Program Files/Git/settings` before Node
+// sees it. "unknown route" is a true statement and a useless one — it sends the reader
+// hunting through the map for a route that was never asked for.
+
+const rewritten = cli('route', '--to', 'C:/Program Files/Git/settings');
+check('a route argument the shell turned into a path still fails',
+  rewritten.code === 1, 'exit ' + rewritten.code);
+check('and the failure blames the shell rather than the map',
+  /MSYS_NO_PATHCONV|without a leading slash/.test(rewritten.json?.hint || ''),
+  JSON.stringify(rewritten.json?.hint));
+check('an ordinary unknown route gets no such hint',
+  cli('route', '--to', '/nowhere').json?.hint === undefined,
+  JSON.stringify(cli('route', '--to', '/nowhere').json?.hint));
+
 // ---------- staleness ----------
 
 const fresh = cli('status');

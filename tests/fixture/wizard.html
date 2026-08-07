@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>마법사</title></head>
+<body>
+  <main>
+    <h1>마법사</h1>
+    <!-- The form is what makes this screen structurally itself. The server stops
+         rendering it after the first visit, so the crawl cannot re-enter this state —
+         the shape of an editor that autosaves, or a wizard that remembers its step. -->
+    <form name="wizardStep" method="get" action="/wizard">
+      <label>이름 <input name="title" type="text"></label>
+    </form>
+    <p><a href="/leaf">첫째 안내</a></p>
+    <p><a href="/leaf">둘째 안내</a></p>
+    <p><a href="/leaf">셋째 안내</a></p>
+  </main>
+</body>
+</html>

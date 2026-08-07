@@ -60,10 +60,37 @@ dangerous labels are already caught at step 4.
 Set `"unknownActionClass": "destructive"` when the environment is only *mostly* disposable and you
 want `--allow-mutating` restricted to form submits.
 
+## A mutating action runs once per edge, not once
+
+Reaching a screen means replaying a verified path to it from an entrypoint. When a mutating action
+is the only way onward — a wizard's **Save**, a form that creates the record the next screen shows —
+it sits on the replay path to everything behind it and is re-executed every time the crawl walks
+back. Twelve edges behind one **Save** cost twelve saves, not one.
+
+This is a consequence of replay verification, not a bug: the alternative is handing out routes that
+were never walked. But it means `--allow-mutating` and `actionPolicy.allow` cost more than the count
+of mutating edges suggests, and it is the reason a disposable environment is a precondition rather
+than a caution. `--no-replay-verify` avoids the repetition and gives up the guarantee.
+
 ## Lexicons
 
-Matching is substring, case-insensitive, against the accessible name. Both lists are replaceable via
+Both lists are replaceable via
 `actionPolicy.destructivePatterns` and `actionPolicy.safePatterns`.
+
+**Matching is bounded, and Korean and English are bounded differently.** Hangul has no word
+boundary, so `\b` does nothing to it — a plain substring match made `게시판` (a bulletin board) read
+as `게시` (publish), and a whole app's top-level navigation was refused. A Korean pattern therefore
+matches only when the syllables that follow it are a verb ending (`게시하기` yes, `게시글` no), and
+an English one matches on `\b` with destructive verbs also matching their inflections (`deletes`,
+`deleting`) because failing closed on one costs an unexplored edge while missing one costs data. The
+safe lexicon deliberately does *not* inflect: everything extra it matches is something extra that
+gets clicked without `--allow-mutating`.
+
+**A name whose head noun names a screen suppresses a destructive match.** `승인 대기 목록` is a list
+of things awaiting approval and `전송 내역` is a log of sends; both were refused for the verbs inside
+them, so the crawl never learned the screens behind them. The nouns are in
+`actionPolicy.viewNouns` (목록, 이력, 내역, 현황, 조회, list, history, log, …). This only ever
+suppresses; nothing is promoted to `safe` by it, so a bare button still lands on `mutating`.
 
 **Destructive** — 삭제, 제거, 지우기, 비우기, 폐기, 탈퇴, 초기화, 발송, 보내기, 전송, 결제, 구매,
 주문하기, 환불, 입금, 출금, 송금, 승인, 반려, 거절, 차단, 정지, 해지, 취소하기, 배포, 게시, 로그아웃,

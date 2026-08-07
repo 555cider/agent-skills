@@ -127,6 +127,12 @@
       if (isModal) return candidate;
     }
 
+    // Everything below depends on the page having a `<main>` or `role="main"`: a
+    // non-modal popup is recognized by the *page* having gone aria-hidden behind it,
+    // and that is the only element checked. A legacy layout without one therefore
+    // never reports an overlay — the dropdown's items and the background are harvested
+    // together, and the map grows transitions that only exist with the menu open.
+    // Documented in references/map-schema.md; adding a landmark to the app fixes it.
     const main = document.querySelector('main,[role="main"]');
     if (!main || visible(main)) return null;
 

@@ -13,6 +13,11 @@
       <li><a href="/items/4">상품 보기</a></li>
       <li><a href="/items/5">상품 보기</a></li>
     </ul>
+    <!-- The label is *words*, not a badge count, so dropping numeric tokens cannot
+         save the action key: it changes between visits and the key stops matching.
+         Only the recorded CSS position can still find this link, which is exactly
+         the case `fallbackUsed` exists to report. -->
+    <p><a href="/cart" id="stash">보관함 {{STASH}}</a></p>
   </main>
   <dialog id="dlg" aria-label="필터">
     <h2>필터</h2>
