@@ -608,7 +608,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _force_utf8_streams() -> None:
+    """Emit UTF-8 regardless of the console codepage.
+
+    Python picks the *locale* encoding for a redirected stdout on Windows — cp949, cp1252
+    — while everything written here is `ensure_ascii=False`. A memory recalled in Korean
+    then reaches the caller as mojibake, and a caller reading it with
+    `subprocess.run(..., encoding="utf-8")` gets `stdout=None`: the decode error dies in
+    a reader thread and is reported as no output at all.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            # A stream we did not open and cannot reconfigure; leave it alone.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

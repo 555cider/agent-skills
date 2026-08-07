@@ -152,6 +152,43 @@ def test_windows_codex_dry_run_and_off_do_not_require_launcher(tmp_path, monkeyp
     assert off["applied"] is True
 
 
+def test_cli_writes_utf8_whatever_the_console_codepage_is(tmp_path):
+    """A recalled Korean memory has to survive the pipe.
+
+    Python picks the locale encoding for a redirected stdout on Windows, so this CLI —
+    which writes `ensure_ascii=False` throughout — emitted cp949 there. A caller decoding
+    UTF-8 does not get an error: `subprocess.run` loses the decode exception in its
+    reader thread and returns `stdout=None`, which reads as "the command printed nothing".
+    """
+    script = Path(__file__).resolve().parents[1] / "scripts" / "memory.py"
+    env = os.environ.copy()
+    env["AGENT_MEMORY_HOME"] = str(tmp_path / "memory")
+    # The point is that the fix works without being told; leave the escape hatch out.
+    env.pop("PYTHONIOENCODING", None)
+
+    statement = "시뮬레이션 접지 규칙은 프로젝트마다 다르다"
+    written = subprocess.run(
+        [sys.executable, str(script), "remember", statement, "--format", "json"],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=60, check=False,
+        # pytest replaces stdin with a non-inheritable object; without this Windows
+        # refuses to duplicate the handle and the subprocess never starts.
+        stdin=subprocess.DEVNULL,
+    )
+    assert written.stdout is not None, "stdout failed to decode as UTF-8"
+    assert written.returncode == 0, written.stderr
+
+    recalled = subprocess.run(
+        [sys.executable, str(script), "recall", "시뮬레이션", "--format", "json"],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=60, check=False,
+        # pytest replaces stdin with a non-inheritable object; without this Windows
+        # refuses to duplicate the handle and the subprocess never starts.
+        stdin=subprocess.DEVNULL,
+    )
+    assert recalled.stdout is not None, "stdout failed to decode as UTF-8"
+    assert recalled.returncode == 0, recalled.stderr
+    assert "시뮬레이션" in recalled.stdout
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows shell coverage")
 def test_windows_launcher_hook_runs_in_available_shells(tmp_path):
     launcher_dir = tmp_path / "launcher"
