@@ -102,8 +102,8 @@
       "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
       "theme": "light",
       "mustHit": [],
-      "mustNotHit": ["multiRowTabs", "placeholderAsOnlyLabel", "singleRadioInGroup", "toggleInsideSubmitForm", "orphanedFieldError", "stackedDialogs", "modalEscapeUnhandled", "skipLinkMissing", "imageMissingAlt", "selectAutoSubmit", "missingIndeterminateState", "modalActionsOutOfView", "popupExceedsViewport", "navCurrentUnmarked", "disabledTab"],
-      "mustNotAdvise": ["desktopHiddenNav", "nestedTabs", "flagAsLanguageIndicator", "accordionPanelScroll", "emptyDataCell", "numericColumnAlignment", "unlinkedContactInfo"],
+      "mustNotHit": ["multiRowTabs", "placeholderAsOnlyLabel", "singleRadioInGroup", "toggleInsideSubmitForm", "orphanedFieldError", "stackedDialogs", "modalEscapeUnhandled", "skipLinkMissing", "imageMissingAlt", "selectAutoSubmit", "missingIndeterminateState", "modalActionsOutOfView", "popupExceedsViewport", "navCurrentUnmarked"],
+      "mustNotAdvise": ["desktopHiddenNav", "disabledTab", "nestedTabs", "flagAsLanguageIndicator", "accordionPanelScroll", "emptyDataCell", "numericColumnAlignment", "unlinkedContactInfo"],
       "note": "Precision gate: the same widgets built to contract must produce no widget-contract signal at all. A <main> landmark is the bypass mechanism skipLinkMissing looks for."
     },
     {
@@ -371,8 +371,8 @@
       "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
       "theme": "light",
       "mustAdvise": [{ "rule": "loneNarrowElement", "matches": "Sort", "review": "optional" }],
-      "mustNotAdvise": ["selectedStateAmbiguity", "excessiveButtonsInRow", "unlinkedContactInfo", "emptyDataCell", "numericColumnAlignment", "nestedTabs", "flagAsLanguageIndicator", "accordionPanelScroll"],
-      "mustNotHit": ["skipLinkMissing", "imageMissingAlt", "navCurrentUnmarked", "disabledTab", "popupExceedsViewport", "selectAutoSubmit", "missingIndeterminateState", "modalActionsOutOfView"],
+      "mustNotAdvise": ["selectedStateAmbiguity", "excessiveButtonsInRow", "unlinkedContactInfo", "emptyDataCell", "numericColumnAlignment", "disabledTab", "nestedTabs", "flagAsLanguageIndicator", "accordionPanelScroll"],
+      "mustNotHit": ["skipLinkMissing", "imageMissingAlt", "navCurrentUnmarked", "popupExceedsViewport", "selectAutoSubmit", "missingIndeterminateState", "modalActionsOutOfView"],
       "note": "Anonymized regression for CTA pairs, text descendants, skip links, and valid status tabs."
     },
     {
@@ -410,10 +410,10 @@
       "mustHit": [
         { "rule": "skipLinkMissing", "severity": "Risk", "confidence": "auto-measured", "note": "repeated nav, no skip link, no main landmark" },
         { "rule": "navCurrentUnmarked", "matches": "민원 신청", "severity": "Risk", "note": "current screen present in nav with no aria-current" },
-        { "rule": "disabledTab", "matches": "외국인", "severity": "Risk", "note": "tab rendered in a disabled state" },
         { "rule": "popupExceedsViewport", "severity": "Risk", "note": "fixed dropdown taller than the viewport with no internal scroll" }
       ],
       "mustAdvise": [
+        { "rule": "disabledTab", "matches": "외국인", "severity": "Polish", "review": "optional", "note": "a disabled tab is a supported state in mainstream systems, so it stays advisory" },
         { "rule": "nestedTabs", "review": "optional", "note": "tablist inside a tabpanel" },
         { "rule": "flagAsLanguageIndicator", "matches": "lang-switch", "review": "optional", "note": "flag emoji standing in for a language" },
         { "rule": "flagAsLanguageIndicator", "matches": "sprache", "review": "optional", "note": "the switcher vocabulary is not English/Korean only" }
