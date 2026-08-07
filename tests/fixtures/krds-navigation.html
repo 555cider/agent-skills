@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>탐색 규약</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:0 24px 24px;font:16px/1.5 system-ui;color:#111827;background:#fff}
+  header{display:flex;align-items:center;gap:24px;padding:12px 0;border-bottom:1px solid #d1d5db}
+  .brand{font-weight:700;color:#111827;text-decoration:none;padding:6px 4px}
+  .brand:hover{color:#1d4ed8;text-decoration:underline}
+  nav a{display:inline-block;margin-right:16px;padding:6px 4px;color:#1d4ed8;text-decoration:underline}
+  nav a:hover{background:#e5e7eb;color:#1e3a8a}
+  .lang-switch{min-height:36px;padding:6px 12px;border:1px solid #6b7280;border-radius:6px;background:#fff;color:#111827;font:inherit}
+  .lang-switch:hover{background:#e5e7eb;border-color:#374151}
+  h1{font-size:22px;margin:16px 0 8px}
+  h2{font-size:16px;margin:20px 0 8px}
+  [role=tablist]{display:flex;gap:6px;padding:4px;border:1px solid #d1d5db;border-radius:8px}
+  [role=tab]{min-height:34px;padding:6px 14px;border:1px solid #6b7280;border-radius:6px;background:#f3f4f6;color:#111827;font:inherit}
+  [role=tab]:hover{background:#e5e7eb;border-color:#374151}
+  [role=tab][aria-selected=true]{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
+  [role=tab][aria-selected=true]:hover{background:#1e40af;border-color:#1e40af}
+  [role=tab][aria-disabled=true]{color:#4b5563;background:#e5e7eb;border-color:#9ca3af}
+  [role=tabpanel]{padding:12px 0}
+  /* 결함: 화면 높이를 넘는데 자체 스크롤이 없다 */
+  .menu{position:fixed;top:64px;right:24px;width:260px;background:#fff;border:1px solid #d1d5db;border-radius:8px;z-index:5}
+  .menu [role=option]{min-height:40px;padding:10px 14px;color:#111827;border-bottom:1px solid #e5e7eb}
+  .menu [role=option][aria-selected=true]{background:#dbeafe}
+</style></head><body>
+  <header>
+    <a class="brand" href="/">국민서비스</a>
+    <nav aria-label="주 메뉴">
+      <!-- 결함: 현재 화면인데 aria-current 도 활성 표시도 없다 -->
+      <a href="/krds-navigation.html">민원 신청</a>
+      <a href="/notice">공지사항</a>
+      <a href="/support">고객지원</a>
+      <a href="/about">기관 소개</a>
+    </nav>
+    <button type="button" class="lang-switch" aria-label="언어 선택">🇰🇷 한국어</button>
+  </header>
+
+  <!-- main 랜드마크도 건너뛰기 링크도 없어서 반복 메뉴를 우회할 방법이 없다 -->
+  <h1>민원 신청</h1>
+
+  <h2>신청 유형</h2>
+  <div role="tablist" aria-label="신청 유형">
+    <button role="tab" aria-selected="true" id="t1">개인</button>
+    <button role="tab" aria-selected="false" id="t2">법인</button>
+    <!-- 결함: 선택할 수 없는 탭 -->
+    <button role="tab" aria-selected="false" aria-disabled="true" id="t3">외국인</button>
+  </div>
+  <div role="tabpanel" aria-labelledby="t1">
+    <p>개인 민원 신청 절차입니다.</p>
+    <!-- 결함: 탭 패널 안에 또 탭 -->
+    <div role="tablist" aria-label="세부 단계">
+      <button role="tab" aria-selected="true" id="n1">기본 정보</button>
+      <button role="tab" aria-selected="false" id="n2">첨부 서류</button>
+      <button role="tab" aria-selected="false" id="n3">확인</button>
+    </div>
+    <div role="tabpanel" aria-labelledby="n1"><p>이름과 연락처를 입력합니다.</p></div>
+  </div>
+
+  <div class="menu" id="doc-list" role="listbox" aria-label="발급 문서 선택">
+    <div role="option" aria-selected="true">주민등록 등본</div>
+    <div role="option" aria-selected="false">가족관계증명서</div>
+    <div role="option" aria-selected="false">인감증명서</div>
+    <div role="option" aria-selected="false">건축물대장</div>
+    <div role="option" aria-selected="false">토지대장</div>
+    <div role="option" aria-selected="false">지방세 납세증명</div>
+    <div role="option" aria-selected="false">소득금액증명</div>
+    <div role="option" aria-selected="false">병적증명서</div>
+    <div role="option" aria-selected="false">출입국 사실증명</div>
+    <div role="option" aria-selected="false">사업자등록 증명</div>
+    <div role="option" aria-selected="false">고용보험 자격이력</div>
+    <div role="option" aria-selected="false">건강보험 자격득실</div>
+    <div role="option" aria-selected="false">국민연금 가입증명</div>
+    <div role="option" aria-selected="false">장애인 증명서</div>
+    <div role="option" aria-selected="false">기초생활수급자 증명</div>
+  </div>
+</body></html>

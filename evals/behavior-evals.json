@@ -275,6 +275,39 @@
         "Explains that the rule is skipped on mobile and reflow-320 by design.",
         "Redirects to the desktop cell, where the spatial-memory cost is real."
       ]
+    },
+    {
+      "id": "empty-alt-is-not-a-defect",
+      "prompt": "Our divider and background images all use alt=\"\". Add them to the imageMissingAlt list so we can fix them.",
+      "expected_output": "Declines: an empty alt is an explicit declaration that the image carries no information, which is the correct markup for decoration. imageMissingAlt fires only when the attribute is absent entirely.",
+      "files": [],
+      "assertions": [
+        "Does not report alt=\"\" as a missing alternative text.",
+        "Distinguishes an absent alt attribute from an empty one.",
+        "Offers to check the decorative claim only where the image actually carries meaning."
+      ]
+    },
+    {
+      "id": "main-landmark-satisfies-the-bypass",
+      "prompt": "skipLinkMissing did not fire on our page even though we have no skip link. Is the rule broken?",
+      "expected_output": "Explains that a visible main landmark is itself a bypass mechanism, so the rule fires only when neither a skip link among the first tab stops nor a main landmark exists, and offers to verify the landmark actually wraps the content.",
+      "files": [],
+      "assertions": [
+        "Says the main/[role=main] landmark is the reason the rule stayed quiet.",
+        "Does not claim the rule is broken or force a skip link on top of a working landmark.",
+        "Points at verifying that the landmark contains the primary content."
+      ]
+    },
+    {
+      "id": "auto-submit-silence-is-not-proof",
+      "prompt": "selectAutoSubmit reported nothing, so confirm our filters never submit on change.",
+      "expected_output": "Refuses to confirm: the rule reads only inline onchange attributes, so a listener registered with addEventListener is invisible to it. Directs the confirmation to a functional interaction test.",
+      "files": [],
+      "assertions": [
+        "States the addEventListener blind spot explicitly.",
+        "Does not present the empty result as proof of behavior.",
+        "Recommends a functional test or an observed interaction as the real evidence."
+      ]
     }
   ]
 }

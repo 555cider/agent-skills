@@ -102,9 +102,9 @@
       "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
       "theme": "light",
       "mustHit": [],
-      "mustNotHit": ["multiRowTabs", "placeholderAsOnlyLabel", "singleRadioInGroup", "toggleInsideSubmitForm", "orphanedFieldError", "stackedDialogs", "modalEscapeUnhandled"],
-      "mustNotAdvise": ["desktopHiddenNav"],
-      "note": "Precision gate: the same widgets built to contract must produce no widget-contract signal at all."
+      "mustNotHit": ["multiRowTabs", "placeholderAsOnlyLabel", "singleRadioInGroup", "toggleInsideSubmitForm", "orphanedFieldError", "stackedDialogs", "modalEscapeUnhandled", "skipLinkMissing", "imageMissingAlt", "selectAutoSubmit", "missingIndeterminateState", "modalActionsOutOfView", "popupExceedsViewport", "navCurrentUnmarked", "disabledTab"],
+      "mustNotAdvise": ["desktopHiddenNav", "nestedTabs", "flagAsLanguageIndicator", "accordionPanelScroll", "emptyDataCell", "numericColumnAlignment", "unlinkedContactInfo"],
+      "note": "Precision gate: the same widgets built to contract must produce no widget-contract signal at all. A <main> landmark is the bypass mechanism skipLinkMissing looks for."
     },
     {
       "file": "widget-contract-dialogs.html",
@@ -371,8 +371,83 @@
       "viewport": { "width": 1280, "height": 800, "isMobile": false, "dpr": 1 },
       "theme": "light",
       "mustAdvise": [{ "rule": "loneNarrowElement", "matches": "Sort", "review": "optional" }],
-      "mustNotAdvise": ["selectedStateAmbiguity", "excessiveButtonsInRow"],
+      "mustNotAdvise": ["selectedStateAmbiguity", "excessiveButtonsInRow", "unlinkedContactInfo", "emptyDataCell", "numericColumnAlignment", "nestedTabs", "flagAsLanguageIndicator", "accordionPanelScroll"],
+      "mustNotHit": ["skipLinkMissing", "imageMissingAlt", "navCurrentUnmarked", "disabledTab", "popupExceedsViewport", "selectAutoSubmit", "missingIndeterminateState", "modalActionsOutOfView"],
       "note": "Anonymized regression for CTA pairs, text descendants, skip links, and valid status tabs."
+    },
+    {
+      "file": "krds-content.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "imageMissingAlt", "matches": "chart", "severity": "Fail", "confidence": "auto-measured", "note": "img with no alt attribute at all" },
+        { "rule": "imageMissingAlt", "matches": "#nameless-icon", "severity": "Fail", "note": "svg role=img with neither title nor aria-label" }
+      ],
+      "mustAdvise": [
+        { "rule": "emptyDataCell", "severity": "Polish", "review": "optional", "note": "blank cell cannot distinguish missing from zero" },
+        { "rule": "numericColumnAlignment", "matches": "금액", "review": "optional", "note": "start-aligned money column" },
+        { "rule": "unlinkedContactInfo", "matches": "plain-contact", "review": "optional", "note": "email and phone rendered as plain text" }
+      ],
+      "mustNotHit": [
+        { "rule": "imageMissingAlt", "matches": "img.photo" },
+        { "rule": "imageMissingAlt", "matches": "img.decor" },
+        { "rule": "imageMissingAlt", "matches": "#titled-icon" }
+      ],
+      "mustNotAdvise": [
+        { "rule": "numericColumnAlignment", "matches": "수량" },
+        { "rule": "unlinkedContactInfo", "matches": "linked-contact" },
+        { "rule": "unlinkedContactInfo", "matches": "account-no" }
+      ],
+      "note": "alt=\"\" is a decoration declaration and passes; only a missing attribute fails. Right-aligned numerics and mailto:/tel: links are the pass cases."
+    },
+    {
+      "file": "krds-navigation.html",
+      "viewport": { "width": 1280, "height": 600, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "skipLinkMissing", "severity": "Risk", "confidence": "auto-measured", "note": "repeated nav, no skip link, no main landmark" },
+        { "rule": "navCurrentUnmarked", "matches": "민원 신청", "severity": "Risk", "note": "current screen present in nav with no aria-current" },
+        { "rule": "disabledTab", "matches": "외국인", "severity": "Risk", "note": "tab rendered in a disabled state" },
+        { "rule": "popupExceedsViewport", "severity": "Risk", "note": "fixed dropdown taller than the viewport with no internal scroll" }
+      ],
+      "mustAdvise": [
+        { "rule": "nestedTabs", "review": "optional", "note": "tablist inside a tabpanel" },
+        { "rule": "flagAsLanguageIndicator", "review": "optional", "note": "flag emoji standing in for a language" }
+      ],
+      "mustNotHit": ["multiRowTabs"],
+      "mustNotAdvise": ["desktopHiddenNav"],
+      "note": "Desktop-only rules stay quiet: the nav is visible and each tab strip fits one row."
+    },
+    {
+      "file": "krds-forms.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "selectAutoSubmit", "matches": "region", "severity": "Risk", "confidence": "auto-measured", "note": "onchange submits the form" },
+        { "rule": "missingIndeterminateState", "matches": "\"#all\"", "severity": "Risk", "note": "partial selection shown as a plain unchecked box" }
+      ],
+      "mustAdvise": [
+        { "rule": "accordionPanelScroll", "matches": "acc1", "review": "optional", "note": "expanded panel scrolls inside itself" }
+      ],
+      "mustNotHit": [
+        { "rule": "selectAutoSubmit", "matches": "sort" },
+        { "rule": "missingIndeterminateState", "matches": "all2" }
+      ],
+      "mustNotAdvise": [
+        { "rule": "accordionPanelScroll", "matches": "acc2" },
+        { "rule": "emptyDataCell" }
+      ],
+      "note": "Precision: a select whose onchange does not submit, a master checkbox set indeterminate, and a panel that grows to its content are all correct."
+    },
+    {
+      "file": "krds-modal-actions.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "modalActionsOutOfView", "matches": "동의하고 계속", "severity": "Fail", "confidence": "auto-measured", "note": "action row scrolled below the dialog's own fold" }
+      ],
+      "mustNotHit": ["missingModalBackdrop", "modalEscapeUnhandled"],
+      "note": "The dialog keeps the backdrop and Escape contracts; only action reachability fails."
     },
     {
       "file": "clean.html",

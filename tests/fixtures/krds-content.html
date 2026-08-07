@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>본문 콘텐츠 규약</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px;font:16px/1.6 system-ui;color:#111827;background:#fff}
+  h1{font-size:22px;margin:0 0 12px}
+  h2{font-size:17px;margin:24px 0 8px}
+  p{margin:0 0 8px}
+  a{color:#1d4ed8;text-decoration:underline}
+  a:hover{color:#1e3a8a;text-decoration-thickness:2px}
+  figure{margin:0 0 12px;display:flex;gap:16px;align-items:flex-start}
+  img{display:block;border:1px solid #d1d5db}
+  .icon{width:24px;height:24px;color:#374151}
+  table{border-collapse:collapse;width:640px}
+  th,td{border:1px solid #d1d5db;padding:8px 12px}
+  th{background:#f3f4f6;text-align:left}
+  .num{text-align:right}
+  th.num{text-align:right}
+</style></head><body>
+<main>
+  <h1>분기 집행 내역</h1>
+
+  <h2>이미지 대체 텍스트</h2>
+  <figure>
+    <!-- 결함: alt 속성이 아예 없다 -->
+    <img class="chart" width="120" height="80"
+         src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='80'%3E%3Crect width='120' height='80' fill='%23cbd5e1'/%3E%3C/svg%3E">
+    <!-- 통과: 의미를 전달하는 이미지에 대체 텍스트가 있다 -->
+    <img class="photo" width="120" height="80" alt="집행 현황 요약 그래프"
+         src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='80'%3E%3Crect width='120' height='80' fill='%23bfdbfe'/%3E%3C/svg%3E">
+    <!-- 통과: alt="" 는 장식이라는 명시적 선언이다 -->
+    <img class="decor" width="120" height="80" alt=""
+         src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='80'%3E%3Crect width='120' height='80' fill='%23e5e7eb'/%3E%3C/svg%3E">
+  </figure>
+  <p>
+    <!-- 결함: role=img 인데 접근 가능한 이름이 없다 -->
+    <svg id="nameless-icon" class="icon" role="img" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle></svg>
+    <!-- 통과: title 로 이름을 준다 -->
+    <svg id="titled-icon" class="icon" role="img" viewBox="0 0 24 24"><title>집행 완료</title><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle></svg>
+    <span>아이콘 두 개</span>
+  </p>
+
+  <h2>집행 내역</h2>
+  <table>
+    <thead>
+      <tr><th>항목</th><th>담당자</th><th>금액</th><th class="num">수량</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>서버 임대</td><td>김민수</td><td>1,240,000</td><td class="num">12</td></tr>
+      <!-- 결함: 값이 없는 셀을 그냥 비워 두었다 -->
+      <tr><td>도메인 갱신</td><td></td><td>96,000</td><td class="num">3</td></tr>
+      <tr><td>보안 점검</td><td>이서연</td><td>480,000</td><td class="num">7</td></tr>
+    </tbody>
+  </table>
+
+  <h2>문의처</h2>
+  <!-- 결함: 연락처가 평문이라 누르지 못한다 -->
+  <p class="plain-contact">문의: help@example.com · 02-1234-5678</p>
+  <!-- 통과: 각각 mailto:, tel: 로 연결되어 있다 -->
+  <p class="linked-contact">담당: <a href="mailto:ok@example.com">ok@example.com</a> · <a href="tel:+8229998888">02-9999-8888</a></p>
+  <!-- 통과: 긴 숫자열 안에 전화번호 모양이 들어 있어도 연락처가 아니다 -->
+  <p class="account-no">입금 계좌: 1002-123-456789 · 정산 기준일 2026-01-15</p>
+</main>
+</body></html>

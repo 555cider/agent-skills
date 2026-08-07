@@ -1,6 +1,6 @@
 ---
 name: ui-audit
-description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots. Run it for visual QA, responsive or zoom/reflow checks, contrast and overflow defects, keyboard focus/focus-ring review, target sizing, modal containment and Escape dismissal, async action feedback, hover affordance, or standard-widget semantics such as wrapped tab strips, placeholder-only labels, radio/checkbox/toggle choice models, and hidden desktop navigation — or any claim that a rendered screen is done. It measures the live DOM first and separates confirmed defects from visual-review advisories.
+description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots. Run it for visual QA, responsive or zoom/reflow checks, contrast and overflow defects, keyboard focus/focus-ring review, target sizing, modal containment, Escape dismissal and action reachability, async action feedback, hover affordance, image alternative text, skip links and current-page marking, data-table conventions, or standard-widget semantics such as wrapped tab strips, placeholder-only labels, radio/checkbox/toggle choice models, select-all indeterminate state, and hidden desktop navigation — or any claim that a rendered screen is done. It measures the live DOM first and separates confirmed defects from visual-review advisories.
 license: MIT
 compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium browser with rendered DOM access.
 ---
@@ -177,5 +177,8 @@ When adding a failure mode, put deterministic measurement in code and add `mustH
 - Reading the DOM after the Escape probe and treating it as cell evidence; the probe closes dialogs on purpose and runs last for that reason.
 - Reporting wrapped tabs or a hamburger on a mobile cell; both rules are desktop-only by design.
 - Treating a placeholder as the field's label. `unlabeledInput` covers a control with no accessible name at all; `placeholderAsOnlyLabel` covers the aria-labeled control whose only *visible* naming text vanishes at the first keystroke.
+- Reporting `alt=""` as a missing alternative text. An empty `alt` is an explicit declaration that the image carries no information, which is the right answer for decoration; `imageMissingAlt` fires only when the attribute is absent entirely.
+- Reading a silent `selectAutoSubmit` as proof that nothing auto-submits. Only inline `onchange` attributes are visible to the DOM pass; a listener added with `addEventListener` is not, and belongs to a functional interaction test.
+- Demanding a skip link on a page that already has a `main` landmark. The landmark is itself a bypass mechanism, which is why `skipLinkMissing` fires only when neither route exists.
 - Evaluating `audit.js` after navigation and assuming CLS was measured; install `__uiAuditInstallCLS()` on the new document as the runner does.
 - Treating document top/bottom coverage or a populated DOM fixture as proof that a nested-scroll decision state was reached.
