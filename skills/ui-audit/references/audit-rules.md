@@ -428,6 +428,128 @@ An error message is a one-sentence recovery plan; "something is wrong" is not on
   rails and canvas tools, so it never escalates above `Polish`; `data-ui-audit-nav-exempt`
   suppresses it explicitly.
 
+## imageMissingAlt — `Fail` — auto-measured
+An image with no alternative text (WCAG 1.1.1).
+- **Method:** visible `img` and `input[type=image]` that do not carry an `alt` **attribute**
+  at all, plus inline `svg[role=img]` with neither a non-empty `<title>` nor an
+  `aria-label`/`aria-labelledby` resolving to visible text.
+- **Threshold:** attribute absent, no accessible name, rendered box at least 2×2 px.
+- **FP guards:** `alt=""` is an explicit declaration that the image carries no information
+  and passes — a missing attribute and an empty one are different promises. `role=presentation`,
+  `role=none`, `aria-hidden`, and the shared exemptions are skipped. CSS `background-image`
+  is out of scope, because CSSOM cannot tell decoration from content there.
+
+## skipLinkMissing — `Risk` — auto-measured
+No way past repeated navigation (WCAG 2.4.1).
+- **Method:** fires only when the page has **no visible `main`/`[role=main]` landmark** — that
+  landmark is itself a bypass mechanism — and a visible `nav`/`[role=navigation]` carries three
+  or more visible links. It then reads the first three tab stops in DOM order and looks for a
+  same-document anchor (`a[href^="#"]`).
+- **Two branches:** no such anchor → the bypass is missing; an anchor whose target id does not
+  exist or is `display:none` → the bypass is broken and moves focus nowhere.
+- **FP guards:** visibility is deliberately *not* required when searching for the skip link,
+  because a skip link is normally hidden until focused. Negative `tabindex` and
+  `input[type=hidden]` are excluded from the tab-stop scan.
+
+## selectAutoSubmit — `Risk` — auto-measured
+Changing a value executes the form (WCAG 3.2.2 On Input).
+- **Method:** `select`, `input[type=radio]`, and `input[type=checkbox]` whose **inline**
+  `onchange` attribute calls `submit(`, `.submit(`, or `.requestSubmit(`.
+- **Scope limit:** a handler attached with `addEventListener` is invisible to the DOM pass and
+  is **not** covered. Absence of this finding is not proof the surface never auto-submits;
+  the behavior belongs to a functional interaction test.
+- **FP guards:** `data-ui-audit-autosubmit-exempt` on the control suppresses a deliberate case.
+
+## missingIndeterminateState — `Risk` — auto-measured
+A select-all box reporting a selection the list does not have.
+- **Method:** identify a master checkbox by `aria-controls` resolving to two or more
+  checkboxes, by sitting in a `thead` of a table whose body rows hold checkboxes, or by a
+  select-all/전체 선택 vocabulary match within its nearest form/table/fieldset/list/group scope.
+  Fire when the scope is **partially** selected while the master is neither
+  `indeterminate === true` nor `aria-checked="mixed"`.
+- **Threshold:** `0 < checked < total`.
+- **FP guards:** empty and complete selections are skipped, and a scope smaller than two
+  checkboxes is not a select-all relationship.
+
+## modalActionsOutOfView — `Fail` — auto-measured
+Dialog actions the user cannot see when the dialog opens.
+- **Method:** for the topmost visible `[aria-modal=true]` dialog, find each visible action
+  control whose nearest scrolling ancestor **inside the dialog** (`overflow-y:auto|scroll` with
+  `scrollHeight > clientHeight + 4`) currently clips it — the control's rect lies entirely below
+  that scroller's bottom edge or above its top edge. Reported once per dialog.
+- **FP guards:** a dialog with no internal scrolling, an action already on screen, and any
+  action pinned with `position:sticky|fixed` between itself and the scroller all pass. Measured
+  at the pristine rule pass, before the keyboard and Escape probes move focus.
+
+## emptyDataCell — `Polish` — auto-measured
+- **Method:** in a visible data table (has `th`, at least two body rows), a `td` with no text,
+  no control, and no image. Reported once per table with the offending cell count and samples.
+- **FP guards:** cells spanning columns, `[data-ui-audit-empty-ok]` subtrees, and layout tables
+  without header cells are skipped. A blank cell cannot say whether the value is missing, zero,
+  not applicable, or still loading, which is why the placeholder is the fix rather than the cell.
+
+## numericColumnAlignment — `Polish` — auto-measured
+- **Method:** per column of a data table with three or more uniform body rows, parse the visible
+  cell values. When at least `80%` are quantitative (optional sign, currency symbol, thousands
+  grouping, decimal, trailing `%` or a short Korean unit) the column's computed `text-align` must
+  resolve to the end edge. Anchored on the header cell so two offending columns stay distinct.
+- **Threshold:** numeric ratio `≥ 0.8` and computed alignment of `left`/`start` in an LTR column.
+- **FP guards:** columns containing any date- or time-shaped value are skipped, as are
+  `center`-aligned columns, rows with column spans, and RTL columns whose `start` is already the
+  end edge for digits.
+
+## unlinkedContactInfo — `Polish` — auto-measured
+- **Method:** TreeWalker over visible text nodes for email addresses and phone numbers. The phone
+  pattern requires a leading `0` area code or `+` country code **and** separators, plus a digit
+  boundary on both ends so it cannot start inside a longer run — a bank account number such as
+  `1002-123-456789` otherwise contains a phone-shaped substring. Dates and grouped amounts cannot
+  match. Reported once per containing element.
+- **FP guards:** any text already inside an `a[href]`, plus `pre`, `code`, `kbd`, `samp`,
+  `textarea`, and `option` scopes, are excluded. Placeholder attributes are never scanned because
+  they are not text nodes.
+
+## popupExceedsViewport — `Risk` — auto-measured
+- **Method:** a visible `[role=menu]`, `[role=listbox]`, `[popover]`, `.dropdown-menu`, or
+  `[data-ui-audit-popup]` panel at least 40px tall whose box extends past the viewport edge while
+  neither the panel nor an ancestor scrolls vertically.
+- **Reachability guard:** a panel that moves with the document is still reachable while the page
+  has scroll room left, so the finding requires either a `position:fixed` ancestor chain or a
+  remaining page scroll distance smaller than the overshoot. This is what separates it from
+  `nonScrollableOverflow`, which requires `overflow:hidden|clip`.
+
+## navCurrentUnmarked — `Risk` — auto-measured
+- **Method:** a visible `nav`/`[role=navigation]` with three or more visible links where exactly
+  one link's `pathname` equals `location.pathname`, and no link in that nav carries
+  `aria-current`, `aria-selected="true"`, or an active/current/selected class on itself or its
+  list item.
+- **FP guards:** navs inside `footer`/`[role=contentinfo]` are excluded; more than one matching
+  link means the comparison is not conclusive. A purely visual highlight with no programmatic
+  marker is still reported — the state has to reach assistive technology too.
+
+## disabledTab — `Risk` — auto-measured
+- **Method:** a visible `[role=tab]` matching `[disabled]` or `[aria-disabled=true]`.
+- **Note:** the shared `isExempt` helper drops disabled controls by design, so this rule reads the
+  disabled state directly. Here it is the finding, not a reason to skip.
+- **FP guards:** tabs inside `aria-hidden`/`inert`/`hidden` subtrees are skipped.
+
+## nestedTabs — `Polish` — auto-measured
+- **Method:** a visible `[role=tablist]` inside a `[role=tabpanel]`.
+- **Threshold:** presence. Two levels of one widget make it ambiguous which layer a click changes.
+
+## flagAsLanguageIndicator — `Polish` — auto-measured
+- **Method:** a control whose label, `aria-label`, `name`, `id`, or class matches a language
+  vocabulary (`lang`, `language`, `locale`, `i18n`, `언어`, `다국어`) and that contains either a
+  regional-indicator flag emoji pair or an `img`/`svg`/`use` whose `src`/`alt`/`href`/class
+  matches `flag`/`국기`.
+- **Threshold:** presence of a flag cue in a language control. A flag names a country, not a
+  language, so a shared language across countries leaves some readers without a flag of their own.
+
+## accordionPanelScroll — `Polish` — auto-measured
+- **Method:** an `[aria-expanded=true][aria-controls]` header whose referenced panel is visible,
+  has `overflow-y:auto|scroll`, and overflows (`scrollHeight > clientHeight + 4`).
+- **FP guards:** panels that are themselves dialogs, menus, or listboxes are excluded — a bounded
+  scroller is correct there. A panel that grows to its content passes.
+
 ## missingModalBackdrop — `Risk` — auto-measured
 - **Method:** Detects open modals (`[role=dialog]`, `[aria-modal=true]`) that lack a full-screen, semi-transparent z-index backdrop overlay to obscure background content.
 - **Threshold:** presence of open modal without a fixed/absolute full-screen overlay behind it. A backdrop candidate must cover at least 90% of the viewport, have semi-transparent background/opacity, and sit below the modal by z-index (or same z-index but earlier DOM order).

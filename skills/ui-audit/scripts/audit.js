@@ -157,7 +157,21 @@
     ruleDef('singleRadioInGroup', ruleSingleRadioInGroup, 'document', 'widget-contract'),
     ruleDef('toggleInsideSubmitForm', ruleToggleInsideSubmitForm, 'document', 'widget-contract'),
     ruleDef('orphanedFieldError', ruleOrphanedFieldError, 'document', 'widget-contract', 'WCAG 3.3.1'),
-    ruleDef('desktopHiddenNav', ruleDesktopHiddenNav, 'document', 'widget-contract')
+    ruleDef('desktopHiddenNav', ruleDesktopHiddenNav, 'document', 'widget-contract'),
+    ruleDef('imageMissingAlt', ruleImageMissingAlt, 'document', 'accessibility', 'WCAG 1.1.1'),
+    ruleDef('skipLinkMissing', ruleSkipLinkMissing, 'document', 'keyboard', 'WCAG 2.4.1'),
+    ruleDef('selectAutoSubmit', ruleSelectAutoSubmit, 'document', 'widget-contract', 'WCAG 3.2.2'),
+    ruleDef('missingIndeterminateState', ruleMissingIndeterminateState, 'document', 'widget-contract'),
+    ruleDef('modalActionsOutOfView', ruleModalActionsOutOfView, 'document', 'widget-contract'),
+    ruleDef('emptyDataCell', ruleEmptyDataCell, 'document', 'widget-contract'),
+    ruleDef('numericColumnAlignment', ruleNumericColumnAlignment, 'document', 'typography'),
+    ruleDef('unlinkedContactInfo', ruleUnlinkedContactInfo, 'document', 'affordance'),
+    ruleDef('popupExceedsViewport', rulePopupExceedsViewport, 'document', 'layout'),
+    ruleDef('navCurrentUnmarked', ruleNavCurrentUnmarked, 'document', 'widget-contract'),
+    ruleDef('disabledTab', ruleDisabledTab, 'document', 'widget-contract'),
+    ruleDef('nestedTabs', ruleNestedTabs, 'document', 'widget-contract'),
+    ruleDef('flagAsLanguageIndicator', ruleFlagAsLanguageIndicator, 'document', 'widget-contract'),
+    ruleDef('accordionPanelScroll', ruleAccordionPanelScroll, 'document', 'widget-contract')
   ];
 
   function ruleDef(name, fn, phase, category, standard) {
@@ -1838,6 +1852,376 @@
       'Show top-level navigation inline on desktop and reserve the hamburger for small viewports. If this surface is deliberately chrome-free (an app rail, a canvas tool), mark it data-ui-audit-nav-exempt.'));
   }
 
+  function ruleImageMissingAlt(ctx) {
+    // A MISSING alt attribute is the defect. alt="" is an explicit declaration that the
+    // image carries no information, which is the correct answer for decoration.
+    qsa('img,input[type=image]').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      if (el.hasAttribute('alt')) return;
+      if (el.matches('[role=presentation],[role=none]')) return;
+      if (accessibleNameAttr(el)) return;
+      var r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return;
+      ctx.findings.push(mk('imageMissingAlt', 'Fail', 'auto-measured', cssPath(el),
+        'Image has no alt attribute, so assistive technology announces its file name or nothing at all. A missing attribute is not the same promise as alt="", which declares the image decorative.',
+        { tag: el.tagName.toLowerCase(), src: (el.getAttribute('src') || '').slice(0, 120) }, {}, rectOf(el),
+        'Add alt text describing what the image conveys in this context, or alt="" if it is purely decorative.'));
+    });
+    qsa('svg[role=img]').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      if (accessibleNameAttr(el)) return;
+      var title = el.querySelector('title');
+      if (title && (title.textContent || '').trim()) return;
+      ctx.findings.push(mk('imageMissingAlt', 'Fail', 'auto-measured', cssPath(el),
+        'Inline SVG declares role="img" but exposes no accessible name, so it is announced as an unlabeled image.',
+        { tag: 'svg', role: 'img' }, {}, rectOf(el),
+        'Add a non-empty <title> as the first child (referenced with aria-labelledby) or an aria-label. Drop role="img" and add aria-hidden="true" if the graphic is decorative.'));
+    });
+  }
+
+  function ruleSkipLinkMissing(ctx) {
+    // A <main> landmark is itself a bypass mechanism, so the rule only fires when
+    // neither route past the repeated navigation exists.
+    if (qsa('main,[role=main]').some(function (el) { return isVisible(el); })) return;
+    var nav = qsa('nav,[role=navigation]').filter(function (el) {
+      if (!isVisible(el) || isExempt(el)) return false;
+      return qsa('a[href],[role=link]', el).filter(function (link) {
+        return isVisible(link) && (link.textContent || '').trim();
+      }).length >= 3;
+    })[0];
+    if (!nav) return;
+    // A skip link is deliberately hidden until focused, so visibility cannot be part of
+    // the search: walk the first tab stops in DOM order regardless of how they render.
+    var LEAD_STOPS = 3;
+    var stops = qsa('a[href],button,input,select,textarea,[tabindex]').filter(function (el) {
+      if (el.matches('input[type=hidden]')) return false;
+      var index = el.getAttribute('tabindex');
+      return !(index != null && parseInt(index, 10) < 0);
+    }).slice(0, LEAD_STOPS);
+    var skip = stops.filter(function (el) {
+      return el.tagName === 'A' && /^#./.test(el.getAttribute('href') || '');
+    })[0];
+    if (!skip) {
+      ctx.findings.push(mk('skipLinkMissing', 'Risk', 'auto-measured', cssPath(nav),
+        'Repeated navigation sits ahead of the content with no bypass: no skip link among the first tab stops and no main landmark. Keyboard and screen-reader users tab through the same menu on every screen.',
+        { navLinks: qsa('a[href]', nav).length, leadTabStops: stops.length }, { leadTabStops: LEAD_STOPS }, rectOf(nav),
+        'Add a skip link as the first focusable element pointing at the content container, and mark that container with <main>.'));
+      return;
+    }
+    var target = document.getElementById(decodeURIComponent((skip.getAttribute('href') || '').slice(1)));
+    if (target && getComputedStyle(target).display !== 'none') return;
+    ctx.findings.push(mk('skipLinkMissing', 'Risk', 'auto-measured', cssPath(skip),
+      'Skip link points at a target that does not exist or is not rendered, so activating it moves focus nowhere and the bypass silently fails.',
+      { href: skip.getAttribute('href'), targetFound: !!target }, {}, rectOf(skip),
+      'Point the skip link at the id of the rendered content container and give that container a main landmark.'));
+  }
+
+  function ruleSelectAutoSubmit(ctx) {
+    // Only the inline attribute is readable from the DOM; a listener attached with
+    // addEventListener is invisible here and is covered by the checklist instead.
+    qsa('select[onchange],input[type=radio][onchange],input[type=checkbox][onchange]').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      if (el.hasAttribute('data-ui-audit-autosubmit-exempt')) return;
+      var handler = el.getAttribute('onchange') || '';
+      if (!/(^|[^\w.])submit\s*\(|\.\s*(request)?[Ss]ubmit\s*\(/.test(handler)) return;
+      ctx.findings.push(mk('selectAutoSubmit', 'Risk', 'auto-measured', cssPath(el),
+        'Changing this control submits the form immediately. Users who arrow through the options to read them commit an option they never chose, and there is no way back for anyone whose selection was accidental.',
+        { onchange: handler.slice(0, 120) }, {}, rectOf(el),
+        'Commit through an explicit submit control. If the surface really must react to the choice, keep the change reversible and announce it; mark a deliberate case data-ui-audit-autosubmit-exempt.'));
+    });
+  }
+
+  function ruleMissingIndeterminateState(ctx) {
+    qsa('input[type=checkbox]').forEach(function (master) {
+      if (!isVisible(master) || isExempt(master)) return;
+      var children = selectAllScope(master);
+      if (children.length < 2) return;
+      var checked = children.filter(function (child) { return child.checked; }).length;
+      if (checked === 0 || checked === children.length) return;
+      if (master.indeterminate === true) return;
+      if (master.getAttribute('aria-checked') === 'mixed') return;
+      ctx.findings.push(mk('missingIndeterminateState', 'Risk', 'auto-measured', cssPath(master),
+        'Select-all checkbox shows a plain on/off state while only some of its options are selected. The box reports a selection the list does not have, and clicking it silently discards or extends the real one.',
+        { selected: checked, total: children.length, checked: master.checked, indeterminate: !!master.indeterminate },
+        { indeterminate: true }, rectOf(master),
+        'Set the master checkbox indeterminate (or aria-checked="mixed") whenever the selection is partial, and clear it when it is empty or complete.'));
+    });
+
+    function selectAllScope(master) {
+      var referenced = (master.getAttribute('aria-controls') || '').trim().split(/\s+/).filter(Boolean)
+        .map(function (id) { return document.getElementById(id); })
+        .filter(function (el) { return el && el.matches('input[type=checkbox]'); });
+      if (referenced.length >= 2) return referenced;
+      var head = master.closest('thead');
+      var table = head && head.closest('table');
+      if (table) {
+        return bodyRows(table).reduce(function (acc, row) {
+          return acc.concat(qsa('input[type=checkbox]', row));
+        }, []).filter(function (box) { return box !== master; });
+      }
+      var hint = (labelText(master.closest('label,th,td') || master) + ' ' +
+        (master.getAttribute('aria-label') || '') + ' ' + (master.className || '') + ' ' + (master.id || '')).toLowerCase();
+      if (!/select[-_ ]?all|check[-_ ]?all|toggle[-_ ]?all|전체\s*선택|모두\s*선택/.test(hint)) return [];
+      var scope = master.closest('form,table,fieldset,ul,ol,[role=group],[data-ui-audit-control-group]');
+      if (!scope) return [];
+      return qsa('input[type=checkbox]', scope).filter(function (box) { return box !== master; });
+    }
+  }
+
+  function ruleModalActionsOutOfView(ctx) {
+    var dialog = topmostModal();
+    if (!dialog) return;
+    var hidden = qsa('button,input[type=submit],input[type=button],[role=button]', dialog).filter(function (action) {
+      if (!isVisible(action) || isExempt(action)) return false;
+      var scroller = scrollingAncestor(action, dialog);
+      if (!scroller) return false;
+      if (pinnedInside(action, scroller)) return false;
+      var box = scroller.getBoundingClientRect();
+      var rect = action.getBoundingClientRect();
+      return rect.top >= box.bottom - 1 || rect.bottom <= box.top + 1;
+    });
+    if (!hidden.length) return;
+    ctx.findings.push(mk('modalActionsOutOfView', 'Fail', 'auto-measured', cssPath(hidden[hidden.length - 1]),
+      'Dialog action buttons sit inside the scrolling content and are not on screen when the dialog opens. A modal blocks the rest of the page, so an action the user cannot see is a decision they cannot make.',
+      { hiddenActions: hidden.map(function (el) { return labelText(el) || cssPath(el); }).slice(0, 5), count: hidden.length },
+      {}, rectOf(hidden[hidden.length - 1]),
+      'Move the action row into a footer that stays pinned outside the scrolling area (or make it position:sticky at the bottom of the dialog), and let only the content scroll.'));
+
+    function pinnedInside(action, scroller) {
+      for (var n = action; n && n !== scroller; n = n.parentElement) {
+        var position = getComputedStyle(n).position;
+        if (position === 'sticky' || position === 'fixed') return true;
+      }
+      return false;
+    }
+  }
+
+  function ruleEmptyDataCell(ctx) {
+    dataTables().forEach(function (table) {
+      var empties = bodyRows(table).reduce(function (acc, row) {
+        return acc.concat(qsa('td', row).filter(function (cell) {
+          if ((parseInt(cell.getAttribute('colspan'), 10) || 1) > 1) return false;
+          if (cell.closest('[data-ui-audit-empty-ok]')) return false;
+          if ((cell.innerText || cell.textContent || '').trim()) return false;
+          return !cell.querySelector('img,svg,input,button,select,textarea,a,[role=button]');
+        }));
+      }, []);
+      if (!empties.length) return;
+      ctx.findings.push(mk('emptyDataCell', 'Polish', 'auto-measured', cssPath(table),
+        'Data table leaves cells completely blank. A blank cell cannot say whether the value is missing, zero, not applicable, or still loading, and the reader has to guess which.',
+        { emptyCells: empties.length, samples: empties.slice(0, 5).map(cssPath) }, {}, rectOf(table),
+        'Render an explicit placeholder such as a dash for "no value", and keep zero and "not applicable" visually distinct from it.'));
+    });
+  }
+
+  function ruleNumericColumnAlignment(ctx) {
+    dataTables().forEach(function (table) {
+      var rows = bodyRows(table).filter(function (row) {
+        return !qsa('td,th', row).some(function (cell) { return (parseInt(cell.getAttribute('colspan'), 10) || 1) > 1; });
+      });
+      if (rows.length < 3) return;
+      var columns = rows[0].cells.length;
+      for (var index = 0; index < columns; index++) {
+        inspectColumn(table, rows, index);
+      }
+    });
+
+    function inspectColumn(table, rows, index) {
+      var cells = rows.map(function (row) { return row.cells[index]; })
+        .filter(function (cell) { return cell && cell.tagName === 'TD' && isVisible(cell) && !isExempt(cell); });
+      if (cells.length < 3) return;
+      var values = cells.map(function (cell) { return (cell.innerText || cell.textContent || '').trim(); })
+        .filter(Boolean);
+      if (values.length < 3) return;
+      if (values.some(isDateLike)) return;
+      var numeric = values.filter(isNumericLike).length;
+      if (numeric / values.length < 0.8) return;
+      var cs = getComputedStyle(cells[0]);
+      var align = cs.textAlign;
+      var rtl = cs.direction === 'rtl';
+      if (align === 'right' || align === 'end' || align === 'center') return;
+      if (align === 'start' && rtl) return;
+      if (rtl && align === 'left') return;
+      var header = headerFor(table, index);
+      // Anchor on the header cell so two offending columns in one table stay distinct
+      // signals; dedupe keys on rule + selector + message.
+      ctx.findings.push(mk('numericColumnAlignment', 'Polish', 'auto-measured', cssPath(header.el || cells[0]),
+        'Numeric column is start-aligned, so the digit places do not line up and the reader cannot compare magnitudes by shape.',
+        { column: index + 1, header: header.text, textAlign: align, numericCells: numeric, sampledCells: values.length },
+        { textAlign: 'right' }, rectOf(cells[0]),
+        'Right-align quantitative columns (and their headers) and keep nominal text columns start-aligned.'));
+    }
+
+    function headerFor(table, index) {
+      var headerRow = qsa('thead tr', table)[0] || qsa('tr', table).filter(function (row) { return row.querySelector('th'); })[0];
+      var cell = headerRow && headerRow.cells[index];
+      return { el: cell || null, text: cell ? labelText(cell) : null };
+    }
+
+    function isNumericLike(value) {
+      var cleaned = value.replace(/[\s ]/g, '')
+        .replace(/^[(+\-−]?[₩$€¥£]?/, '')
+        .replace(/[)%]$/, '')
+        .replace(/(원|개|건|명|회|점|위|배|초|분|시간)$/, '');
+      return /^\d{1,3}(,\d{3})*(\.\d+)?$/.test(cleaned) || /^\d+(\.\d+)?$/.test(cleaned);
+    }
+
+    function isDateLike(value) {
+      return /\d{4}[-./]\d{1,2}[-./]\d{1,2}/.test(value) || /\d{1,2}[-./]\d{1,2}[-./]\d{2,4}/.test(value) ||
+        /\d{1,2}:\d{2}/.test(value);
+    }
+  }
+
+  function ruleUnlinkedContactInfo(ctx) {
+    var EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+    // Requires a leading 0 or +country so that dates and grouped amounts cannot match, and
+    // digit boundaries on both ends so the pattern cannot start inside a longer run — an
+    // account number like 1002-123-456789 otherwise yields a phone-shaped substring.
+    var PHONE = /(?<![\d-])(?:\+\d{1,3}[-\s]?)?(?:\(0\d{1,2}\)|0\d{1,2})[-\s]\d{3,4}[-\s]\d{4}(?![\d-])/g;
+    var reported = [];
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (node) {
+        var parent = node.parentElement;
+        if (!parent || !isVisible(parent) || isExempt(parent)) return NodeFilter.FILTER_REJECT;
+        if (parent.closest('a[href],pre,code,kbd,samp,script,style,textarea,option')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+      var text = node.textContent || '';
+      var emails = text.match(EMAIL) || [];
+      var phones = text.match(PHONE) || [];
+      if (!emails.length && !phones.length) continue;
+      var host = node.parentElement;
+      if (reported.indexOf(host) >= 0) continue;
+      reported.push(host);
+      ctx.findings.push(mk('unlinkedContactInfo', 'Polish', 'auto-measured', cssPath(host),
+        'Contact details are rendered as plain text. On a phone the number cannot be dialled and the address cannot be mailed without the user copying it out by hand.',
+        { emails: emails.slice(0, 3), phones: phones.slice(0, 3) }, {}, rectOf(host),
+        'Wrap email addresses in <a href="mailto:…"> and phone numbers in <a href="tel:…"> using the full international form in the href.'));
+    }
+  }
+
+  function rulePopupExceedsViewport(ctx) {
+    qsa('[role=menu],[role=listbox],[popover],.dropdown-menu,[data-ui-audit-popup]').forEach(function (panel) {
+      if (!isVisible(panel) || isExempt(panel)) return;
+      var rect = panel.getBoundingClientRect();
+      if (rect.height < 40 || rect.width < 20) return;
+      var overshoot = Math.round(Math.max(rect.bottom - root.innerHeight, -rect.top));
+      if (overshoot <= 1) return;
+      if (scrollingAncestor(panel, document.body) || scrollsItself(panel)) return;
+      // An absolutely positioned panel that moves with the document is still reachable
+      // as long as the page has room left to scroll; a pinned one never is.
+      var pinned = isPinned(panel);
+      var pageSlack = document.documentElement.scrollHeight - root.innerHeight - root.scrollY;
+      if (!pinned && pageSlack >= overshoot) return;
+      ctx.findings.push(mk('popupExceedsViewport', 'Risk', 'auto-measured', cssPath(panel),
+        'Dropdown panel extends past the viewport with no scrolling of its own, so the options past the edge cannot be reached.',
+        { panelHeight: Math.round(rect.height), viewportHeight: root.innerHeight, overshootPx: overshoot, pinned: pinned },
+        { overshootPx: 0 }, rectOf(panel),
+        'Cap the panel with a max-height tied to the viewport and give it overflow-y:auto so the remaining options stay reachable.'));
+    });
+
+    function scrollsItself(el) {
+      var cs = getComputedStyle(el);
+      return /(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 4;
+    }
+    function isPinned(el) {
+      for (var n = el; n && n.nodeType === 1; n = n.parentElement) {
+        if (getComputedStyle(n).position === 'fixed') return true;
+      }
+      return false;
+    }
+  }
+
+  function ruleNavCurrentUnmarked(ctx) {
+    qsa('nav,[role=navigation]').forEach(function (nav) {
+      if (!isVisible(nav) || isExempt(nav)) return;
+      if (nav.closest('footer,[role=contentinfo]')) return;
+      var links = qsa('a[href]', nav).filter(function (link) {
+        return isVisible(link) && !isExempt(link) && (link.textContent || '').trim();
+      });
+      if (links.length < 3) return;
+      var marked = links.some(function (link) {
+        return link.hasAttribute('aria-current') || link.getAttribute('aria-selected') === 'true' ||
+          /(^|\s)(active|is-active|current|is-current|selected)(\s|$)/.test(link.className || '') ||
+          /(^|\s)(active|is-active|current|is-current|selected)(\s|$)/.test((link.parentElement && link.parentElement.className) || '');
+      });
+      if (marked) return;
+      var here = links.filter(function (link) { return link.pathname === location.pathname; });
+      if (here.length !== 1) return;
+      ctx.findings.push(mk('navCurrentUnmarked', 'Risk', 'auto-measured', cssPath(here[0]),
+        'Navigation contains the screen the user is already on, but nothing marks it as current. The menu answers "where can I go" without answering "where am I".',
+        { href: here[0].getAttribute('href'), label: labelText(here[0]), navLinks: links.length }, {}, rectOf(here[0]),
+        'Set aria-current="page" on the link for the current screen and give it a visible state that does not rely on color alone.'));
+    });
+  }
+
+  function ruleDisabledTab(ctx) {
+    // isExempt() drops disabled controls by design, so the disabled state is read
+    // directly here — it is the finding, not a reason to skip.
+    qsa('[role=tab]').forEach(function (tab) {
+      if (!isVisible(tab)) return;
+      if (tab.closest('[aria-hidden=true],[inert],[hidden]')) return;
+      if (!tab.matches('[disabled],[aria-disabled=true]')) return;
+      ctx.findings.push(mk('disabledTab', 'Risk', 'auto-measured', cssPath(tab),
+        'Tab is rendered in a disabled state. A tab that cannot be selected still costs a scan and teaches nothing about why it is unavailable or what would unlock it.',
+        { label: labelText(tab), disabled: tab.hasAttribute('disabled') ? 'attribute' : 'aria-disabled' }, {}, rectOf(tab),
+        'Remove the tab when it does not apply, or keep it selectable and explain the unavailable state inside its panel.'));
+    });
+  }
+
+  function ruleNestedTabs(ctx) {
+    qsa('[role=tabpanel] [role=tablist]').forEach(function (inner) {
+      if (!isVisible(inner) || isExempt(inner)) return;
+      var outer = inner.closest('[role=tabpanel]');
+      ctx.findings.push(mk('nestedTabs', 'Polish', 'auto-measured', cssPath(inner),
+        'Tab strip is nested inside another tab panel. Two levels of the same widget make it ambiguous which layer a click changes and where the user currently stands.',
+        { outerPanel: cssPath(outer), innerTabs: qsa('[role=tab]', inner).length }, {}, rectOf(inner),
+        'Flatten to one level: promote the inner sections to the outer strip, or use a different grouping (side navigation, accordion) for the second level.'));
+    });
+  }
+
+  function ruleFlagAsLanguageIndicator(ctx) {
+    var LANG = /(^|[^a-z])lang(uage)?([^a-z]|$)|locale|i18n|언어|다국어/i;
+    var FLAG_EMOJI = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
+    qsa('select,button,[role=button],[role=combobox],[role=menu],[role=listbox],a').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      var hint = [labelText(el), el.getAttribute('aria-label'), el.getAttribute('name'), el.id,
+        (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className)]
+        .filter(Boolean).join(' ');
+      if (!LANG.test(hint)) return;
+      var flagImage = qsa('img,svg,use', el).filter(function (node) {
+        var mark = [node.getAttribute('src'), node.getAttribute('alt'), node.getAttribute('href'),
+          (node.className && node.className.baseVal !== undefined ? node.className.baseVal : node.className)]
+          .filter(Boolean).join(' ');
+        return /flag|국기/i.test(mark);
+      })[0];
+      var emoji = FLAG_EMOJI.test(el.textContent || '');
+      if (!flagImage && !emoji) return;
+      ctx.findings.push(mk('flagAsLanguageIndicator', 'Polish', 'auto-measured', cssPath(el),
+        'Language switcher identifies its options with flags. A flag names a country, not a language — one language spans many countries and one country speaks many languages, so some readers see no flag that belongs to them.',
+        { cue: flagImage ? 'flag image' : 'flag emoji', control: el.tagName.toLowerCase() }, {}, rectOf(el),
+        'Label each option with the language endonym (한국어, English, Español). Keep flags only for an explicit country or region choice.'));
+    });
+  }
+
+  function ruleAccordionPanelScroll(ctx) {
+    qsa('[aria-expanded=true][aria-controls]').forEach(function (header) {
+      if (!isVisible(header) || isExempt(header)) return;
+      var panel = document.getElementById((header.getAttribute('aria-controls') || '').trim());
+      if (!panel || !isVisible(panel) || isExempt(panel)) return;
+      if (panel.matches('[role=dialog],[role=menu],[role=listbox],[aria-modal=true]')) return;
+      var cs = getComputedStyle(panel);
+      if (!/(auto|scroll)/.test(cs.overflowY)) return;
+      if (panel.scrollHeight <= panel.clientHeight + 4) return;
+      ctx.findings.push(mk('accordionPanelScroll', 'Polish', 'auto-measured', cssPath(panel),
+        'Expanded disclosure panel scrolls inside itself. The page now has two scrollbars competing for the same gesture, and content inside the panel never reaches the page scroll position it was expanded to show.',
+        { panelHeight: Math.round(panel.clientHeight), contentHeight: Math.round(panel.scrollHeight) }, {}, rectOf(panel),
+        'Let the panel grow to its content and leave scrolling to the page. Move genuinely unbounded content to its own screen instead of nesting a scroller.'));
+    });
+  }
+
   // ------------------------------ helpers ------------------------------
   function qsa(sel, root2) { return Array.prototype.slice.call((root2 || document).querySelectorAll(sel)); }
   function labelText(el) { return ((el && (el.innerText || el.textContent)) || '').trim().replace(/\s+/g, ' ').slice(0, 40); }
@@ -1864,6 +2248,42 @@
       if (associated && isVisible(associated) && !isExempt(associated) && (associated.innerText || '').trim()) return true;
     }
     return referencedVisibleText(el, 'aria-labelledby');
+  }
+  function accessibleNameAttr(el) {
+    if ((el.getAttribute('aria-label') || '').trim()) return true;
+    return referencedVisibleText(el, 'aria-labelledby');
+  }
+  function topmostModal() {
+    var open = qsa('[aria-modal=true],dialog[open]').filter(function (d) {
+      if (!isVisible(d) || isExempt(d)) return false;
+      if (d.tagName === 'DIALOG') return d.hasAttribute('open');
+      var role = d.getAttribute('role');
+      return role === 'dialog' || role === 'alertdialog';
+    });
+    return open[open.length - 1] || null;
+  }
+  // Nearest ancestor of `el` (exclusive) up to and including `bound` that actually
+  // scrolls vertically. Used to tell "below the fold of its own scroller" apart from
+  // "just a tall element on a scrolling page".
+  function scrollingAncestor(el, bound) {
+    for (var n = el.parentElement; n && n.nodeType === 1; n = n.parentElement) {
+      var cs = getComputedStyle(n);
+      if (/(auto|scroll)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 4) return n;
+      if (n === bound) break;
+    }
+    return null;
+  }
+  function dataTables() {
+    return qsa('table').filter(function (table) {
+      if (!isVisible(table) || isExempt(table)) return false;
+      if (!table.querySelector('th')) return false;   // a layout table has no header cells
+      return bodyRows(table).length >= 2;
+    });
+  }
+  function bodyRows(table) {
+    var body = qsa('tbody tr', table);
+    if (body.length) return body.filter(function (row) { return !row.querySelector('th'); });
+    return qsa('tr', table).filter(function (row) { return !row.querySelector('th'); });
   }
   function hasOwnText(el) {
     for (var i = 0; i < el.childNodes.length; i++) {

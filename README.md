@@ -47,6 +47,7 @@ directories yourself.
   built on **measure-don't-eyeball**: a deterministic browser-injected audit
   (`scripts/audit.js`) MEASURES contrast, overflow, sticky-bar overlap, collapsed
   regions, text clipping, tap targets, focus traps, fully obscured keyboard focus, desktop hover feedback, layout shift, broken media,
+  image alternative text, skip links, data-table conventions, standard-widget contracts,
   and more — then a judgment layer covers composition, hierarchy, data-state
   feedback, copy, and brand coherence. Detect-first-then-judge; severity is
   computed from thresholds, not taste. The audit runs via MCP, a zero-dependency

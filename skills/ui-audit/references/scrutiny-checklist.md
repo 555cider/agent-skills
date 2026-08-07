@@ -72,6 +72,11 @@ The audit sees boxes, not a workflow. Judge whether the screen reads as a compos
   scattered.
 - **[visual]** Card-inside-card, duplicate frames, decorative wrappers around
   already-framed controls — sections that look like accidental containers. `Polish`.
+- **[visual]** Navigation depth and shape: side navigation past two levels turns a menu into a
+  tree the user has to hold in memory; in-page navigation past three list levels does the same
+  to a single document. A breadcrumb belongs on one line above the page title, and pagination
+  appears once per screen with first/last, previous/next, and the total made visible. `Polish`;
+  `Risk` when depth hides a primary destination.
 - **[visual]** Remove lines, fills, shadows, and animation that do not establish
   grouping, hierarchy, state, or affordance. Decorative treatment that competes with
   the task adds cognitive load. `Polish`; `Risk` when it obscures the workflow.
@@ -82,7 +87,9 @@ The audit sees boxes, not a workflow. Judge whether the screen reads as a compos
   outweighs the primary one, or the primary CTA is quieter than surrounding chrome →
   `Risk`.
 - **[visual]** Competing CTAs: two or more buttons fighting for "primary" with equal
-  weight on the same surface. Pick one. `Risk` on a primary workflow, else `Polish`.
+  weight on the same surface. The top emphasis level — the filled button — should appear
+  once per screen; a second one spends the emphasis that made the first one findable. Pick
+  one and demote the rest to outline or text. `Risk` on a primary workflow, else `Polish`.
 - **[visual]** Emphasis spent on the wrong target (hero-scale type on a label, loud color
   on a rarely-used control). `Polish`.
 - **[visual]** Run a squint/thumbnail test on the existing screenshot: reduce detail
@@ -154,13 +161,19 @@ states are *meaningfully distinct* is judgment.
   `Risk`; `Fail` when a user could act on wrong data.
 - **[visual]** Empty/error tone: blaming the user, dead-end copy with no next step, or a
   cheery message on a real failure. `Polish`–`Risk` by surface.
+- **[visual]** Critical-alert rationing: a page-level urgent banner is for information that is
+  both time-critical and consequential, and it should be temporary. More than one at a time
+  cancels the urgency of both, and a permanent one becomes furniture the user stops seeing.
+  `Risk` when a genuinely urgent notice competes with a standing banner.
 - *(Placeholder pinned to a corner of an empty data region, or load-jump CLS, is measured —
   see `ancestorCollapse` / `layoutShiftCLS`. Triage, don't re-eyeball.)*
 
 ## Microcopy & content  *([visual])*
 
 - **[visual]** Label clarity: ambiguous, jargon, or truncated-meaning labels; verbs that
-  don't say what the action does. `Risk` on primary actions, else `Polish`.
+  don't say what the action does. A button label should be a verb phrase naming the result
+  ("신청서 제출", "Save draft"), not a noun the user has to turn into an action themselves.
+  `Risk` on primary actions, else `Polish`.
 - **[visual]** Casing consistency (Title Case vs sentence case mixed across peers),
   punctuation, terminology drift (same concept named two ways). `Polish`.
 - **[visual]** Placeholder used as the only label (disappears on input). `Risk`.
@@ -211,10 +224,12 @@ states are *meaningfully distinct* is judgment.
 ## Widget grammar & information scent  *([visual]/[hybrid])*
 
 The audit now measures the widget contracts it can settle from the DOM (`multiRowTabs`,
-`placeholderAsOnlyLabel`, `modalEscapeUnhandled`, `stackedDialogs`, `singleRadioInGroup`,
-`toggleInsideSubmitForm`, `orphanedFieldError`, `desktopHiddenNav`). What is left here is the
-part that needs a reader: whether the *right* widget was chosen, and whether its words carry
-enough scent to predict what happens next. Do not re-eyeball the measured ones.
+`placeholderAsOnlyLabel`, `modalEscapeUnhandled`, `modalActionsOutOfView`, `stackedDialogs`,
+`singleRadioInGroup`, `toggleInsideSubmitForm`, `missingIndeterminateState`, `selectAutoSubmit`,
+`orphanedFieldError`, `desktopHiddenNav`, `navCurrentUnmarked`, `disabledTab`, `nestedTabs`,
+`flagAsLanguageIndicator`, `accordionPanelScroll`). What is left here is the part that needs a
+reader: whether the *right* widget was chosen, and whether its words carry enough scent to
+predict what happens next. Do not re-eyeball the measured ones.
 
 - **[visual]** Cross-dressing: links styled as buttons or buttons styled as links. Links go
   places; buttons do things. When the two visual languages swap, users hesitate before every
@@ -256,6 +271,36 @@ enough scent to predict what happens next. Do not re-eyeball the measured ones.
   safe). Ask what breaks if the field is deleted. `Polish`; `Risk` on a conversion path.
 - **[visual]** Two to four mutually exclusive options hidden in a dropdown. Seeing all the
   choices beats an extra click plus a memory test. `Polish`.
+- **[visual]** Disclosure default: a collapsed section is a promise that the page's outline is
+  the whole outline. Sections that open by default make the outline lie and push the rest below
+  the fold. Prefer one disclosure per section, collapsed. `Polish`; `Risk` when several open
+  panels bury the primary action.
+- **[visual]** Accordion hit area: the whole header row should be clickable, not just the caret
+  or the words. A header that looks like one control but responds in only part of its box costs
+  a second attempt every time. `Polish`. (Whether the *panel* scrolls inside itself is measured
+  as `accordionPanelScroll`.)
+- **[visual]** Badges: a badge is a status marker, not a control — do not make it interactive,
+  do not paint it in the service's primary accent (that color belongs to actions), and keep it
+  to one per element. Two badges on one item mean neither is the status. `Polish`; `Risk` when
+  a badge is the only route to an action.
+- **[visual]** Carousel honesty: with a single item, hide the arrows, dots, and counter — cues
+  that promise more content than exists. Beyond roughly five slides the later ones are seen by
+  almost nobody, so anything that matters should not live there. Keep slide copy to one or two
+  lines. `Polish`; `Risk` when a primary message is parked past the first slide.
+- **[visual]** Tags: keep the label to about two words, and never mix interactive and static
+  tags in one group. Identical shapes that behave differently teach the user to distrust the
+  whole group. `Polish`; `Risk` when the mixed group is a filter control.
+- **[visual]** Step indicator: labels short enough to read at a glance, and roughly three to
+  seven steps. Two steps do not need a wizard; more than seven reads as a form split for the
+  designer's convenience rather than the user's. `Polish`.
+- **[visual]** Calendar grids: weekday headings are not optional, and every date state
+  (available, selected, disabled, today, in-range) needs one consistent visual language plus a
+  legend when more than two states coexist. `Risk` when the user must pick a date from states
+  they cannot name.
+- **[visual]** Radio groups: order the options the way the reader will look for them
+  (alphabetical, numeric, or a real domain order), and when the accuracy of the answer matters
+  more than the speed, ship no pre-selected default — a default is an answer the user never
+  gave. `Polish`; `Risk` on a consequential choice.
 - **[hybrid]** Search, when the surface has one: is the box open rather than behind an icon,
   wide enough to show the whole query (~27 characters), does Enter work, does the query
   survive onto the results page? Reformulation is half of search behavior. `Risk` when
