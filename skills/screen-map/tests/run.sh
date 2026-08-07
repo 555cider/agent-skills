@@ -40,6 +40,14 @@ run_suite() { # name, command...
   fi
 }
 
+# Containers run as root as a matter of course, and Chrome cannot sandbox itself there.
+# Say so once and run unsandboxed, rather than letting every browser check below fail —
+# or, worse, be skipped as though this machine had no Chrome at all.
+if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+  export SCREEN_MAP_NO_SANDBOX=1
+  printf 'note: running as root — Chrome cannot sandbox itself, so the suite runs it unsandboxed.\n\n'
+fi
+
 echo "── pure model ───────────────────────────────────────────"
 run_suite unit node "$HERE/unit.mjs"
 
@@ -62,19 +70,37 @@ echo "── fixture app ──────────────────�
 # Everything past this point drives a real browser. Chrome missing is an environment
 # fact, not a regression — say so and stop, rather than failing twenty checks that were
 # never given a chance to run.
+#
+# Running as root is a *different* fact, and folding the two together is how a suite
+# reports "skipped: Chrome unavailable" on a machine that has Chrome. Containers run as
+# root as a matter of course, so the answer there is to accept the unsandboxed browser
+# and run, not to quietly skip twenty checks. Say which one happened, either way.
 # `pathToFileURL`, not the bare path: on Windows a drive-letter path is not a module
 # specifier, and importing one fails the same way a missing Chrome does. That mistake
 # skipped the entire browser suite and still printed a green line.
-if ! node -e '
+node -e '
   const { pathToFileURL } = require("node:url");
   import(pathToFileURL(process.argv[1]).href)
     .then(m => m.launchBrowser({ headless: true }))
     .then(b => b.close())
-    .then(() => process.exit(0), error => { console.error(error.message); process.exit(77); });
-' "$HERE/../scripts/browser.mjs" > "$WORK/chrome.err" 2>&1; then
-  pass "browser-driven checks (skipped: Chrome unavailable)"
+    .then(() => process.exit(0), error => {
+      console.error(error.message);
+      // 78: the browser is here and refused to run this way. That is a real failure of
+      // this environment, not an absence, and skipping it would hide twenty checks.
+      process.exit(error?.constructor?.name === "SandboxRefused" ? 78 : 77);
+    });
+' "$HERE/../scripts/browser.mjs" > "$WORK/chrome.err" 2>&1
+CHROME_CODE=$?
+if [ "$CHROME_CODE" -eq 77 ]; then
+  # Print the reason. A bare "skipped" is indistinguishable from a broken probe, which
+  # is exactly how a drive-letter import bug once skipped this whole suite in silence.
+  pass "browser-driven checks (skipped: no usable Chrome — $(head -c 200 "$WORK/chrome.err" | tr '\n' ' '))"
   printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
   exit 0
+elif [ "$CHROME_CODE" -ne 0 ]; then
+  fail "a browser can be launched" "$(head -c 400 "$WORK/chrome.err")"
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+  exit 1
 fi
 node "$HERE/fixture-server.mjs" --port-file "$WORK/port" > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!

@@ -1,6 +1,9 @@
 ---
 name: step-back
-description: Use before declaring any work complete, fixed, passing, done, or ready — a plan as much as an implementation — and whenever the same failure, test, or check is about to be seen a third time, or a single subgoal has run past 15 tool calls. Forces two questions you can answer but never ask on your own: was this actually the best available, and is the remaining effort still proportional to the job. Do not use to narrow the scope the user asked for, to skip verification the user requested, or in place of actually running the tests.
+# Double-quoted, because this sentence contains ": " and YAML reads a bare value with
+# that in it as the start of a nested mapping, so the whole file failed to parse.
+# Quoting keeps it one physical line, which this skill's own tests read as such.
+description: "Use before declaring any work complete, fixed, passing, done, or ready — a plan as much as an implementation — and whenever the same failure, test, or check is about to be seen a third time, or a single subgoal has run past 15 tool calls. Forces two questions you can answer but never ask on your own: was this actually the best available, and is the remaining effort still proportional to the job. Do not use to narrow the scope the user asked for, to skip verification the user requested, or in place of actually running the tests."
 license: MIT
 compatibility: Prompt only. No scripts, no dependencies, no network.
 ---
