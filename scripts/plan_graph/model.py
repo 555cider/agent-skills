@@ -26,6 +26,8 @@ REQUIRED_SECTIONS = (
 )
 METADATA_KEYS = {"status", "requires", "replaces", "scope", "tags"}
 VALID_STATUSES = {"active", "done"}
+TBD_MARKER = "TBD"
+GATE_SECTIONS = ("Outcome", "Decisions", "Completion")
 
 
 class PlanGraphError(Exception):
@@ -383,6 +385,14 @@ def parse_plan(path: Path, root: Path) -> tuple[Plan | None, list[Diagnostic]]:
         sections=sections,
     )
     return plan, diagnostics
+
+
+def unfilled_sections(plan: Plan, sections: Iterable[str] = REQUIRED_SECTIONS) -> tuple[str, ...]:
+    return tuple(
+        section
+        for section in sections
+        if plan.sections.get(section, "").strip() == TBD_MARKER
+    )
 
 
 def extract_sections(body: str) -> dict[str, str]:

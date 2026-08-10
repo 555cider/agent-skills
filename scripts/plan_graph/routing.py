@@ -150,11 +150,22 @@ def _plan_item(
     }
     if matches:
         item["matched_by"] = matches
+    if plan.replaces:
+        item["lineage"] = [
+            {
+                "replaced": old,
+                "recover": f"git log --all -- .agents/plans/{old}.md",
+            }
+            for old in plan.replaces
+        ]
     if include_sections:
         item["outcome"] = _excerpt(plan.sections.get("Outcome", ""))
         item["decisions"] = _excerpt(plan.sections.get("Decisions", ""))
         item["acceptance"] = _excerpt(plan.sections.get("Acceptance", ""))
     return item
+
+
+OVERLAP_SAMPLE_REASONS = 3
 
 
 def build_context(
@@ -164,6 +175,7 @@ def build_context(
     explicit_plans: Iterable[str] = (),
     paths: Iterable[str] = (),
     query: str = "",
+    index: dict[str, set[str]] | None = None,
 ) -> dict[str, object]:
     match_reasons: dict[str, list[str]] = defaultdict(list)
     selected: set[str] = set()
@@ -194,24 +206,52 @@ def build_context(
                     match_reasons[plan_id].append(f"path:{path}~{pattern}")
 
     query_candidates: list[tuple[int, str, list[str]]] = []
+    scored_out: list[tuple[int, str, list[str]]] = []
     if query.strip():
         for plan_id, plan in plans.items():
             score, qualifies, reasons = _query_score(plan, query)
-            if qualifies and score > 0:
+            if score <= 0:
+                continue
+            if qualifies:
                 query_candidates.append((score, plan_id, reasons))
+            else:
+                scored_out.append((score, plan_id, reasons))
         query_candidates.sort(key=lambda item: (-item[0], item[1]))
         for score, plan_id, reasons in query_candidates[:3]:
             selected.add(plan_id)
             match_reasons[plan_id].extend([*reasons, f"query:score={score}"])
+        scored_out.extend(query_candidates[3:])
+    near_misses = [
+        {"id": plan_id, "score": score, "reasons": reasons}
+        for score, plan_id, reasons in sorted(
+            scored_out, key=lambda item: (-item[0], item[1])
+        )[:3]
+        if plan_id not in selected
+    ]
 
     required = required_closure(plans, selected) - selected
     affected = reverse_dependents(plans, selected, active_only=True) - selected - required
     included = selected | required | affected
+    overlapping: set[str] = set()
+    if index and selected:
+        selected_files: set[str] = set()
+        for plan_id in selected:
+            selected_files |= index.get(plan_id, set())
+        for plan_id, files in index.items():
+            if plan_id in included:
+                continue
+            shared = files & selected_files
+            if shared:
+                overlapping.add(plan_id)
+                for sample in sorted(shared)[:OVERLAP_SAMPLE_REASONS]:
+                    match_reasons[plan_id].append(f"overlap:{sample}")
     order = topological_order(plans, included)
+    overlap_order = sorted(overlapping)
     role_order = {
         "required": [plan_id for plan_id in order if plan_id in required],
         "selected": [plan_id for plan_id in order if plan_id in selected],
         "affected": [plan_id for plan_id in order if plan_id in affected],
+        "overlapping": overlap_order,
     }
     decision_pack = [
         _plan_item(
@@ -230,6 +270,17 @@ def build_context(
         )
         for plan_id in order
     ]
+    decision_pack.extend(
+        _plan_item(
+            root,
+            plans,
+            plan_id,
+            role="overlapping",
+            matches=match_reasons.get(plan_id),
+            include_sections=False,
+        )
+        for plan_id in overlap_order
+    )
 
     candidates: list[dict[str, object]] = []
     if not selected:
@@ -253,9 +304,11 @@ def build_context(
         "selected": role_order["selected"],
         "required": role_order["required"],
         "affected": role_order["affected"],
+        "overlapping": role_order["overlapping"],
         "read_order": order,
         "decision_pack": decision_pack,
         "candidates": candidates,
+        "near_misses": near_misses,
     }
 
 
@@ -323,4 +376,10 @@ def build_status(root: Path, plans: dict[str, Plan]) -> dict[str, object]:
             for plan_id in retained_done
         ],
         "critical_path": critical_path(plans),
+        "edges": [
+            {"from": plan_id, "to": base, "kind": "requires"}
+            for plan_id in ordered
+            for base in plans[plan_id].requires
+            if base in plans
+        ],
     }

@@ -104,6 +104,36 @@ Selection is deterministic and read-only:
 Routing never changes `requires`. A matched plan is related context, not proof
 of a dependency.
 
+## Advisory signals
+
+Advisory signals are computed from Git and file content on every read; nothing
+about them is stored in frontmatter, so they can never drift.
+
+- **Staleness**: the anchor is the last commit touching the plan file. The
+  churn count is `git rev-list --count <anchor>..HEAD` over the plan's scope as
+  `:(glob)` pathspecs. `0` commits is `fresh`, `1`–`4` is `aging`, and the
+  threshold (default `5`, `doctor --stale-after N`) makes it `stale`. A plan
+  file that is itself dirty or untracked is `fresh` — it is being revised right
+  now. No scope, no anchor, or no usable git means `unknown`, never a warning.
+  Git `:(glob)` semantics approximate the scope matcher; treat the count as a
+  heuristic, not an exact file diff.
+- **Overlap**: two active plans conflict only when their scopes match at least
+  one identical existing file (tracked or untracked). Pattern intersection
+  alone is deliberately not a conflict — a phantom overlap over files that do
+  not exist would train the reader to ignore the warning. A `requires`
+  relationship in either direction makes the overlap an intentional layering
+  and suppresses it.
+- **Near-duplicates**: two active plans that share a tag and either share
+  matched files or have title token Jaccard ≥ 0.5.
+- **Completion gate**: a section whose entire content is the literal `TBD`
+  template counts as unfilled. `close` refuses while Outcome, Decisions, or
+  Completion is unfilled; Evidence, Implementation, and Acceptance produce
+  only a `tbd_sections` warning.
+
+When git or the filesystem cannot answer (no repository, unreadable tree),
+advisory checks silently degrade: staleness reports `unknown` and overlap and
+duplicate checks are skipped. Structural validation never depends on them.
+
 ## Closing and garbage collection
 
 After marking a plan done, compute the keep set as all active plans plus their

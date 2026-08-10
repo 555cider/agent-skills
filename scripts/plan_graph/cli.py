@@ -7,8 +7,19 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-from .model import Diagnostic, Plan, PlanGraphError, make_plan, plan_path, replace_title
-from .routing import build_context, build_status
+from . import __version__, advice
+from .model import (
+    GATE_SECTIONS,
+    REQUIRED_SECTIONS,
+    Diagnostic,
+    Plan,
+    PlanGraphError,
+    make_plan,
+    plan_path,
+    replace_title,
+    unfilled_sections,
+)
+from .routing import build_context, build_status, readiness
 from .store import (
     Store,
     apply_plan_set,
@@ -34,6 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="plan-graph.py",
         description="Route and maintain repository-local persistent plan context.",
     )
+    parser.add_argument(
+        "--version", action="version", version=f"plan-graph {__version__}"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     common = _common_parser()
 
@@ -48,7 +62,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("status", parents=[common], help="show ready, waiting, and retained plans")
-    subparsers.add_parser("doctor", parents=[common], help="validate the store and find nested stores")
+
+    why = subparsers.add_parser(
+        "why", parents=[common], help="explain every signal about one plan"
+    )
+    why.add_argument("id")
+
+    doctor = subparsers.add_parser(
+        "doctor", parents=[common], help="validate the store and find nested stores"
+    )
+    doctor.add_argument(
+        "--stale-after",
+        type=int,
+        default=advice.STALE_AFTER_DEFAULT,
+        help="scope commits since the plan last changed before it counts as stale",
+    )
+    doctor.add_argument(
+        "--structural-only",
+        action="store_true",
+        help="skip git- and filesystem-backed advisory checks",
+    )
 
     create = subparsers.add_parser("create", parents=[common], help="create a plan template")
     create.add_argument("id")
@@ -79,9 +112,19 @@ def build_parser() -> argparse.ArgumentParser:
     _add_fresh_metadata_args(replace_cmd)
     _add_dry_run(replace_cmd)
 
+    close_cmd = subparsers.add_parser(
+        "close", parents=[common], help="mark a plan done and prune the closed tree"
+    )
+    close_cmd.add_argument("id")
+    close_cmd.add_argument(
+        "--force",
+        action="store_true",
+        help="close despite unfilled sections; records a forced_close warning",
+    )
+    _add_dry_run(close_cmd)
+
     for name, help_text in (
         ("reopen", "mark a retained done plan active again"),
-        ("close", "mark a plan done and prune the closed tree"),
         ("drop", "delete an unneeded plan and prune orphaned done plans"),
     ):
         command = subparsers.add_parser(name, parents=[common], help=help_text)
@@ -139,6 +182,8 @@ def _emit(
                 _print_context(data or {})
             elif command == "status":
                 _print_status(data or {})
+            elif command == "why":
+                _print_why(data or {})
             elif command == "doctor":
                 counts = (data or {}).get("counts", {})
                 print(f"OK plan store ({counts.get('plans', 0)} plans)")
@@ -149,6 +194,11 @@ def _emit(
                     target = change.get("plan") or change.get("from") or ""
                     detail = f" -> {change['to']}" if "to" in change else ""
                     print(f"  {change['action']}: {target}{detail}")
+                unblocked = (data or {}).get("unblocked") or []
+                if unblocked:
+                    print("  unblocked: " + ", ".join(unblocked))
+                if (data or {}).get("retained"):
+                    print("  retained: still required by active plans")
         elif not diagnostic_list:
             print(f"ERROR {command} failed", file=sys.stderr)
     return 0 if ok else 1
@@ -158,10 +208,13 @@ def _print_context(data: dict[str, object]) -> None:
     selected = data.get("selected", [])
     required = data.get("required", [])
     affected = data.get("affected", [])
+    overlapping = data.get("overlapping", [])
     print("Plan Context")
     print("  Selected: " + (", ".join(selected) if selected else "none"))
     print("  Required: " + (", ".join(required) if required else "none"))
     print("  Affected: " + (", ".join(affected) if affected else "none"))
+    if overlapping:
+        print("  Overlapping: " + ", ".join(overlapping))
     read_order = data.get("read_order", [])
     if read_order:
         print("  Read order: " + " -> ".join(read_order))
@@ -169,9 +222,15 @@ def _print_context(data: dict[str, object]) -> None:
         print(f"\n[{item['role']}] {item['id']} — {item['title']}")
         if item.get("matched_by"):
             print("Matched: " + "; ".join(item["matched_by"]))
-        print("Outcome:\n" + str(item.get("outcome", "")))
-        print("Decisions:\n" + str(item.get("decisions", "")))
-        print("Acceptance:\n" + str(item.get("acceptance", "")))
+        if "outcome" in item:
+            print("Outcome:\n" + str(item.get("outcome", "")))
+            print("Decisions:\n" + str(item.get("decisions", "")))
+            print("Acceptance:\n" + str(item.get("acceptance", "")))
+    near_misses = data.get("near_misses", [])
+    if near_misses and not selected:
+        print("\nNear misses (read these before creating a new plan):")
+        for item in near_misses:
+            print(f"  - {item['id']} (score {item['score']})")
     candidates = data.get("candidates", [])
     if candidates:
         print("\nNo plan matched; active candidates:")
@@ -179,6 +238,31 @@ def _print_context(data: dict[str, object]) -> None:
             print(f"  - {item['id']} ({item['readiness']}): {item['title']}")
     elif not selected:
         print("\nNo active plans matched.")
+
+
+def _print_why(data: dict[str, object]) -> None:
+    plan = data.get("plan", {})
+    print(f"{plan.get('id')} — {plan.get('title')} [{data.get('readiness')}]")
+    blockers = data.get("blockers", [])
+    if blockers:
+        print("  blockers: " + ", ".join(blockers))
+    dependents = data.get("dependents", {})
+    for kind in ("active", "done"):
+        if dependents.get(kind):
+            print(f"  {kind} dependents: " + ", ".join(dependents[kind]))
+    staleness = data.get("staleness", {})
+    churn = staleness.get("commits_since_plan_update")
+    detail = f" ({churn} scope commit(s) since last plan update)" if churn else ""
+    print(f"  staleness: {staleness.get('state')}{detail}")
+    for overlap in data.get("overlaps", []):
+        print(f"  overlaps {overlap['plan']}: " + ", ".join(overlap["shared_files"]))
+    for lineage in data.get("lineage", []):
+        print(f"  replaced {lineage['replaced']} (recover: {lineage['recover']})")
+    if data.get("prunable"):
+        print("  prunable: not required by any active plan; gc will remove it")
+    unfilled = data.get("unfilled_sections", [])
+    if unfilled:
+        print("  unfilled sections: " + ", ".join(unfilled))
 
 
 def _print_status(data: dict[str, object]) -> None:
@@ -266,6 +350,8 @@ def _finish_mutation(
     changes: list[dict[str, object]],
     dry_run: bool,
     json_mode: bool,
+    data: dict[str, object] | None = None,
+    extra_diagnostics: Iterable[Diagnostic] = (),
 ) -> int:
     errors = [item for item in validate_graph(after) if item.severity == "error"]
     if errors:
@@ -279,16 +365,26 @@ def _finish_mutation(
         )
     if not dry_run:
         apply_plan_set(root, before, after)
-    diagnostics = [item for item in validate_graph(after) if item.severity == "warning"]
+    diagnostics = [
+        *extra_diagnostics,
+        *(item for item in validate_graph(after) if item.severity == "warning"),
+    ]
     return _emit(
         ok=True,
         command=command,
         root=root,
-        data={"dry_run": dry_run},
+        data={"dry_run": dry_run, **(data or {})},
         diagnostics=diagnostics,
         changes=changes,
         json_mode=json_mode,
     )
+
+
+def _safe_worktree_paths(root: Path) -> list[str]:
+    try:
+        return git_worktree_paths(root)
+    except PlanGraphError:
+        return []
 
 
 def _handle_context(args: argparse.Namespace, root: Path, store: Store) -> int:
@@ -299,13 +395,23 @@ def _handle_context(args: argparse.Namespace, root: Path, store: Store) -> int:
     paths = _normalize_paths(root, args.path)
     if args.worktree or not selectors_given:
         paths = list(dict.fromkeys([*paths, *git_worktree_paths(root)]))
+    files = advice.repo_files(root)
     data = build_context(
         root,
         store.plans,
         explicit_plans=args.plan,
         paths=paths,
         query=args.query,
+        index=advice.file_index(store.plans, files) if files is not None else None,
     )
+    pack_ids = {item["id"] for item in data["decision_pack"]}
+    stale_map = advice.staleness(
+        root,
+        {plan_id: store.plans[plan_id] for plan_id in pack_ids},
+        dirty_paths=_safe_worktree_paths(root),
+    )
+    for item in data["decision_pack"]:
+        item["staleness"] = stale_map[item["id"]]
     return _emit(
         ok=True,
         command="context",
@@ -470,10 +576,47 @@ def _handle_reopen(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
     plan = _require_plan(store, args.id)
+    extra: list[Diagnostic] = []
+    gate_unfilled = unfilled_sections(plan, GATE_SECTIONS)
+    if gate_unfilled:
+        listed = ", ".join(gate_unfilled)
+        if not args.force:
+            raise PlanGraphError(
+                f"cannot close {args.id}; unfilled sections: {listed}."
+                " Fill them with the real outcome, or use --force to abandon the plan.",
+                code="unverified_completion",
+            )
+        extra.append(
+            Diagnostic(
+                "warning",
+                "forced_close",
+                f"closed with unfilled sections: {listed}",
+                args.id,
+            )
+        )
+    note_unfilled = unfilled_sections(
+        plan, [s for s in REQUIRED_SECTIONS if s not in GATE_SECTIONS]
+    )
+    if note_unfilled:
+        extra.append(
+            Diagnostic(
+                "warning",
+                "tbd_sections",
+                "sections left TBD: " + ", ".join(note_unfilled),
+                args.id,
+            )
+        )
     after = {**store.plans, args.id: replace(plan, status="done")}
     pruned = sorted(prunable_done(after))
     for plan_id in pruned:
         after.pop(plan_id)
+    unblocked = sorted(
+        plan_id
+        for plan_id, item in after.items()
+        if item.status == "active"
+        and readiness(store.plans, plan_id) == "waiting"
+        and readiness(after, plan_id) == "ready"
+    )
     changes: list[dict[str, object]] = [{"action": "close", "plan": args.id}]
     changes.extend({"action": "prune", "plan": plan_id} for plan_id in pruned)
     return _finish_mutation(
@@ -484,6 +627,8 @@ def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
         changes=changes,
         dry_run=args.dry_run,
         json_mode=args.json,
+        data={"unblocked": unblocked, "retained": args.id in after},
+        extra_diagnostics=extra,
     )
 
 
@@ -530,6 +675,20 @@ def run(args: argparse.Namespace) -> int:
     root = discover_root(args.root)
     if args.command == "doctor":
         store = load_store(root, deep=True)
+        advisory: list[Diagnostic] = []
+        if not args.structural_only:
+            files = advice.repo_files(root)
+            index = advice.file_index(store.plans, files) if files is not None else {}
+            if files is not None:
+                advisory.extend(advice.scope_overlaps(store.plans, index))
+            advisory.extend(advice.near_duplicates(store.plans, index))
+            report = advice.staleness(
+                root,
+                store.plans,
+                dirty_paths=_safe_worktree_paths(root),
+                stale_after=args.stale_after,
+            )
+            advisory.extend(advice.stale_warnings(report))
         return _emit(
             ok=not store.errors,
             command="doctor",
@@ -541,13 +700,36 @@ def run(args: argparse.Namespace) -> int:
                     "done": sum(plan.status == "done" for plan in store.plans.values()),
                 }
             },
-            diagnostics=store.diagnostics,
+            diagnostics=[*store.diagnostics, *advisory],
             json_mode=args.json,
         )
 
     store = _load_valid(root)
     if args.command == "context":
         return _handle_context(args, root, store)
+    if args.command == "why":
+        _require_plan(store, args.id)
+        files = advice.repo_files(root)
+        stale = advice.staleness(
+            root,
+            {args.id: store.plans[args.id]},
+            dirty_paths=_safe_worktree_paths(root),
+        )
+        data = advice.explain_plan(
+            root,
+            store.plans,
+            args.id,
+            index=advice.file_index(store.plans, files) if files is not None else None,
+            staleness_report=stale,
+        )
+        return _emit(
+            ok=True,
+            command="why",
+            root=root,
+            data=data,
+            diagnostics=store.warnings,
+            json_mode=args.json,
+        )
     if args.command == "status":
         return _emit(
             ok=True,

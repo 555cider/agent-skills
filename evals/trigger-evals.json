@@ -40,7 +40,23 @@
     "should_trigger": true
   },
   {
+    "query": "Two of our persistent plans seem to cover the same checkout files; check the plan store for overlap conflicts before I continue.",
+    "should_trigger": true
+  },
+  {
+    "query": "Which repository plans have gone stale since the code they scope was rewritten? Audit .agents/plans before we resume the migration.",
+    "should_trigger": true
+  },
+  {
     "query": "Write a short implementation plan in this chat for adding a retry helper; do not save any files.",
+    "should_trigger": false
+  },
+  {
+    "query": "Check whether any of my Kubernetes deployments have drifted from the manifests in the cluster.",
+    "should_trigger": false
+  },
+  {
+    "query": "Deduplicate the rows in customers.csv that share the same email address and save the result.",
     "should_trigger": false
   },
   {

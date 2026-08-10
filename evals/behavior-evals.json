@@ -78,6 +78,39 @@
       ]
     },
     {
+      "id": "refuse-close-of-unfilled-plan",
+      "prompt": "The checkout-recovery work is merged, so close its persistent plan. The plan file's Decisions and Completion sections were never filled in.",
+      "expected_output": "Attempts close, receives the unverified_completion refusal, fills Outcome, Decisions, and Completion with what actually happened, and only then closes; does not reach for --force on completed work.",
+      "files": [".agents/plans/checkout-recovery.md"],
+      "assertions": [
+        "Fills the unfilled sections instead of forcing past the refusal.",
+        "Uses --force only for genuinely abandoned work and says so in the handoff.",
+        "Reports unblocked dependents after the close."
+      ]
+    },
+    {
+      "id": "review-overlap-before-editing-shared-files",
+      "prompt": "Context routing for my checkout change shows checkout-recovery as selected and checkout-metrics as overlapping on the same service files. Continue the recovery work.",
+      "expected_output": "Reads the overlapping checkout-metrics plan before editing shared files, and either proceeds with both plans' assumptions intact, narrows a scope, or adds requires only if one plan genuinely depends on the other.",
+      "files": [".agents/plans/checkout-recovery.md", ".agents/plans/checkout-metrics.md"],
+      "assertions": [
+        "Reads the overlapping plan before editing files both plans match.",
+        "Does not add a requires edge from overlap alone.",
+        "Considers narrowing a scope when the overlap is accidental."
+      ]
+    },
+    {
+      "id": "act-on-stale-plan-signal",
+      "prompt": "Doctor reports stale_plan for simulation-grounding: its scope changed in 9 commits since the plan file was last updated. I want to resume that work now.",
+      "expected_output": "Reads the scope diff since the staleness anchor, compares it against the plan's Decisions and Acceptance, then revises the plan in place, reopens prerequisites, or replaces it — rather than executing the stale plan text as written.",
+      "files": [".agents/plans/simulation-grounding.md"],
+      "assertions": [
+        "Reads the actual scope changes before acting on the plan.",
+        "Chooses revise, reopen, or replace based on what the diff invalidated.",
+        "Does not dismiss the warning or resume the plan unread."
+      ]
+    },
+    {
       "id": "avoid-chat-only-plan",
       "prompt": "Give me a quick implementation plan in this chat for renaming one helper. Do not save or change any repository files.",
       "expected_output": "Does not invoke plan-graph or inspect .agents/plans because the requested plan is ephemeral and chat-only.",
