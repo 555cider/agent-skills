@@ -110,6 +110,15 @@ class PlanGraphCliTests(unittest.TestCase):
     def plan_file(self, plan_id: str) -> Path:
         return self.root / ".agents" / "plans" / f"{plan_id}.md"
 
+    def fill_sections(self, plan_id: str, *sections: str) -> None:
+        path = self.plan_file(plan_id)
+        content = path.read_text(encoding="utf-8")
+        for section in sections or ("Outcome", "Decisions", "Completion"):
+            content = content.replace(
+                f"## {section}\n\nTBD", f"## {section}\n\n{section} recorded."
+            )
+        path.write_text(content, encoding="utf-8")
+
     def test_empty_store_context_and_doctor(self) -> None:
         doctor, _ = self.run_cli("doctor")
         self.assertEqual(doctor["data"]["counts"], {"plans": 0, "active": 0, "done": 0})
@@ -307,6 +316,7 @@ x
         self.create("base", tags=("base",))
         self.create("middle", tags=("middle",), requires=("base",))
         self.create("leaf", tags=("leaf",), requires=("middle",))
+        self.fill_sections("middle")
         self.run_cli("close", "middle")
         payload, _ = self.run_cli("status")
         self.assertEqual([item["id"] for item in payload["data"]["ready"]], ["base"])
@@ -359,6 +369,8 @@ x
     def test_close_retains_required_done_then_prunes_closed_tree(self) -> None:
         self.create("base", tags=("base",))
         self.create("child", tags=("child",), requires=("base",))
+        self.fill_sections("base")
+        self.fill_sections("child")
         self.run_cli("close", "base")
         store = load_store(self.root)
         self.assertEqual(store.plans["base"].status, "done")
@@ -371,9 +383,280 @@ x
         self.run_cli("close", "child")
         self.assertEqual(load_store(self.root).plans, {})
 
+    def git(self, *args: str) -> None:
+        subprocess.run(["git", "-C", str(self.root), *args], check=True)
+
+    def churned_repo(self, commits: int = 5) -> Path:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.git("config", "user.email", "test@example.com")
+        self.git("config", "user.name", "Test")
+        self.create("core", scopes=("apps/core/**",), tags=("core",))
+        target = self.root / "apps" / "core" / "engine.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("seed\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "seed")
+        for index in range(commits):
+            target.write_text(f"rev {index}\n", encoding="utf-8")
+            self.git("commit", "-aqm", f"churn {index}")
+        return target
+
+    def test_doctor_warns_stale_plan_after_scope_churn(self) -> None:
+        self.churned_repo(commits=5)
+        payload, _ = self.run_cli("doctor")
+        stale = [item for item in payload["diagnostics"] if item["code"] == "stale_plan"]
+        self.assertEqual([item["plan"] for item in stale], ["core"])
+        self.assertIn("5 commit", stale[0]["message"])
+        relaxed, _ = self.run_cli("doctor", "--stale-after", "10")
+        self.assertNotIn("stale_plan", [item["code"] for item in relaxed["diagnostics"]])
+        structural, _ = self.run_cli("doctor", "--structural-only")
+        self.assertNotIn("stale_plan", [item["code"] for item in structural["diagnostics"]])
+        context, _ = self.run_cli("context", "--plan", "core")
+        staleness = context["data"]["decision_pack"][0]["staleness"]
+        self.assertEqual(staleness["state"], "stale")
+        self.assertEqual(staleness["commits_since_plan_update"], 5)
+
+    def test_dirty_plan_file_is_fresh_not_stale(self) -> None:
+        self.churned_repo(commits=5)
+        path = self.plan_file("core")
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nRevising against the new diff.\n",
+            encoding="utf-8",
+        )
+        payload, _ = self.run_cli("doctor")
+        self.assertNotIn("stale_plan", [item["code"] for item in payload["diagnostics"]])
+        context, _ = self.run_cli("context", "--plan", "core")
+        self.assertEqual(
+            context["data"]["decision_pack"][0]["staleness"]["state"], "fresh"
+        )
+
+    def test_staleness_unknown_without_git(self) -> None:
+        self.create("core", scopes=("apps/core/**",), tags=("core",))
+        payload, _ = self.run_cli("doctor")
+        self.assertNotIn("stale_plan", [item["code"] for item in payload["diagnostics"]])
+        context, _ = self.run_cli("context", "--plan", "core")
+        self.assertEqual(
+            context["data"]["decision_pack"][0]["staleness"]["state"], "unknown"
+        )
+
+    def test_doctor_warns_overlapping_unrelated_active_plans(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.create("checkout-api", scopes=("apps/checkout/**",), tags=("checkout",))
+        self.create("checkout-recovery", scopes=("apps/checkout/**",), tags=("recovery",))
+        shared = self.root / "apps" / "checkout" / "service.py"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("x\n", encoding="utf-8")
+        payload, _ = self.run_cli("doctor")
+        overlaps = [item for item in payload["diagnostics"] if item["code"] == "scope_overlap"]
+        self.assertEqual(len(overlaps), 1)
+        self.assertEqual(overlaps[0]["plan"], "checkout-api")
+        self.assertIn("checkout-recovery", overlaps[0]["message"])
+        self.assertIn("apps/checkout/service.py", overlaps[0]["message"])
+
+    def test_overlap_needs_shared_file_and_no_requires_edge(self) -> None:
+        self.create("checkout-api", scopes=("apps/checkout/**",), tags=("checkout",))
+        self.create(
+            "checkout-recovery",
+            scopes=("apps/checkout/**",),
+            tags=("recovery",),
+            requires=("checkout-api",),
+        )
+        shared = self.root / "apps" / "checkout" / "service.py"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("x\n", encoding="utf-8")
+        self.create("empty-a", scopes=("lib/**",), tags=("lib-a",))
+        self.create("empty-b", scopes=("lib/**",), tags=("lib-b",))
+        payload, _ = self.run_cli("doctor")
+        self.assertNotIn(
+            "scope_overlap", [item["code"] for item in payload["diagnostics"]]
+        )
+
+    def test_context_surfaces_overlapping_plan_without_requires_edge(self) -> None:
+        self.create("checkout-api", scopes=("apps/checkout/**",), tags=("checkout",))
+        self.create("checkout-recovery", scopes=("apps/checkout/**",), tags=("recovery",))
+        shared = self.root / "apps" / "checkout" / "service.py"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("x\n", encoding="utf-8")
+        payload, _ = self.run_cli("context", "--plan", "checkout-api")
+        self.assertEqual(payload["data"]["overlapping"], ["checkout-recovery"])
+        self.assertEqual(payload["data"]["read_order"], ["checkout-api"])
+        item = next(
+            entry
+            for entry in payload["data"]["decision_pack"]
+            if entry["id"] == "checkout-recovery"
+        )
+        self.assertEqual(item["role"], "overlapping")
+        self.assertIn("overlap:apps/checkout/service.py", item["matched_by"])
+        self.assertNotIn("outcome", item)
+
+    def test_overlapping_excludes_plans_already_required_or_affected(self) -> None:
+        self.create("base", scopes=("apps/checkout/**",), tags=("base",))
+        self.create(
+            "leaf", scopes=("apps/checkout/**",), tags=("leaf",), requires=("base",)
+        )
+        shared = self.root / "apps" / "checkout" / "service.py"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("x\n", encoding="utf-8")
+        payload, _ = self.run_cli("context", "--plan", "leaf")
+        self.assertEqual(payload["data"]["overlapping"], [])
+        roles = {item["id"]: item["role"] for item in payload["data"]["decision_pack"]}
+        self.assertEqual(roles, {"base": "required", "leaf": "selected"})
+
+    def test_why_reports_blockers_staleness_overlap_and_lineage(self) -> None:
+        self.create("auth-session", tags=("auth",))
+        self.create(
+            "checkout-api",
+            scopes=("apps/checkout/**",),
+            tags=("checkout",),
+            requires=("auth-session",),
+        )
+        self.create("checkout-recovery", scopes=("apps/checkout/**",), tags=("recovery",))
+        self.create("frontend", tags=("front",), requires=("checkout-api",))
+        self.run_cli("update", "checkout-api", "--add-replace", "old-import")
+        shared = self.root / "apps" / "checkout" / "service.py"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("x\n", encoding="utf-8")
+        payload, _ = self.run_cli("why", "checkout-api")
+        data = payload["data"]
+        self.assertEqual(data["plan"]["id"], "checkout-api")
+        self.assertEqual(data["readiness"], "waiting")
+        self.assertEqual(data["blockers"], ["auth-session"])
+        self.assertEqual(data["dependents"]["active"], ["frontend"])
+        self.assertEqual(data["staleness"]["state"], "unknown")
+        self.assertEqual(
+            data["overlaps"],
+            [{"plan": "checkout-recovery", "shared_files": ["apps/checkout/service.py"]}],
+        )
+        self.assertEqual(
+            data["lineage"],
+            [
+                {
+                    "replaced": "old-import",
+                    "recover": "git log --all -- .agents/plans/old-import.md",
+                }
+            ],
+        )
+        self.assertFalse(data["prunable"])
+        self.assertIn("Completion", data["unfilled_sections"])
+
+    def test_why_unknown_plan_errors(self) -> None:
+        self.create("real", tags=("real",))
+        payload, _ = self.run_cli("why", "ghost", expect=1)
+        self.assertEqual(payload["diagnostics"][0]["code"], "unknown_plan")
+
+    def test_status_json_lists_requires_edges(self) -> None:
+        self.create("base", tags=("base",))
+        self.create("child", tags=("child",), requires=("base",))
+        payload, _ = self.run_cli("status")
+        self.assertEqual(
+            payload["data"]["edges"],
+            [{"from": "child", "to": "base", "kind": "requires"}],
+        )
+
+    def test_context_item_carries_replacement_lineage(self) -> None:
+        self.create("old", tags=("old",))
+        self.run_cli("replace", "old", "new", "--title", "New", "--tag", "new")
+        payload, _ = self.run_cli("context", "--plan", "new")
+        item = payload["data"]["decision_pack"][0]
+        self.assertEqual(
+            item["lineage"],
+            [{"replaced": "old", "recover": "git log --all -- .agents/plans/old.md"}],
+        )
+
+    def test_query_near_misses_listed_below_cutoff(self) -> None:
+        self.create("alpha", tags=("unrelated",))
+        path = self.plan_file("alpha")
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "## Outcome\n\nTBD", "## Outcome\n\nKorean calibration evidence pipeline"
+            ),
+            encoding="utf-8",
+        )
+        payload, _ = self.run_cli("context", "--query", "calibration")
+        self.assertEqual(payload["data"]["selected"], [])
+        self.assertEqual(
+            [item["id"] for item in payload["data"]["near_misses"]], ["alpha"]
+        )
+        self.assertGreater(payload["data"]["near_misses"][0]["score"], 0)
+        for plan_id in ("calib-a", "calib-b", "calib-c", "calib-d"):
+            self.create(plan_id, title=f"Calibration {plan_id[-1]}", tags=(plan_id,))
+        spill, _ = self.run_cli("context", "--query", "calibration")
+        self.assertEqual(spill["data"]["selected"], ["calib-a", "calib-b", "calib-c"])
+        self.assertEqual(
+            [item["id"] for item in spill["data"]["near_misses"]],
+            ["calib-d", "alpha"],
+        )
+
+    def test_version_flag_prints_version(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("plan-graph 2.1.0", result.stdout)
+
+    def test_doctor_flags_near_duplicate_pair(self) -> None:
+        self.create("checkout-flow", title="Checkout recovery flow", tags=("checkout",))
+        self.create("checkout-retry", title="Checkout recovery retry", tags=("checkout",))
+        payload, _ = self.run_cli("doctor")
+        duplicates = [
+            item for item in payload["diagnostics"] if item["code"] == "possible_duplicate"
+        ]
+        self.assertEqual(len(duplicates), 1)
+        self.assertEqual(duplicates[0]["plan"], "checkout-flow")
+        self.assertIn("checkout-retry", duplicates[0]["message"])
+
+    def test_shared_tag_alone_is_not_a_duplicate(self) -> None:
+        self.create("checkout-flow", title="Checkout recovery flow", tags=("checkout",))
+        self.create("payments-audit", title="Payments audit report", tags=("checkout",))
+        payload, _ = self.run_cli("doctor")
+        self.assertNotIn(
+            "possible_duplicate", [item["code"] for item in payload["diagnostics"]]
+        )
+
+    def test_close_refuses_tbd_decision_sections(self) -> None:
+        self.create("skeleton", tags=("skeleton",))
+        failed, _ = self.run_cli("close", "skeleton", expect=1)
+        self.assertEqual(failed["diagnostics"][0]["code"], "unverified_completion")
+        self.assertIn("Outcome", failed["diagnostics"][0]["message"])
+        self.assertEqual(load_store(self.root).plans["skeleton"].status, "active")
+
+    def test_close_force_overrides_with_warning(self) -> None:
+        self.create("abandoned", tags=("abandoned",))
+        self.create("keeper", tags=("keeper",), requires=("abandoned",))
+        payload, _ = self.run_cli("close", "abandoned", "--force")
+        codes = [item["code"] for item in payload["diagnostics"]]
+        self.assertIn("forced_close", codes)
+        self.assertIn("tbd_sections", codes)
+        self.assertEqual(load_store(self.root).plans["abandoned"].status, "done")
+
+    def test_close_with_filled_sections_reports_unblocked_dependents(self) -> None:
+        self.create("base", tags=("base",))
+        self.create("child", tags=("child",), requires=("base",))
+        self.fill_sections("base")
+        payload, _ = self.run_cli("close", "base")
+        self.assertEqual(payload["data"]["unblocked"], ["child"])
+        self.assertTrue(payload["data"]["retained"])
+
+    def test_doctor_warns_tbd_sections_on_hand_edited_done_plan(self) -> None:
+        self.create("keep", tags=("keep",))
+        self.create("active", tags=("active",), requires=("keep",))
+        path = self.plan_file("keep")
+        content = path.read_text(encoding="utf-8").replace(
+            '"status": "active"', '"status": "done"'
+        )
+        path.write_text(content, encoding="utf-8")
+        doctor, _ = self.run_cli("doctor")
+        warned = [item for item in doctor["diagnostics"] if item["code"] == "tbd_sections"]
+        self.assertEqual([item["plan"] for item in warned], ["keep"])
+
     def test_reopen_retained_done_plan(self) -> None:
         self.create("base", tags=("base",))
         self.create("child", tags=("child",), requires=("base",))
+        self.fill_sections("base")
         self.run_cli("close", "base")
         self.run_cli("reopen", "base")
         self.assertEqual(load_store(self.root).plans["base"].status, "active")
@@ -382,6 +665,7 @@ x
         self.create("base", tags=("base",))
         self.create("middle", tags=("middle",), requires=("base",))
         self.create("leaf", tags=("leaf",), requires=("middle",))
+        self.fill_sections("middle")
         self.run_cli("close", "middle")
         failed, _ = self.run_cli("drop", "base", expect=1)
         self.assertEqual(failed["diagnostics"][0]["code"], "active_dependents")
@@ -390,6 +674,7 @@ x
     def test_gc_prunes_only_unretained_done_plans(self) -> None:
         self.create("keep", tags=("keep",))
         self.create("active", tags=("active",), requires=("keep",))
+        self.fill_sections("keep")
         self.run_cli("close", "keep")
         orphan = make_plan(root=self.root, plan_id="orphan", title="Orphan", tags=["orphan"])
         orphan = replace(orphan, status="done")

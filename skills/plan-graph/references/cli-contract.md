@@ -14,8 +14,9 @@ Without `--root`, the CLI uses `git rev-parse --show-toplevel`.
 | Command | Purpose |
 |---|---|
 | `context [--plan ID] [--path PATH] [--query TEXT] [--worktree]` | Select context and produce a decision pack. No selectors means current Git changes. Explicit selectors include Git changes only with `--worktree`. |
-| `status` | List ready, waiting, retained-done plans and the longest active chain. |
-| `doctor` | Return all format, graph, safety, nested-store, legacy-store, and pruning diagnostics. |
+| `status` | List ready, waiting, retained-done plans, `requires` edges, and the longest active chain. |
+| `why ID` | Aggregate every signal about one plan: readiness, blockers, dependents, staleness, overlaps, lineage, prunability, unfilled sections. |
+| `doctor [--stale-after N] [--structural-only]` | Return all format, graph, safety, nested-store, legacy-store, and pruning diagnostics plus advisory warnings. `--stale-after` sets the stale commit threshold (default 5); `--structural-only` skips git/filesystem-backed advisory checks. |
 
 Read commands refuse structurally invalid stores except `doctor`, which reports
 all diagnostics in one pass.
@@ -29,7 +30,7 @@ all diagnostics in one pass.
 | `rename OLD NEW [--title TITLE]` | Rename the file and update every current `requires` reference. Historical `replaces` strings stay unchanged. |
 | `replace OLD NEW --title TITLE ...` | Refuse active dependents, create a fresh plan with `replaces: [OLD]`, delete OLD, and prune orphaned done plans. Metadata and requirements are not inherited. |
 | `reopen ID` | Change a retained done plan back to active. |
-| `close ID` | Mark done and prune the newly closed tree. |
+| `close ID [--force]` | Mark done and prune the newly closed tree. Refuses (`unverified_completion`) while Outcome, Decisions, or Completion is still `TBD`; `--force` overrides with a `forced_close` warning. Reports `unblocked` dependents and `retained`. |
 | `drop ID` | Refuse active dependents, delete the target, and prune orphaned done plans. |
 | `gc` | Delete all done plans outside active prerequisite closures. |
 
@@ -70,12 +71,37 @@ These six top-level keys are stable across commands.
 - A change has `action` and the affected `plan`, or `from`/`to` for identity
   changes.
 - `context.data` contains `selectors`, `selected`, `required`, `affected`,
-  `read_order`, `decision_pack`, and fallback `candidates`.
-- `status.data` contains `ready`, `waiting`, `retained_done`, and
-  `critical_path`.
+  `overlapping`, `read_order`, `decision_pack`, fallback `candidates`, and
+  `near_misses` (query-only sub-threshold matches, at most three). Pack items
+  carry a `staleness` object and, when `replaces` is non-empty, `lineage`.
+  Overlapping items omit section excerpts.
+- `status.data` contains `ready`, `waiting`, `retained_done`, `critical_path`,
+  and `edges` (`{"from", "to", "kind": "requires"}`).
+- `why.data` contains `plan`, `readiness`, `blockers`, `dependents`
+  (`active`/`done`), `staleness`, `overlaps`, `lineage`, `prunable`, and
+  `unfilled_sections`.
+- `close.data` adds `unblocked` (dependents whose readiness flipped
+  waiting→ready) and `retained` (target kept for active dependents).
+- A `staleness` object is `{"state": "fresh"|"aging"|"stale"|"unknown",
+  "commits_since_plan_update", "dirty_scope_paths", "anchor"}`.
+
+Additions to `data` keys are backward compatible; the six top-level envelope
+keys and the exit codes are stable.
+
+### Advisory diagnostic codes
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `stale_plan` | warning | Scope changed in ≥ threshold commits since the plan file last changed. |
+| `scope_overlap` | warning | Two unordered active plans currently match the same concrete files. |
+| `possible_duplicate` | warning | Two active plans share a tag and files or near-identical titles. |
+| `tbd_sections` | warning | Sections still hold the `TBD` template (on close, or on a done plan). |
+| `unverified_completion` | error | `close` refused: Outcome, Decisions, or Completion is unfilled. |
+| `forced_close` | warning | `close --force` proceeded past unfilled sections. |
 
 Exit codes are `0` for success, `1` for validation/conflict/I/O failure, and
 `2` for CLI usage errors. JSON domain errors still emit the one result object.
+`--version` prints `plan-graph <version>` and exits without the envelope.
 
 ## Write safety
 

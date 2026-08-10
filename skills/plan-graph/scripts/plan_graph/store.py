@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .model import (
+    GATE_SECTIONS,
     ID_RE,
     LEGACY_GRAPH,
     PLAN_DIR,
@@ -22,6 +23,7 @@ from .model import (
     parse_plan,
     render_plan,
     repo_relative,
+    unfilled_sections,
 )
 
 
@@ -294,6 +296,19 @@ def validate_graph(plans: dict[str, Plan]) -> list[Diagnostic]:
                 plan_id,
             )
         )
+    for plan_id, plan in sorted(plans.items()):
+        if plan.status != "done":
+            continue
+        unfilled = unfilled_sections(plan, GATE_SECTIONS)
+        if unfilled:
+            diagnostics.append(
+                Diagnostic(
+                    "warning",
+                    "tbd_sections",
+                    "done plan has unfilled sections: " + ", ".join(unfilled),
+                    plan_id,
+                )
+            )
     return diagnostics
 
 

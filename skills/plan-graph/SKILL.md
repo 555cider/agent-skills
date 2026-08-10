@@ -1,6 +1,6 @@
 ---
 name: plan-graph
-description: Use whenever a repository stores or should store persistent implementation or design plans that may overlap, depend on, replace, complete, or affect one another. Route the current task and changed code paths through `.agents/plans`, maintain plan lifecycle with the bundled CLI, and prune closed context. Do not use for chat-only one-off plans, checklists, package dependency diagrams, or repositories with another established planning system.
+description: Use whenever a repository stores or should store persistent implementation or design plans that may overlap, depend on, replace, complete, or affect one another. Route the current task and changed code paths through `.agents/plans`, maintain plan lifecycle with the bundled CLI, surface stale, conflicting, or duplicate plans, and prune closed context. Do not use for chat-only one-off plans, checklists, package dependency diagrams, or repositories with another established planning system.
 license: MIT
 compatibility: Requires Python 3.10 or newer, git for default repository-root discovery, and local filesystem access.
 ---
@@ -41,11 +41,15 @@ The decision pack separates:
 
 - `selected`: plans matched by an explicit ID, path scope, or query;
 - `required`: transitive prerequisite decisions to read first;
-- `affected`: active downstream plans that may need propagation review.
+- `affected`: active downstream plans that may need propagation review;
+- `overlapping`: active plans that currently match the same concrete files as a
+  selected plan without any `requires` ordering.
 
-Read the full selected and required plan files before changing assumptions.
-The compact Outcome, Decisions, and Acceptance excerpts are routing aids, not a
-substitute for the source documents when editing them.
+Every pack item carries a derived `staleness` signal, and a query that selects
+nothing lists its `near_misses`. Read the full selected and required plan files
+before changing assumptions. The compact Outcome, Decisions, and Acceptance
+excerpts are routing aids, not a substitute for the source documents when
+editing them.
 
 ## Decide the plan action
 
@@ -62,6 +66,33 @@ After reviewing the routed plans, choose the smallest truthful action:
 
 The router never infers or writes dependency edges. This avoids turning shared
 vocabulary into false ordering constraints.
+
+## Act on advisor signals
+
+Advisory signals are derived from Git and file content at read time and are
+never persisted. Each one requires a concrete response, not acknowledgement:
+
+- `stale_plan` warning, or `staleness.state` of `stale` on a pack item: the
+  plan's scope changed in that many commits since the plan file itself last
+  changed. Read the scope diff since `staleness.anchor`, then continue, revise,
+  reopen, or replace — do not act on the plan text unread.
+- `scope_overlap` warning or an `overlapping` pack entry: another active plan
+  owns the same files with no declared ordering. Read that plan before editing
+  shared files. Add `requires` only for a genuine ordering; otherwise narrow
+  one plan's scope.
+- `possible_duplicate` warning: two active plans look like one piece of work
+  filed twice. Merge them with `update`, or differentiate scope and title.
+- Empty `selected` with non-empty `near_misses`: read the near-miss plans
+  before creating a new plan; the most common routing failure is a duplicate
+  plan created over a weak query match.
+
+`why <id>` aggregates readiness, blockers, dependents, staleness, overlaps,
+replacement lineage, and unfilled sections for one plan — run it before
+deciding whether to trust, revise, or replace a specific plan:
+
+```bash
+python3 <skill-dir>/scripts/plan-graph.py why checkout-recovery
+```
 
 ## Maintain plans through the CLI
 
@@ -108,6 +139,11 @@ python3 <skill-dir>/scripts/plan-graph.py close checkout-recovery
 
 Apply the same dry-run-first pattern to `drop` and `gc`.
 
+- `close` refuses while Outcome, Decisions, or Completion still hold the `TBD`
+  template (`unverified_completion`): fill them with what actually happened
+  first. `--force` exists only for abandoning work — say so in the handoff.
+  A successful close reports `unblocked` dependents and whether the plan was
+  `retained` for active dependents.
 - `close` marks the target done, then removes every done plan outside the
   prerequisite closure of active plans.
 - `drop` refuses active dependents, deletes the target, and removes newly
@@ -127,7 +163,9 @@ python3 <skill-dir>/scripts/plan-graph.py status
 
 `doctor` checks strict metadata, required headings, path safety, dangling
 requirements, live replacement targets, cycles, nested stores, and closed
-plans ready for pruning. Fix errors before trusting `context` or `status`.
+plans ready for pruning — plus the advisory checks above (staleness, scope
+overlap, near-duplicates; tune with `--stale-after N`, skip with
+`--structural-only`). Fix errors before trusting `context` or `status`.
 
 In the final response, state only the useful handoff:
 
