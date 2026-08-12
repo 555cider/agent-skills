@@ -251,6 +251,123 @@ else
   pass "start --help omits the shebang"
 fi
 
+echo "== port allocation =="
+
+# port_base_of <worktree> — the port base reserved for that worktree, or nothing.
+port_base_of() {
+  gd="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  [ -f "$gd/worktree-ports" ] || return 0
+  awk -F= '$1 == "WORKTREE_PORT_BASE" { print $2 }' "$gd/worktree-ports"
+}
+
+# hash_base_for <repo> <branch> — the block the script derives before any collision walking.
+# Mirrors allocate_port_block() so a test can occupy that exact block, and so the repository
+# path's presence in the hash input is asserted rather than assumed.
+hash_base_for() {
+  printf '%s\n%s' "$1" "$2" | cksum | awk '{ print 20000 + ($1 % 1000) * 10 }'
+}
+
+repo="$(new_repo ports-basic)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+base1="$(port_base_of "$wt")"
+if [ -n "$base1" ] && [ "$base1" -ge 20000 ] && [ "$base1" -le 29990 ] && [ $((base1 % 10)) -eq 0 ]; then
+  pass "start reserves a port block inside 20000-29990, on the 10 grid"
+else
+  fail "start reserves a port block inside 20000-29990, on the 10 grid" "got [$base1]"
+fi
+assert_eq "the reservation records the block size" "10" \
+  "$(awk -F= '$1 == "WORKTREE_PORT_COUNT" { print $2 }' "$repo/.git/worktrees/feat1/worktree-ports")"
+assert_eq "the reservation names the branch it belongs to" "worktree-feat1" \
+  "$(awk -F= '$1 == "WORKTREE_BRANCH" { print $2 }' "$repo/.git/worktrees/feat1/worktree-ports")"
+if grep -q "ports  $base1-$((base1 + 9))" "$OUT"; then
+  pass "start reports the reserved block"
+else
+  fail "start reports the reserved block" "no 'ports $base1-$((base1 + 9))' line in stdout"
+fi
+# The reservation must never dirty the worktree: finish requires an empty status there,
+# untracked included, so a file inside the tree would block every finish from then on.
+assert_eq "the reservation leaves the worktree clean" "" "$(git -C "$wt" status --porcelain)"
+
+# main_path_of <repo> — the main worktree path exactly as the script derives it. Git prints a
+# native path here (C:/... on Windows), which is not the shell's view of the same directory,
+# so a test that wants to reproduce the hash input has to ask git the same way the script does.
+main_path_of() {
+  git -C "$1" worktree list --porcelain | awk 'NR == 1 && /^worktree /{ print substr($0, 10) }'
+}
+
+# The repository path belongs in the hash input. Without it two repositories on one machine
+# hand the same worktree name the same block — and they cannot see each other's reservations,
+# so nothing downstream catches it.
+repo="$(new_repo ports-repo-a)"
+repo2="$(new_repo ports-repo-b)"
+run_in "$repo"  "$START" feat1
+run_in "$repo2" "$START" feat1
+a="$(port_base_of "$repo/.worktrees/feat1")"
+b="$(port_base_of "$repo2/.worktrees/feat1")"
+assert_eq "the block is derived from the repository path and the branch name" \
+  "$(hash_base_for "$(main_path_of "$repo")" worktree-feat1)" "$a"
+assert_eq "the same derivation holds in a second repository" \
+  "$(hash_base_for "$(main_path_of "$repo2")" worktree-feat1)" "$b"
+if [ -n "$a" ] && [ "$a" != "$b" ]; then
+  pass "the same worktree name in two repositories gets different blocks"
+else
+  fail "the same worktree name in two repositories gets different blocks" \
+    "both got [$a] — either a 1-in-1000 hash collision or the repository path left the input"
+fi
+
+repo="$(new_repo ports-distinct)"
+run_in "$repo" "$START" feat1
+run_in "$repo" "$START" feat2
+a="$(port_base_of "$repo/.worktrees/feat1")"
+b="$(port_base_of "$repo/.worktrees/feat2")"
+if [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]; then
+  pass "two worktrees in one repo get different port blocks"
+else
+  fail "two worktrees in one repo get different port blocks" "feat1=[$a] feat2=[$b]"
+fi
+
+# Collision: park feat2's derived block on feat1's reservation, so allocation has to walk on.
+repo="$(new_repo ports-collision)"
+run_in "$repo" "$START" feat1
+taken="$(hash_base_for "$(main_path_of "$repo")" worktree-feat2)"
+printf 'WORKTREE_PORT_BASE=%s\n' "$taken" > "$repo/.git/worktrees/feat1/worktree-ports"
+run_in "$repo" "$START" feat2
+assert_eq "allocation walks past a block another worktree already reserved" \
+  "$(( 20000 + ((((taken - 20000) / 10) + 1) % 1000) * 10 ))" \
+  "$(port_base_of "$repo/.worktrees/feat2")"
+
+# Determinism, and the reservation's lifetime: git owns the file, so finish takes it away.
+repo="$(new_repo ports-determinism)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+first="$(port_base_of "$wt")"
+commit_in "$wt" work.txt "one" "wip"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): squashed"
+assert_exit "finish is unaffected by the port reservation" 0
+assert_no_file "finish removes the reservation along with the worktree" \
+  "$repo/.git/worktrees/feat1/worktree-ports"
+run_in "$repo" "$START" feat1
+assert_eq "recreating the same worktree name restores the same block" \
+  "$first" "$(port_base_of "$repo/.worktrees/feat1")"
+
+repo="$(new_repo ports-explicit)"
+run_in "$repo" "$START" feat1 --port-base 24000
+assert_exit "start accepts an explicit --port-base" 0
+assert_eq "an explicit --port-base is used as given" "24000" \
+  "$(port_base_of "$repo/.worktrees/feat1")"
+
+run_in "$repo" "$START" feat2 --port-base 3000
+assert_exit_nonzero "start rejects a --port-base outside the reserved range"
+assert_stderr_contains "the range rejection names the bounds" "must be between 20000 and 29990"
+
+run_in "$repo" "$START" feat3 --port-base 24005
+assert_exit_nonzero "start rejects a --port-base off the block grid"
+assert_stderr_contains "the grid rejection names the block size" "must be a multiple of 10"
+
+run_in "$repo" "$START" feat4 --port-base
+assert_exit_nonzero "start rejects --port-base with no value"
+
 echo "== finish-worktree: happy path =="
 
 repo="$(new_repo finish-happy)"
