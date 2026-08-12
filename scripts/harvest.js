@@ -12,8 +12,18 @@
   const MAX_TEXT = 80;
   const clean = value => String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT);
 
-  // A crawler must not spawn windows it cannot see or drive.
-  try { window.open = () => null; } catch { /* frozen window.open — links are neutralized on resolve */ }
+  /**
+   * Recording watches a session somebody else is driving; crawling drives one itself.
+   * The difference decides what this script is allowed to change about the page — a
+   * recorder that alters behavior is recording its own behavior, not the app's.
+   */
+  const RECORDING = !!window.__screenMapRecord;
+
+  // A crawler must not spawn windows it cannot see or drive. A recorder has no such
+  // right: the popup belongs to the run being watched.
+  if (!RECORDING) {
+    try { window.open = () => null; } catch { /* frozen window.open — links are neutralized on resolve */ }
+  }
 
   function visible(el) {
     if (!el || !el.isConnected) return false;
@@ -354,4 +364,70 @@
       return { ok: true, x, y, count: 1, via, action: matches[0].info };
     },
   };
+
+  if (!RECORDING || typeof window.__screenMapEmit !== 'function') return;
+
+  /**
+   * Recording, page side: report what was activated, the instant it is activated.
+   *
+   * The report goes out through a CDP binding rather than into a variable the driver
+   * later reads, because the common case is a click that navigates: the document — and
+   * any buffer living in it — is gone before anyone could come back for it. Calling the
+   * binding raises the event while the document is still standing.
+   *
+   * Listeners are capture-phase and passive-by-construction: they read, they never call
+   * preventDefault, and they never stop propagation. A click the app would have handled
+   * is handled exactly as it would have been.
+   */
+  let seq = 0;
+
+  const controlFor = target => {
+    if (!target || !target.closest) return null;
+    return target.closest(ACTION_SELECTOR);
+  };
+
+  /** The key `collect()` would give this control, so recorded edges match crawled ones. */
+  const describeControl = control => {
+    const { entries } = collect();
+    const known = entries.find(entry => entry.el === control);
+    if (known) return known.info;
+    // Outside the harvested set — hidden, or behind an overlay whose subtree we scope to.
+    // The base key is what `collect` would have produced without disambiguation, which is
+    // right in every case where the name is unique on the screen.
+    const info = describe(control);
+    info.key = `${info.kind}:${info.role}:${info.identity}`;
+    return info;
+  };
+
+  const emit = (control, cause) => {
+    try {
+      const info = describeControl(control);
+      seq += 1;
+      window.__screenMapEmit(JSON.stringify({
+        seq, cause, action: info,
+        url: location.href, pathname: location.pathname, search: location.search,
+        at: Date.now(),
+      }));
+    } catch { /* never let bookkeeping break the page */ }
+  };
+
+  let lastClick = { el: null, at: 0 };
+
+  document.addEventListener('click', event => {
+    const control = controlFor(event.target);
+    if (!control) return;
+    lastClick = { el: control, at: Date.now() };
+    emit(control, 'click');
+  }, true);
+
+  // A form submitted with Enter never produces a click, so the submit event is the only
+  // evidence it happened. When a submit button *was* clicked, `describe` already called
+  // that click a submit — reporting it again here would file one press as two edges.
+  document.addEventListener('submit', event => {
+    const control = event.submitter
+      || (event.target && event.target.querySelector('[type="submit"],button:not([type="button"])'));
+    if (!control) return;
+    if (lastClick.el === control && Date.now() - lastClick.at < 1000) return;
+    emit(control, 'submit');
+  }, true);
 })();

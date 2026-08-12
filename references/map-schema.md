@@ -1,11 +1,20 @@
-# `map.json` schema (version 1)
+# `map.json` schema (version 2)
 
-One crawl produces one file. Maps are never merged: a new crawl replaces the old snapshot, so every
-record in the file belongs to the same app commit.
+Two things write this file: `crawl`, which walks the app on its own, and `record`, which watches
+somebody else walk it. Both go through the same registry, so identity is computed identically and a
+recording adds to what a crawl already found instead of duplicating it.
+
+Nothing else may write it. The file is not hand-edited and two maps are never concatenated — but
+because entries can now arrive at different times, **every state and transition carries its own
+provenance and its own commits**. That is what keeps a grown map honest: the file is no longer one
+snapshot of one commit, so each record says when it was seen and when it was proved.
+
+A version 1 map still loads. It is migrated in memory — every entry becomes `source: "crawl"` at the
+commit the run recorded — and is written back as version 2 the next time anything saves it.
 
 ```jsonc
 {
-  "schema": 1,
+  "schema": 2,
 
   "app": {
     "baseUrl": "http://localhost:5101",
@@ -31,6 +40,14 @@ record in the file belongs to the same app commit.
                               //   "crashed" — the crawl died with an error
     "dialogs": []             // javascript dialogs encountered and auto-cancelled
   },
+
+  // Every state and transition carries these five. They answer three different questions,
+  // and collapsing them loses the one that matters — see "Reading it correctly" below.
+  //   "source": "crawl",                 // "crawl" | "record"
+  //   "commit": "f4961ed",               // app commit when this was FIRST seen
+  //   "recordedAt": "…",
+  //   "lastObservedCommit": "a1b2c3d",   // app commit when it was LAST seen
+  //   "lastObservedAt": "…"
 
   "states": [{
     "id": "s3",
@@ -61,9 +78,13 @@ record in the file belongs to the same app commit.
     },
     "class": "safe",                 // "safe" | "mutating" | "destructive"
     "classifiedBy": "same-origin-link",
-    "status": "verified",            // "verified" | "unexplored" | "sampled" | "blocked" | "failed"
+    "status": "verified",            // "verified" | "observed" | "unexplored" | "sampled"
+                                     //   | "blocked" | "failed"
     "blockedReason": null,
     "lastVerifiedAt": "…",
+    "verifiedAtCommit": "f4961ed",   // app commit when the replay proved it; null if never
+    "replayFailed": false,           // a replay tried this edge and could not reproduce it;
+                                     //   such an edge is never handed back as a route again
     "invalidatedAt": "…",            // present only after `invalidate`
     "ms": 412                        // wall time this edge cost: reaching the screen, the
                                      // click, and settling. Absent on edges never attempted.
@@ -88,8 +109,24 @@ app that was observed. Changes to application files or `config.json` make it sta
 commit is no longer available locally after a rebase, force-push, or shallow clone, freshness is
 `unknown` rather than guessed.
 
-**`status` is the honesty field.** Only `verified` means the transition was performed and its target
-observed. `unexplored` means the edge exists in the UI and policy forbade pressing it. `sampled`
+**`source` is who *found* it, not who last learned something about it.** The crawl lists every
+control it can see, including the ones its policy refuses to press. When a recording later walks one
+of those, the edge keeps `source: "crawl"` — the crawl is where the control came from — and gains
+`status: "observed"`. Reading `source` as "who produced the current status" inverts that and loses
+the finder. The status is the field that says how the edge is known; only a recording produces
+`observed`, so nothing is ambiguous.
+
+**Three timestamps, three questions.** `commit`/`recordedAt` say when an entry was first seen.
+`lastObservedCommit`/`lastObservedAt` say when it was last seen — a recording that revisits a screen
+updates these and nothing else, so an edge found by a crawl weeks ago and confirmed to still exist
+today does not keep answering with the old commit. `verifiedAtCommit`/`lastVerifiedAt` say when a
+replay last proved it. An entry can be observed long after it was last verified; that gap is
+information, which is why the fields are not merged.
+
+**`status` is the honesty field.** `verified` means the transition was performed by this tool and
+its target observed. `observed` means it happened once in front of `record` — real evidence about
+the app, and no evidence at all that it repeats: nothing walked it a second time to find out.
+`unexplored` means the edge exists in the UI and policy forbade pressing it. `sampled`
 means it is one of many links on the screen pointing at the same templated route, and the crawl
 walked `budget.listSamples` of them — the `blockedReason` names the cap and the total. `blocked`
 means the crawler could not or would not go there. `failed` means it was tried and did not work, or
@@ -102,8 +139,16 @@ every skipped edge; raise `budget.listSamples` when the rows genuinely lead some
 number under the second name, so `sampled` was counted twice — beside `blocked` and again inside it.
 Read `notExecuted` for "how much of the app was never pressed" and the four status counts for why.
 
-**Only `verified` + `safe` transitions are used for routing.** A path containing a mutating step is
-not reproducible, so `route` will report no path rather than hand back something that works once.
+**Routing prefers `verified` + `safe`, and says when it could not get one.** A path containing a
+mutating step is not reproducible, so `route` reports no path rather than hand back something that
+works once. When no proved path exists but a recorded one does, `route` answers with it and sets
+`evidence: "observed"` plus a note — a report of what happened, not a guarantee that it repeats.
+`confidence` is a separate axis and stays freshness: a fresh map can still hand back a route nobody
+ever replayed.
+
+An edge with `replayFailed: true` is excluded from routing entirely, `observed` or not. It is the
+one case where the map holds positive evidence that the step does not work, and offering it would be
+worse than offering nothing.
 
 **`route` is the intended read path.** Loading the whole file into context defeats the point; on a
 real app it is large. Query it.

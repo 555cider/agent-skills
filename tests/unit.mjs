@@ -1,9 +1,11 @@
 /** Pure-model regression checks. No browser, no network. */
 
 import {
-  authTarget, classifyAction, countsTowardSettle, fingerprintSignature, normalizePath, pathFromEntrypoints,
+  SCHEMA_VERSION, VERIFIED_OR_OBSERVED,
+  authTarget, classifyAction, countsTowardSettle, createRegistry, fingerprintSignature, migrateMap,
+  normalizePath, pathFromEntrypoints,
   playwrightExpr, renderMarkdown, renderMermaid, renderTiming, replayPathKey, routeTemplate,
-  shortestSafePath, stateKind,
+  routeToMcpSteps, shortestSafePath, stateKind,
   storageSeedSource,
 } from '../scripts/model.mjs';
 
@@ -232,6 +234,149 @@ check('mutating transitions are never used for replay', shortestSafePath(map, 's
 eq('path from entrypoints reports its origin', pathFromEntrypoints(map, 's2').origin, 's0');
 check('unreachable target yields no path', pathFromEntrypoints(map, 's3') === null);
 eq('a state is zero steps from itself', shortestSafePath(map, 's1', 's1'), []);
+
+// ---------- provenance and the registry ----------
+//
+// The registry is the seam where a crawl and a recording have to agree. If it ever
+// computes identity or numbers ids differently for the two, a recording files screens the
+// crawl already knows as new nodes and the graph stops connecting.
+
+const observationAt = (pathname, fingerprint = {}) => ({
+  pathname, search: '', title: 'doc title',
+  fingerprint: {
+    headings: ['heading'], landmarks: ['main'], forms: [], fields: [], tabs: [], overlay: null,
+    ...fingerprint,
+  },
+  actions: [],
+});
+const listLink = {
+  kind: 'link', role: 'link', name: '목록', key: 'link:link:목록',
+  href: 'http://localhost:1/items', hrefPath: '/items', external: false, cssFallback: 'a',
+};
+const stampedRegistry = (extra = {}) => createRegistry({
+  config: {},
+  stamp: { source: 'record', commit: 'cafe123', now: () => '2026-08-12T00:00:00.000Z' },
+  ...extra,
+});
+
+const fresh = stampedRegistry();
+const firstState = fresh.upsertState(observationAt('/')).state;
+eq('a fresh registry numbers from zero', firstState.id, 's0');
+eq('a new entry records who saw it', firstState.source, 'record');
+eq('a new entry records the commit it was seen at', firstState.commit, 'cafe123');
+eq('first sight and last sight start equal', firstState.lastObservedCommit, firstState.commit);
+
+const again = fresh.upsertState(observationAt('/'));
+check('the same screen twice is one node', again.isNew === false && again.state.id === 's0');
+
+const laterRegistry = createRegistry({
+  config: {},
+  seed: fresh.live(),
+  stamp: { source: 'record', commit: 'beef456', now: () => '2026-08-20T00:00:00.000Z' },
+});
+const restamped = laterRegistry.upsertState(observationAt('/')).state;
+eq('re-observing moves the last-seen commit', restamped.lastObservedCommit, 'beef456');
+eq('re-observing leaves the first-seen commit alone', restamped.commit, 'cafe123');
+eq('re-observing does not invent a verification', restamped.verifiedAtCommit, undefined);
+
+const seeded = createRegistry({
+  config: {},
+  seed: { states: [{ id: 's7', route: '/x', signature: 'h:1' }], transitions: [], entrypoints: [] },
+  stamp: { source: 'record', commit: 'c', now: () => 'now' },
+});
+eq('a seeded registry continues the numbering instead of colliding',
+  seeded.upsertState(observationAt('/new')).state.id, 's8');
+
+const edge = fresh.upsertTransition(firstState, listLink);
+eq('a recorded edge is classified by the same rules as a crawled one', edge.transition.class, 'safe');
+eq('a new edge starts unproved', edge.transition.verifiedAtCommit, null);
+check('a new edge has no failed replay behind it', edge.transition.replayFailed === false);
+check('the same action twice is one edge', fresh.upsertTransition(firstState, listLink).isNew === false);
+
+// ---------- migrating a version 1 map ----------
+
+const legacy = migrateMap({
+  schema: 1,
+  app: { baseUrl: 'http://localhost:1', commit: 'old1234' },
+  run: { startedAt: '2026-07-01T00:00:00.000Z', finishedAt: '2026-07-01T00:10:00.000Z' },
+  states: [{ id: 's0', route: '/' }],
+  transitions: [
+    { id: 't0', from: 's0', to: 's0', status: 'verified' },
+    { id: 't1', from: 's0', to: null, status: 'unexplored' },
+  ],
+  entrypoints: ['s0'],
+});
+eq('a version 1 map is brought forward rather than refused', legacy.schema, SCHEMA_VERSION);
+eq('everything in it is attributed to the crawl that made it', legacy.states[0].source, 'crawl');
+eq('and to the commit that crawl recorded', legacy.transitions[0].commit, 'old1234');
+eq('an already-verified edge keeps that standing', legacy.transitions[0].verifiedAtCommit, 'old1234');
+eq('an edge that was never walked gains no verification', legacy.transitions[1].verifiedAtCommit, undefined);
+eq('a current map passes through untouched', migrateMap({ schema: 2, states: [] }).schema, 2);
+
+// ---------- observed is not verified ----------
+
+const recorded = {
+  entrypoints: ['s0'],
+  states: [
+    { id: 's0', route: '/', title: '홈', kind: 'page', evidence: { urlSample: '/' } },
+    { id: 's1', route: '/a', title: 'A', kind: 'page', evidence: { urlSample: '/a' } },
+    { id: 's2', route: '/b', title: 'B', kind: 'page', evidence: { urlSample: '/b' } },
+  ],
+  transitions: [
+    { id: 't0', from: 's0', to: 's1', class: 'safe', status: 'observed', action: { kind: 'link', role: 'link', name: 'A', key: 'a' } },
+    { id: 't1', from: 's0', to: 's2', class: 'safe', status: 'observed', replayFailed: true, action: { kind: 'link', role: 'link', name: 'B', key: 'b' } },
+  ],
+  app: { baseUrl: 'http://localhost:1', commit: 'abc1234' },
+  run: {},
+};
+
+check('a recorded edge is not a route by default', shortestSafePath(recorded, 's0', 's1') === null);
+eq('asking for it explicitly finds it',
+  shortestSafePath(recorded, 's0', 's1', { statuses: VERIFIED_OR_OBSERVED }).map(step => step.id), ['t0']);
+check('an edge whose replay failed is never offered, even when asked for',
+  shortestSafePath(recorded, 's0', 's2', { statuses: VERIFIED_OR_OBSERVED }) === null);
+check('a proved edge still wins when both exist',
+  shortestSafePath({ ...recorded, transitions: [
+    { ...recorded.transitions[0], id: 't9', status: 'verified' },
+  ] }, 's0', 's1').map(step => step.id).join() === 't9');
+
+const recordedDiagram = renderMermaid(recorded).join('\n');
+check('a recorded edge is drawn dashed, so a reviewer can see it was never proved',
+  recordedDiagram.includes('s0 -.->') && !recordedDiagram.includes('s0 -->'));
+check('the legend explains the difference instead of leaving it to be guessed',
+  recordedDiagram.includes('dashed arrow was observed once'));
+
+// ---------- the same route as MCP tool calls ----------
+
+const mcpRoute = routeToMcpSteps(map, pathFromEntrypoints(map, 's2'), 'http://localhost:1');
+eq('the route opens with a navigation', mcpRoute[0].tool, 'browser_navigate');
+check('every click is preceded by its own snapshot',
+  mcpRoute.every((step, index) =>
+    step.tool !== 'browser_click' || (mcpRoute[index - 1] || {}).tool === 'browser_snapshot'));
+check('no ref is invented, because a ref only exists inside one snapshot',
+  mcpRoute.every(step => !('ref' in (step.args || {})) && JSON.stringify(step).indexOf('"ref"') === -1));
+check('a click says where to get its ref from',
+  mcpRoute.filter(step => step.tool === 'browser_click').every(step => step.refFrom === 'browser_snapshot'));
+eq('a named control is matched by role and name',
+  mcpRoute.find(step => step.tool === 'browser_click').match,
+  { role: 'link', name: '상품 목록', href: undefined });
+
+const ambiguousMap = {
+  ...map,
+  transitions: [{
+    id: 'tA', from: 's0', to: 's1', class: 'safe', status: 'verified',
+    action: {
+      kind: 'click', role: 'button', name: '열기', key: 'k',
+      ambiguous: true, cssFallback: 'div > button:nth-of-type(2)',
+    },
+  }],
+};
+const ambiguousRoute = routeToMcpSteps(
+  ambiguousMap, pathFromEntrypoints(ambiguousMap, 's1'), 'http://localhost:1');
+eq('a control only position could tell apart is matched by CSS, not by a name that matches several',
+  ambiguousRoute.find(step => step.tool === 'browser_click').match,
+  { css: 'div > button:nth-of-type(2)' });
+check('and it says why', !!ambiguousRoute.find(step => step.tool === 'browser_click').note);
 
 // ---------- executable locators ----------
 
