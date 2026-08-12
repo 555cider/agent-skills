@@ -2477,13 +2477,85 @@
     if (cs.clipPath && cs.clipPath.indexOf('inset(50%)') >= 0) return true;
     return false;
   }
+  // A computed color is not always `rgb()`. Chrome returns modern color functions verbatim, and
+  // Tailwind v4 emits `oklab()`/`oklch()` for every palette entry — so a build on it used to hand
+  // every colour rule an unparseable string. That does not surface as a failure: `null` reads as
+  // "no colour here", so contrast checks silently skipped and a modal backdrop measured as absent
+  // while it was painting correctly. Anything Chrome can compute has to be readable here.
+  function srgbFromLinear(c) {
+    var v = c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+    return Math.max(0, Math.min(255, Math.round(v * 255)));
+  }
+  function oklabToRgb(L, a, b) {
+    var l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    var m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    var s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+    var l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+    return [
+      srgbFromLinear(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+      srgbFromLinear(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+      srgbFromLinear(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s)
+    ];
+  }
+  /** `12`, `50%`, `none` → number. `none` is CSS Color 4 for "missing", which behaves as 0. */
+  function colorComponent(token, percentBasis) {
+    if (token == null || token === 'none') return 0;
+    var value = parseFloat(token);
+    if (isNaN(value)) return 0;
+    return token.indexOf('%') >= 0 ? (value / 100) * percentBasis : value;
+  }
+  function splitColorArgs(body) {
+    var parts = body.split('/');
+    return {
+      channels: parts[0].trim().split(/[\s,]+/).filter(Boolean),
+      alpha: parts.length > 1 ? parts[1].trim() : null
+    };
+  }
   function parseColor(s) {
     if (!s) return null;
     var m = s.match(/rgba?\(([^)]+)\)/);
-    if (!m) return null;
-    var parts = m[1].split(/[,\s/]+/).map(parseFloat).filter(function (x) { return !isNaN(x); });
-    if (parts.length < 3) return null;
-    return [parts[0], parts[1], parts[2], parts.length >= 4 ? parts[3] : 1];
+    if (m) {
+      var parts = m[1].split(/[,\s/]+/).map(parseFloat).filter(function (x) { return !isNaN(x); });
+      if (parts.length < 3) return null;
+      return [parts[0], parts[1], parts[2], parts.length >= 4 ? parts[3] : 1];
+    }
+    // `transparent` computes to rgba(0,0,0,0) in Chrome, so it never reaches here; a keyword that
+    // did would be unreadable anyway and `null` is the honest answer for it.
+    var lab = s.match(/^\s*okla(?:b)\(([^)]+)\)\s*$/i);
+    var lch = s.match(/^\s*oklch\(([^)]+)\)\s*$/i);
+    if (lab || lch) {
+      var args = splitColorArgs((lab || lch)[1]);
+      if (args.channels.length < 3) return null;
+      var L = colorComponent(args.channels[0], 1);
+      var alpha = args.alpha == null ? 1 : colorComponent(args.alpha, 1);
+      var rgb;
+      if (lab) {
+        // a/b are ±0.4 at 100% (CSS Color 4).
+        rgb = oklabToRgb(L, colorComponent(args.channels[1], 0.4), colorComponent(args.channels[2], 0.4));
+      } else {
+        var chroma = colorComponent(args.channels[1], 0.4);
+        var hueToken = args.channels[2];
+        var hue = hueToken === 'none' ? 0 : parseFloat(hueToken) || 0;
+        var rad = (hue * Math.PI) / 180;
+        rgb = oklabToRgb(L, chroma * Math.cos(rad), chroma * Math.sin(rad));
+      }
+      return [rgb[0], rgb[1], rgb[2], alpha];
+    }
+    var srgb = s.match(/^\s*color\(\s*srgb\s+([^)]+)\)\s*$/i);
+    if (srgb) {
+      var srgbArgs = splitColorArgs(srgb[1]);
+      if (srgbArgs.channels.length < 3) return null;
+      var channel = function (token) {
+        return Math.max(0, Math.min(255, Math.round(colorComponent(token, 1) * 255)));
+      };
+      return [
+        channel(srgbArgs.channels[0]),
+        channel(srgbArgs.channels[1]),
+        channel(srgbArgs.channels[2]),
+        srgbArgs.alpha == null ? 1 : colorComponent(srgbArgs.alpha, 1)
+      ];
+    }
+    return null;
   }
   function composite(fg, bg) { // src-over, fg has alpha
     var a = fg[3];

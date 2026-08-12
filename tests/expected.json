@@ -461,6 +461,20 @@
       "expectZeroFindings": true,
       "expectZeroAdvisories": true,
       "note": "Precision gate: a well-built page must produce no findings (no cry-wolf)."
+    },
+    {
+      "file": "modern-color-functions.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "effectiveContrast", "matches": "written in oklch", "confidence": "auto-measured", "note": "oklch text at 2.48:1 — invisible to an rgb-only colour parser" },
+        { "rule": "effectiveContrast", "matches": "written in oklab", "confidence": "auto-measured", "note": "oklab text at 2.22:1" },
+        { "rule": "effectiveContrast", "matches": "written in srgb", "confidence": "auto-measured", "note": "color(srgb) text at 2.68:1" }
+      ],
+      "mustNotHit": [
+        { "rule": "effectiveContrast", "matches": "Readable label", "note": "passing oklch/srgb text must not be flagged — a mangled conversion would" }
+      ],
+      "note": "Chrome returns modern colour functions verbatim and Tailwind v4 emits oklab for every palette entry; a parser limited to rgb() reports silence, which reads as a clean page."
     }
   ]
 }

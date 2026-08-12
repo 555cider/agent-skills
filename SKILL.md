@@ -74,7 +74,22 @@ Copy `scripts/audit-config.default.json` and narrow it to the surface under revi
 
 Configured or fallback mocks count as coverage only when CDP Fetch actually intercepts the declared request. `method` defaults to `any`; `minMatches` defaults to `1`. Every explicit rule must independently reach its minimum, including rules declared for `default`; one matching rule cannot make unmatched siblings green. Inspect `coverage.matrix[].stateMock.rules[]` for `pattern`, `method`, `minMatches`, `matches`, `held`, and per-rule `status`. The flat `interceptions` count remains an aggregate compatibility field. If an explicit network mock and structured setup are both configured, both must succeed.
 
-Structured actions support `click`, `fill`, `press`, `hover`, `check`, and `selectOption`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
+Structured actions support `click`, `fill`, `press`, `hover`, `check`, `selectOption`, and `upload`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
+
+`upload` reaches a screen that sits behind a file picker. Its `selector` names the **trigger the user presses**, not the file input — a page commonly creates an `<input type=file>`, clicks it, and removes it again, so the input is never a stable single-match visible selector. The runner intercepts the chooser the press opens and feeds it `files` (paths, resolved against the working directory; a missing path fails the setup instead of timing out).
+
+```jsonc
+"import-dialog": {
+  "timeoutMs": 45000,
+  "actions": [
+    { "type": "click", "selector": "button[aria-label='파일']" },
+    { "type": "upload", "selector": "[data-testid='import-ifc']", "files": ["fixtures/two-storey.ifc"] }
+  ],
+  "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
+}
+```
+
+`timeoutMs` (default 5000) covers each action's target wait and every `expect`. Raise it when the state sits behind work that takes much longer than a paint — a parsed upload, a recognition pass, a scene load. The default is right for a click that opens a menu and wrong for those, and an unreachable state is reported as unverified coverage, so leaving it silently shrinks the matrix.
 
 A populated fixture proves only that data reached the DOM. It does not prove a decision or action state that sits below the fold in an independently scrolling pane. Document `top`/`bottom` positions scroll the document, not nested scroll containers. For those surfaces:
 
@@ -106,6 +121,8 @@ Leave the pending cell unverified when the mutation cannot be held deterministic
 - Widget-contract rules that depend on screen size — `multiRowTabs` and `desktopHiddenNav` — are skipped on mobile cells and in `reflow-320`. Wrapped tabs and a hamburger are the correct answer on a narrow screen, not a defect.
 - `modalEscapeUnhandled` is proven with trusted `Escape` input and is the only widget-contract `Fail`. The probe closes dialogs, so it runs last in the cell; nothing reads the post-Escape DOM as evidence. Its result lives in `coverage.matrix[].escapeProbe`, and a probe error marks the cell unverified instead of passing. A dialog that genuinely must not be dismissible uses `data-ui-audit-escape-exempt="<reason>"`; an empty reason does not exempt it.
 - Other widget-contract exemptions are `data-ui-audit-toggle-exempt` (a switch that really is deferred by design) and `data-ui-audit-nav-exempt` (an app rail or canvas tool with no top-level navigation to show).
+
+Computed colours are read as `rgb()`/`rgba()`, `oklab()`, `oklch()`, and `color(srgb …)`. That list is not cosmetic: Chrome returns modern colour functions verbatim and Tailwind v4 emits `oklab()` for every palette entry, so a parser limited to `rgb()` returns "no colour" for such a build — contrast checks skip silently and a modal backdrop measures as absent while it paints correctly. Silence from the colour rules on a modern stack is a reason to check the parser, not evidence of a clean screen.
 
 WCAG text contrast is a confirmed `Fail` below 4.5:1 for normal text or 3:1 for large text, including currently rendered placeholder text. Audit placeholders only while `:placeholder-shown`, and composite computed `::placeholder` opacity into its foreground alpha. A gradient, image, element/ancestor opacity, filter, blend mode, mask, inset shadow, backdrop filter, or otherwise indeterminate paint chain remains a required visual advisory because CSSOM cannot prove the final composited pixels.
 
