@@ -76,7 +76,12 @@ directories yourself.
   that directory for its lifetime, so git empties and deregisters the worktree but
   cannot delete the directory — measured to defeat both retry and rename during the
   run. That empty residue exits zero and is reclaimed by the next **start** under the
-  same name, so it never retires a worktree name. Never pushes.
+  same name, so it never retires a worktree name. Isolation extends past the branch:
+  **start** also reserves a block of ten ports per worktree, derived from the repository path
+  and branch name so a recreated worktree gets its ports back while two repositories on one
+  machine never collide, recorded in the worktree's git directory
+  where it cannot dirty the tree and where git deletes it on removal — because branch
+  isolation buys nothing while every worktree's dev server fights for :5173. Never pushes.
 - [`skills/screen-map/`](skills/screen-map/README.md) — an agent-readable map of a web
   app: which screens exist and the concrete action that moves between any two. One
   crawl writes a **snapshot** (`.screen-map/map.json`) pinned to the app commit; maps

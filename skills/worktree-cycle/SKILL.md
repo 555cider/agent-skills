@@ -1,6 +1,6 @@
 ---
 name: worktree-cycle
-description: Use for the git worktree lifecycle — starting isolated work and folding it back. START creates a worktree branched from the LOCAL integration branch HEAD (default dev), not the remote default, and asserts the base. FINISH squash-merges the worktree branch into the local integration branch and cleans up the branch and worktree. Triggers include "워크트리 시작/생성", "워크트리 정리", "dev 로 머지", "squash merge 후 브랜치·워크트리 정리", starting or closing out worktree work. Never pushes.
+description: Use for the git worktree lifecycle — starting isolated work and folding it back. START creates a worktree branched from the LOCAL integration branch HEAD (default dev), not the remote default, and asserts the base, and reserves a dev-server port block for it so parallel worktrees do not fight over the same ports. FINISH squash-merges the worktree branch into the local integration branch and cleans up the branch and worktree. Triggers include "워크트리 시작/생성", "워크트리 정리", "dev 로 머지", "squash merge 후 브랜치·워크트리 정리", starting or closing out worktree work. Never pushes.
 license: MIT
 compatibility: POSIX shell and git. Works on Windows through Git Bash. No network access, no push.
 ---
@@ -25,13 +25,18 @@ result, not a success.
   separate human step — the separation matters most in repositories where the integration
   branch is what actually runs.
 - **Squash merge.** `feature/* → integration` as one commit: `git merge --squash` plus a commit.
+- **Runtime isolation is part of the worktree.** Branch and filesystem isolation buys nothing
+  while every worktree runs its dev servers on the same default ports: the second stack fails
+  to bind, or binds elsewhere and quietly talks to the wrong backend. `start` therefore
+  reserves a port block per worktree, and the rule that cannot be scripted is below —
+  **never restart a server you did not start.**
 
 ## Lifecycle
 
 | Step | How |
 | --- | --- |
 | 1. Start | `scripts/start-worktree.sh <name>` — branch `worktree-<name>` from the local integration branch HEAD, then assert the base. |
-| 2. Work | `cd <path>`, implement, test. **Commit before finishing** so the worktree is clean. |
+| 2. Work | `cd <path>`, implement, test. Run the stack you are changing on the **reserved port block**, not on the defaults. **Commit before finishing** so the worktree is clean. |
 | 3. Return | Move back to the integration branch (main worktree), **as its own step**. Required: `finish` refuses to run from inside the worktree it is about to delete — and on Windows a shell that merely *started* inside it still locks the directory (see Traps). |
 | 4. Finish | `scripts/finish-worktree.sh -b worktree-<name> -m "…"` — squash merge, then remove worktree and branch. |
 | 5. Publish | After verifying: `git push <remote> <base>` (manual). |
@@ -40,6 +45,7 @@ result, not a success.
 
 ```bash
 <skill-dir>/scripts/start-worktree.sh <name> [--base dev] [--path <dir>] [--branch <branch>]
+                                             [--port-base <n>]
 ```
 
 - Base is the **local** `<base>` branch HEAD (default `dev`). If that local branch is missing,
@@ -54,6 +60,51 @@ result, not a success.
   mismatch fails the run.
 - If the local base trails its remote counterpart, that is **reported and the run continues** —
   see below.
+- A **block of 10 ports** is reserved for the worktree and printed with the result.
+
+### The reserved port block
+
+```bash
+cat "$(git rev-parse --absolute-git-dir)/worktree-ports"   # run inside the worktree
+# WORKTREE_PORT_BASE=21400
+# WORKTREE_PORT_COUNT=10
+```
+
+- **Range 20000–29999, ten ports per worktree.** Below every common ephemeral range (Linux
+  32768–60999, Windows and macOS 49152–65535), so the OS cannot hand one of these out from
+  under a running server, and above the usual application defaults (3000, 5173, 8000, 8080).
+- **Derived from the repository path and the branch name, not random.** A worktree removed and
+  recreated under the same name gets the same ports back, so anything configured against them
+  still points at the right place. The repository path is in there because only worktrees of
+  the *same* repository can see each other's reservations — without it, two repositories on one
+  machine would hand the same worktree name the same block, and the names that collide are the
+  common ones. Blocks already recorded by sibling worktrees are skipped.
+- **The record lives in the worktree's git directory, not in the worktree.** This is not a
+  detail: `finish` requires `git status --porcelain` in the worktree to be *completely* empty,
+  untracked included, so a file in the tree would block every finish for the life of the
+  worktree. In the git directory it is invisible to status, and `git worktree remove` deletes
+  it — no reservation can go stale.
+- `--port-base <n>` pins the block by hand (multiple of 10, inside the range). A failure to
+  reserve anything is a **warning, not an error**: the worktree is the point, the ports are a
+  convenience.
+
+### Dev servers across worktrees
+
+The script can hand out ports. It cannot know which stack you are changing — that part is
+yours:
+
+- **Never restart a server you did not start.** A listener you did not launch belongs to
+  another worktree, another session, or the main worktree. Killing it to run your own build
+  breaks someone else's work with no trace of why.
+- **The main worktree's instance is the shared one.** Treat it as read-only infrastructure.
+- **Start only the stack you are changing**, on your own block. Point everything else at the
+  shared instances — changing the frontend means running the frontend on your port and leaving
+  its API base aimed at the shared backend. Nothing else needs restarting.
+- **Pin the port.** Use the strict flag (`vite --strictPort`, and the equivalent elsewhere).
+  Without it a taken port silently rolls to the next one, and which frontend talks to which
+  backend stops being knowable.
+- **Check before binding** when something looks wrong: `Get-NetTCPConnection -LocalPort <p>`
+  on Windows, `lsof -i :<p>` or `ss -ltnp` on POSIX. "It built" is not "my code is answering".
 
 > Claude Code can enter the session directly with the native `EnterWorktree`. If you use it,
 > confirm that `settings.local.json` sets `worktree.baseRef=head`, since the harness default
@@ -161,6 +212,11 @@ Behavior once the merge starts:
   `git worktree remove` fails, finish stops and reports it. Unlink first
   (`cmd //c rmdir <junction>` on Windows), then `git worktree prune`. Never delete with
   `Remove-Item -Recurse` / `rm -rf`, which deletes through the link and destroys the original.
+- **Never write per-worktree state into the worktree itself.** `finish` requires a completely
+  empty `git status --porcelain` there, untracked included, so a bookkeeping file dropped in
+  the tree turns into "the worktree has uncommitted changes" on every finish from then on.
+  That is why the port reservation goes in the worktree's git directory — where git also
+  deletes it for you.
 - **Branch deletion uses `-D`**: a squash is not recorded as a merge, so `-d` refuses it as
   "not merged". Finish only reaches `-D` after the merge commit succeeded.
 - **Publishing is never automatic**: the finish script prints the push command and stops.
@@ -173,6 +229,13 @@ Behavior once the merge starts:
   this is deliberate.
 - Expecting `start` to branch from the remote default — it branches only from the **local**
   integration branch HEAD, which is the entire point.
+- **Drifting into the main worktree to work, and restarting its dev server there.** Two
+  failures at once: the change is being made outside the isolation the skill exists to
+  provide, and the shared instance other sessions depend on gets killed and replaced with
+  half-finished code. Work in your own worktree, on your own port block.
+- Running the dev server on the default port because the reserved block "seems unnecessary
+  right now" — the collision only appears once a second worktree exists, and by then the
+  failure looks like a broken build, not a port clash.
 - Reading a non-zero finish as "the merge failed" — after cleanup warnings the merge already
   landed. Read the message and finish the cleanup by hand instead of re-running.
 - Reporting the empty-directory residue as a failed cleanup — it exits **zero**. Say the merge

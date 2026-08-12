@@ -8,13 +8,23 @@
 #
 # Usage (from anywhere inside the repository):
 #   start-worktree.sh <name> [--base <branch>] [--path <dir>] [--branch <branch>]
+#                            [--port-base <n>]
 #
 # Defaults:
 #   base   = HEAD of the LOCAL --base branch (default: dev)
 #   branch = worktree-<name>    (symmetric with finish-worktree.sh, which takes this name)
 #   path   = <name> under an existing .worktrees/ or .claude/worktrees/, else .worktrees/<name>
+#   ports  = a free block of 10 in 20000-29999, derived from the branch name
 #
 # A relative --path resolves against the directory you invoked the script from.
+#
+# Ports: branch isolation is not isolation while every worktree runs its dev servers on the
+# same default ports. Each worktree therefore also gets a reserved block of 10 ports, written
+# to <worktree git-dir>/worktree-ports as sourceable KEY=VALUE. Start only the stack you are
+# changing on those ports and leave the shared instances alone. The block is derived from the
+# repository path and the branch name, so the same worktree name always gets the same ports
+# within a repository while two repositories do not collide, and blocks already recorded by
+# other worktrees of the same repository are skipped.
 #
 # If the local base trails its remote counterpart, that is reported and the run continues:
 # branching from the local branch is the point. Nothing here touches the network.
@@ -25,8 +35,16 @@
 
 set -euo pipefail
 
-BASE="dev"; NAME=""; WTPATH=""; BR=""
+BASE="dev"; NAME=""; WTPATH=""; BR=""; PORT_BASE=""
 PWD0="$PWD"   # captured before we move to the main worktree; relative args resolve against it
+
+# Port block geometry. 20000-29999 sits below every common ephemeral range (Linux
+# 32768-60999, Windows and macOS 49152-65535), so the OS never hands one of these out from
+# under a dev server, and above the usual application defaults (3000, 5173, 8000, 8080).
+PORT_RANGE_START=20000
+PORT_BLOCK=10
+PORT_BLOCKS=1000
+PORT_RANGE_END=$(( PORT_RANGE_START + PORT_BLOCKS * PORT_BLOCK - 1 ))
 
 die()   { echo "‼️  $*" >&2; exit 1; }
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; }
@@ -63,11 +81,56 @@ warn_if_base_behind() {
   echo "    Branching from local '$b' anyway, by design. Pull first if this worktree needs those commits." >&2
 }
 
+# reserved_port_bases — print the WORKTREE_PORT_BASE of every worktree that already has one,
+# one per line. A worktree without the file (the main worktree, or one created before this
+# script reserved ports) simply contributes nothing. The record lives in each worktree's git
+# directory, so git removes it together with the worktree and no stale reservation can survive.
+reserved_port_bases() {
+  local list line p gd
+  list="$(git worktree list --porcelain 2>/dev/null)" || return 0
+  printf '%s\n' "$list" | while IFS= read -r line; do
+    case "$line" in worktree\ *) p="${line#worktree }";; *) continue;; esac
+    [ -d "$p" ] || continue
+    gd="$(git -C "$p" rev-parse --absolute-git-dir 2>/dev/null)" || continue
+    [ -f "$gd/worktree-ports" ] || continue
+    awk -F= '$1 == "WORKTREE_PORT_BASE" && $2 ~ /^[0-9]+$/ { print $2 }' "$gd/worktree-ports"
+  done
+}
+
+# allocate_port_block <repo> <branch> — print a free port base, or fail if every block is taken.
+# The starting point is derived rather than drawn at random: a worktree that is removed and
+# recreated under the same name gets the same ports back, so whatever was configured against
+# them (bookmarks, proxy targets, editor launch configs) still points at the right place.
+#
+# The repository path is part of the input, not just the branch name. Without it, two different
+# repositories on the same machine hand out exactly the same block for the same worktree name —
+# and the names that collide are the common ones (worktree-fix, worktree-test), which is the
+# worst possible distribution. Only worktrees of the same repository can see each other's
+# reservations, so nothing else catches that collision. The path also separates two clones of
+# the same repository, which the first commit SHA would not.
+allocate_port_block() {
+  local repo="$1" br="$2" idx i cand reserved
+  reserved="$(reserved_port_bases | tr '\n' ' ')" || reserved=""
+  reserved=" $reserved "
+  idx="$(printf '%s\n%s' "$repo" "$br" | cksum | awk -v n="$PORT_BLOCKS" '{ print $1 % n }')"
+  i=0
+  while [ "$i" -lt "$PORT_BLOCKS" ]; do
+    cand=$(( PORT_RANGE_START + ((idx + i) % PORT_BLOCKS) * PORT_BLOCK ))
+    case "$reserved" in
+      *" $cand "*) ;;
+      *) printf '%s\n' "$cand"; return 0;;
+    esac
+    i=$(( i + 1 ))
+  done
+  return 1
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --base)    [ $# -ge 2 ] || die "--base requires a value";   BASE="$2";   shift 2;;
     --path)    [ $# -ge 2 ] || die "--path requires a value";   WTPATH="$2"; shift 2;;
     --branch)  [ $# -ge 2 ] || die "--branch requires a value"; BR="$2";     shift 2;;
+    --port-base) [ $# -ge 2 ] || die "--port-base requires a value"; PORT_BASE="$2"; shift 2;;
     -h|--help) usage; exit 0;;
     -*) die "unknown argument: $1";;
     *) if [ -z "$NAME" ]; then NAME="$1"; else die "too many arguments: $1"; fi; shift;;
@@ -78,6 +141,18 @@ done
 [ -n "$BASE" ] || die "--base requires a branch name"
 [ -n "$BR" ] || BR="worktree-$NAME"
 if [ -n "$WTPATH" ]; then WTPATH="$(abspath "$WTPATH")"; fi
+
+# An explicit --port-base has to land on the same grid as an allocated one, or the two schemes
+# would hand out overlapping blocks.
+if [ -n "$PORT_BASE" ]; then
+  case "$PORT_BASE" in
+    ''|*[!0-9]*) die "--port-base must be a number";;
+  esac
+  [ "$PORT_BASE" -ge "$PORT_RANGE_START" ] && [ "$PORT_BASE" -le $(( PORT_RANGE_END - PORT_BLOCK + 1 )) ] \
+    || die "--port-base must be between $PORT_RANGE_START and $(( PORT_RANGE_END - PORT_BLOCK + 1 )) (outside that, the OS can hand the port out as an ephemeral one)"
+  [ $(( PORT_BASE % PORT_BLOCK )) -eq 0 ] \
+    || die "--port-base must be a multiple of $PORT_BLOCK, so blocks cannot overlap"
+fi
 
 # Move to the main worktree so this works from inside any worktree. The list is captured
 # first: piping git straight into a head/exit consumer can trip pipefail on SIGPIPE.
@@ -127,8 +202,48 @@ NEW_SHA="$(git -C "$WTPATH" rev-parse HEAD)"
 [ "$NEW_SHA" = "$BASE_SHA" ] \
   || die "base mismatch: worktree $NEW_SHA != $BASE $BASE_SHA (unexpected — investigate before working)"
 
+# Reserve a port block for this worktree. The record goes in the worktree's git directory, NOT
+# in the worktree itself: finish-worktree.sh requires `git status --porcelain` to be completely
+# empty there (untracked included), so a file in the tree would block every finish for the life
+# of the worktree. In the git directory it is invisible to status and `git worktree remove`
+# deletes it along with everything else it owns.
+#
+# A failure here is never fatal. The worktree is the point; the ports are a convenience, and
+# refusing to create a worktree because a block could not be reserved would be the wrong trade.
+if [ -z "$PORT_BASE" ]; then
+  PORT_BASE="$(allocate_port_block "$MAIN" "$BR")" || {
+    PORT_BASE=""
+    echo "⚠️  every port block in $PORT_RANGE_START-$PORT_RANGE_END is already reserved — no ports assigned." >&2
+    echo "    Pick ports by hand, or remove worktrees that are no longer in use." >&2
+  }
+fi
+
+PORTS_FILE=""
+if [ -n "$PORT_BASE" ]; then
+  WT_GITDIR="$(git -C "$WTPATH" rev-parse --absolute-git-dir)"
+  if printf '%s\n' \
+      "# worktree-cycle: ports reserved for this worktree. Removed with the worktree." \
+      "# Start only the stack you are changing on these; leave shared instances alone." \
+      "WORKTREE_NAME=$NAME" \
+      "WORKTREE_BRANCH=$BR" \
+      "WORKTREE_PORT_BASE=$PORT_BASE" \
+      "WORKTREE_PORT_COUNT=$PORT_BLOCK" \
+      > "$WT_GITDIR/worktree-ports" 2>/dev/null; then
+    PORTS_FILE="$WT_GITDIR/worktree-ports"
+  else
+    echo "⚠️  could not write the port reservation to $WT_GITDIR/worktree-ports." >&2
+    echo "    The worktree is fine; assign ports by hand." >&2
+    PORT_BASE=""
+  fi
+fi
+
 echo
 echo "✅ worktree created: $WTPATH"
 echo "   branch $BR  ←  local $BASE HEAD ($BASE_SHORT)  [base asserted]"
+if [ -n "$PORT_BASE" ]; then
+  echo "   ports  $PORT_BASE-$(( PORT_BASE + PORT_BLOCK - 1 ))  →  $PORTS_FILE"
+  echo "          run only the stack you are changing on these; point the rest at the shared"
+  echo "          instances and never restart a server you did not start."
+fi
 echo "   start working: cd \"$WTPATH\""
 echo "   when done:     finish-worktree.sh -b $BR -m \"<conventional commit>\""
