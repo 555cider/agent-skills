@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Modern colour functions are measurable</title>
+  <style>
+    /*
+      Chrome returns these verbatim from getComputedStyle, and Tailwind v4 emits them for every
+      palette entry. A detector that only reads `rgb()` sees `null` here, which is indistinguishable
+      from "no colour" — so a page built on them reports no contrast findings at all and the silence
+      reads as a pass. Every declaration below is deliberately written in a modern colour function.
+    */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 32px;
+      background: oklch(1 0 0);
+      color: oklch(0.2 0 0);
+      font: 16px/1.5 system-ui, sans-serif;
+    }
+    main { max-width: 680px; }
+    p { margin: 0 0 16px; }
+    /* ~2.3:1 on white — a real failure that only a working parser can see. */
+    #oklch-fail { color: oklch(0.72 0.02 250); }
+    /* ~2.6:1 on white, written in oklab rather than oklch. */
+    #oklab-fail { color: oklab(0.75 -0.01 -0.04); }
+    /* ~2.5:1 on white, written with color(srgb …). */
+    #srgb-fail { color: color(srgb 0.62 0.62 0.62); }
+    /* Comfortably passing — a parser that mangles the conversion would flag these too. */
+    #oklch-pass { color: oklch(0.35 0.05 250); }
+    #srgb-pass { color: color(srgb 0.1 0.1 0.1); }
+    /*
+      A full-viewport scrim whose alpha lives in an oklab colour. No dialog here on purpose: this
+      fixture is about whether the colour is readable at all, and a static modal would drag in the
+      trap and Escape rules it cannot satisfy.
+    */
+    #scrim {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background: oklab(0 0 0 / 0.5);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Modern colour functions</h1>
+    <p id="oklch-fail">Low contrast label written in oklch notation</p>
+    <p id="oklab-fail">Low contrast label written in oklab notation</p>
+    <p id="srgb-fail">Low contrast label written in srgb notation</p>
+    <p id="oklch-pass">Readable label written in oklch notation</p>
+    <p id="srgb-pass">Readable label written in srgb notation</p>
+  </main>
+  <div id="scrim"></div>
+</body>
+</html>

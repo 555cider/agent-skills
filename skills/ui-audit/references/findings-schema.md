@@ -25,6 +25,14 @@
     "dialog-open": {
       "actions": [{ "type": "click", "selector": "#open" }],
       "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
+    },
+    "import-dialog": {
+      "timeoutMs": 45000,
+      "actions": [
+        { "type": "click", "selector": "button[aria-label='파일']" },
+        { "type": "upload", "selector": "[data-testid='import-ifc']", "files": ["fixtures/two-storey.ifc"] }
+      ],
+      "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
     }
   },
   "keyboardProbe": { "maxSteps": 120, "settleMs": 0 },

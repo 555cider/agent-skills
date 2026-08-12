@@ -19,7 +19,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { tmpdir } from 'node:os';
 import { assessRuleCoverage } from './rule-coverage.mjs';
 
@@ -101,6 +101,24 @@ const adaptations = cfg.adaptations ?? [];
 const auditCfg = cfg.auditConfig || {};
 const baseline = cfg.baseline || [];
 const themeInitScripts = cfg.themeInitScripts || {};
+/**
+ * Scripts run on every new document, before the app's own code, in every cell.
+ *
+ * A real app usually stands behind a gate that has nothing to do with the screen under review —
+ * an onboarding tour, a cookie banner, a "what's new" modal. Its dim backdrop covers the page, so
+ * every `stateSetups` click lands on the overlay and the cell fails as unreachable. That is not a
+ * defect in the screen and cannot be dismissed by a click the runner can express; it has to be
+ * suppressed before the app boots, which is what this hook is for (seed localStorage, set a flag).
+ */
+const initScripts = (() => {
+  const raw = cfg.initScripts;
+  if (raw == null) return [];
+  const list = Array.isArray(raw) ? raw : [raw];
+  for (const entry of list) {
+    if (typeof entry !== 'string' || !entry.trim()) throw new Error('initScripts entries must be non-empty strings');
+  }
+  return list;
+})();
 const stateMocks = cfg.stateMocks || {};
 const apiMockPattern = cfg.apiMockPattern || '**/api/**';
 const stateSetups = cfg.stateSetups || {};
@@ -274,7 +292,10 @@ class CDP {
 
 // ---------- aggregation ----------
 function countSev(fs) { const c = { Fail: 0, Risk: 0, Polish: 0 }; for (const f of fs) if (c[f.severity] != null) c[f.severity]++; return c; }
-function slug(r) { return r.replace(/^\//, '').replace(/\//g, '_') || 'root'; }
+// Screenshot filenames are built from this, so every character Windows forbids in a path has to
+// go — a route with a query string (`/editor?demo`) otherwise fails every cell at the screenshot
+// write with ENOENT, which reads like a missing directory rather than an illegal name.
+function slug(r) { return r.replace(/^\//, '').replace(/[\\/:*?"<>|]+/g, '_') || 'root'; }
 const severityRank = { Polish: 1, Risk: 2, Fail: 3 };
 function sameCell(a, b) {
   return ['route', 'viewport', 'theme', 'state', 'adaptation'].every(field => a && b && a[field] === b[field]);
@@ -365,7 +386,7 @@ async function actionTarget(cdp, sessionId, selector, timeoutMs = 5000) {
   });
 }
 
-async function applyStateSetup(cdp, sessionId, state, setups, timeoutMs = 5000) {
+async function applyStateSetup(cdp, sessionId, state, setups, defaultTimeoutMs = 5000) {
   if (!setups || typeof setups !== 'object' || Array.isArray(setups)) throw new Error('stateSetups must be an object');
   const spec = setups[state];
   if (spec == null) return { configured: false, driver: 'none', status: 'not-configured', actions: 0, assertions: 0 };
@@ -374,10 +395,18 @@ async function applyStateSetup(cdp, sessionId, state, setups, timeoutMs = 5000) 
   const expects = spec.expect;
   if (!Array.isArray(actions)) throw new Error(`stateSetups.${state}.actions must be an array`);
   if (!Array.isArray(expects) || !expects.length) throw new Error(`stateSetups.${state}.expect must be a non-empty array`);
+  // A state can sit behind work that takes much longer than a paint — a parsed upload, a
+  // recognition pass, a scene load. The 5s default is right for a click that opens a menu and
+  // wrong for those, and a state that cannot be reached is reported as unverified coverage, so
+  // the wrong default silently shrinks the matrix.
+  if (spec.timeoutMs != null && (!Number.isFinite(spec.timeoutMs) || spec.timeoutMs <= 0)) {
+    throw new Error(`stateSetups.${state}.timeoutMs must be a positive number of milliseconds`);
+  }
+  const timeoutMs = spec.timeoutMs ?? defaultTimeoutMs;
 
   for (let index = 0; index < actions.length; index++) {
     const action = actions[index];
-    const allowed = new Set(['click', 'fill', 'press', 'hover', 'check', 'selectOption']);
+    const allowed = new Set(['click', 'fill', 'press', 'hover', 'check', 'selectOption', 'upload']);
     if (!action || typeof action !== 'object' || Array.isArray(action)) throw new Error(`stateSetups.${state}.actions[${index}] must be an object`);
     if (!allowed.has(action.type)) throw new Error(`stateSetups.${state}.actions[${index}].type is unsupported: ${JSON.stringify(action.type)}`);
     if (typeof action.selector !== 'string' || !action.selector) throw new Error(`stateSetups.${state}.actions[${index}].selector must be non-empty`);
@@ -396,6 +425,39 @@ async function applyStateSetup(cdp, sessionId, state, setups, timeoutMs = 5000) 
       if (typeof action.key !== 'string' || !action.key) throw new Error(`stateSetups.${state}.actions[${index}].key must be non-empty`);
       await runtimeJson(cdp, sessionId, `(()=>{document.querySelector(${encoded}).focus();return{ok:true};})()`);
       await dispatchKey(cdp, sessionId, action.key);
+    } else if (action.type === 'upload') {
+      // The selector names the **trigger** the user presses, not the file input. A page commonly
+      // creates `<input type=file>`, clicks it and removes it again, so the input is never a
+      // stable, visible, single-match selector — and `actionTarget` would reject it as hidden.
+      // Intercepting the chooser is what makes such a page reachable at all.
+      if (!Array.isArray(action.files) || !action.files.length) {
+        throw new Error(`stateSetups.${state}.actions[${index}].files must be a non-empty array of paths`);
+      }
+      const files = action.files.map(file => {
+        if (typeof file !== 'string' || !file) throw new Error(`stateSetups.${state}.actions[${index}].files entries must be non-empty paths`);
+        const full = resolvePath(file);
+        // A missing fixture would otherwise surface as an unexplained chooser timeout.
+        if (!existsSync(full)) throw new Error(`stateSetups.${state}.actions[${index}] file not found: ${full}`);
+        return full;
+      });
+      await cdp.send('DOM.enable', {}, sessionId);
+      await cdp.send('Page.setInterceptFileChooserDialog', { enabled: true }, sessionId);
+      try {
+        // Subscribe before the click: the chooser can open in the same task as the press.
+        const opened = cdp.onceFiltered('Page.fileChooserOpened', sessionId, null, timeoutMs);
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sessionId);
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sessionId);
+        const chooser = await opened.catch(() => {
+          throw new Error(`stateSetups.${state}.actions[${index}] pressed ${JSON.stringify(action.selector)} but no file chooser opened within ${timeoutMs}ms`);
+        });
+        if (chooser.backendNodeId == null) {
+          throw new Error(`stateSetups.${state}.actions[${index}] file chooser reported no backendNodeId; this Chrome is too old for upload actions`);
+        }
+        await cdp.send('DOM.setFileInputFiles', { files, backendNodeId: chooser.backendNodeId }, sessionId);
+      } finally {
+        // Leaving interception on would swallow a chooser a later cell opens for real.
+        try { await cdp.send('Page.setInterceptFileChooserDialog', { enabled: false }, sessionId); } catch {}
+      }
     } else if (action.type === 'selectOption') {
       if (typeof action.value !== 'string') throw new Error(`stateSetups.${state}.actions[${index}].value must be a string`);
       const value = JSON.stringify(action.value);
@@ -946,6 +1008,10 @@ try {
       if (themeInitScripts[theme]) {
         const themeSource = `(()=>{const run=()=>{try{${String(themeInitScripts[theme])}\n;window.__uiAuditThemeInit={ok:true};}catch(e){window.__uiAuditThemeInit={ok:false,error:String(e&&e.message||e)};}};if(document.documentElement)run();else{const o=new MutationObserver(()=>{if(document.documentElement){o.disconnect();run();}});o.observe(document,{childList:true});}})();`;
         await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: themeSource }, sessionId);
+      }
+      // Before INIT and before the app: a gate suppressed after boot has already painted.
+      for (const source of initScripts) {
+        await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source }, sessionId);
       }
       await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INIT }, sessionId);
       mock = await installStateMock(cdp, sessionId, state, stateMocks, apiMockPattern);
