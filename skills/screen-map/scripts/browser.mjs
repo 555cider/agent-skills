@@ -93,7 +93,34 @@ class CDP {
 /** Distinguishable so a caller can tell "no Chrome here" from "Chrome refuses to run this way". */
 export class SandboxRefused extends Error {}
 
-export async function launchBrowser({ headless = true, noSandbox = false } = {}) {
+/**
+ * Attach to a browser somebody else started.
+ *
+ * The contract that matters is the one this cannot express in code: the returned handle
+ * drops the socket and nothing else. Closing a browser we did not launch would take down
+ * whatever is driving it — a Playwright run, a dom-picker session, a person's window.
+ */
+export async function connectBrowser({ host = '127.0.0.1', port } = {}) {
+  let info;
+  try {
+    const response = await fetch(`http://${host}:${port}/json/version`);
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    info = await response.json();
+  } catch (error) {
+    throw new Error(`no DevTools endpoint at ${host}:${port} (${error.message}). `
+      + `Start the browser with --remote-debugging-port=${port}, or let this command open one with --launch.`);
+  }
+  if (!info.webSocketDebuggerUrl) throw new Error(`the endpoint at ${host}:${port} did not offer a debugger socket`);
+  const cdp = await CDP.connect(info.webSocketDebuggerUrl);
+  return {
+    cdp,
+    owned: false,
+    browser: info.Browser || 'unknown',
+    async close() { try { cdp.ws.close(); } catch { /* already gone */ } },
+  };
+}
+
+export async function launchBrowser({ headless = true, noSandbox = false, port = 0 } = {}) {
   // Chrome's sandbox refuses to start as root, and the only way past it is to turn the
   // sandbox off — for a tool that drives a browser through pages it was pointed at, on
   // an account that can do anything. Refuse by default and make the trade explicit.
@@ -116,7 +143,7 @@ export async function launchBrowser({ headless = true, noSandbox = false } = {})
   const args = [
     headless ? '--headless=new' : '--new-window',
     '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
-    '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank',
+    `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank',
   ];
   if (allowNoSandbox) args.splice(1, 0, '--no-sandbox');
 
@@ -144,6 +171,9 @@ export async function launchBrowser({ headless = true, noSandbox = false } = {})
   const cdp = await CDP.connect(wsUrl);
   return {
     cdp,
+    owned: true,
+    wsUrl,
+    port,
     async close() {
       try { await cdp.send('Browser.close'); } catch { /* fall through to kill */ }
       try { proc.kill(); } catch { /* already gone */ }
@@ -182,22 +212,61 @@ export class Page {
     const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
 
     const page = new Page(cdp, sessionId, targetId, browserContextId);
+    await page.instrument({ viewport, storageSeed, allowedOrigin, passive: false });
+    return page;
+  }
+
+  /**
+   * Take over an already-attached target without touching it.
+   *
+   * Everything `open` does to make a page *drivable* — resizing it, denying downloads,
+   * seeding storage, blocking off-origin navigation, cancelling dialogs, closing popups —
+   * is a change to a page somebody else is using, and would be recorded as the app's
+   * behavior when it is really ours. A passive page therefore only listens, and injects
+   * the harvest script so it can be asked what is on screen.
+   */
+  static async attach(cdp, { targetId, sessionId, browserContextId = null }, { recording = false } = {}) {
+    const page = new Page(cdp, sessionId, targetId, browserContextId);
+    await page.instrument({ passive: true, recording });
+    return page;
+  }
+
+  async instrument({
+    viewport = { width: 1280, height: 900 }, storageSeed = null, allowedOrigin = null,
+    passive = false, recording = false,
+  } = {}) {
+    const page = this;
+    const { cdp, sessionId, targetId, browserContextId } = this;
+    this.passive = passive;
+
     await cdp.send('Page.enable', {}, sessionId);
     await cdp.send('Runtime.enable', {}, sessionId);
     await cdp.send('Network.enable', {}, sessionId);
-    await cdp.send('Emulation.setDeviceMetricsOverride',
-      { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: false }, sessionId);
-    await cdp.send('Page.setDownloadBehavior', { behavior: 'deny' }, sessionId);
+    if (!passive) {
+      await cdp.send('Emulation.setDeviceMetricsOverride',
+        { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: false }, sessionId);
+      await cdp.send('Page.setDownloadBehavior', { behavior: 'deny' }, sessionId);
 
-    // Welcome cards, product tours and cookie strips decide whether to appear while the
-    // app mounts, from storage it reads on that first render. Seeding afterwards is too
-    // late: the overlay is already up and its backdrop already swallowing the crawler's
-    // clicks, so the crawl maps a modal instead of the screen behind it. Seeding on every
-    // new document means no page is ever rendered unseeded — including replays.
-    const seed = storageSeedSource(storageSeed);
-    if (seed) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: seed }, sessionId);
+      // Welcome cards, product tours and cookie strips decide whether to appear while the
+      // app mounts, from storage it reads on that first render. Seeding afterwards is too
+      // late: the overlay is already up and its backdrop already swallowing the crawler's
+      // clicks, so the crawl maps a modal instead of the screen behind it. Seeding on every
+      // new document means no page is ever rendered unseeded — including replays.
+      const seed = storageSeedSource(storageSeed);
+      if (seed) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: seed }, sessionId);
+    }
 
+    // Registration order is execution order, so the flag has to be registered before the
+    // harvest script that reads it.
+    const marker = recording ? 'window.__screenMapRecord = true;' : null;
+    if (marker) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: marker }, sessionId);
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: HARVEST_SOURCE }, sessionId);
+    if (passive) {
+      // The document that is already open never gets an on-new-document script, and in a
+      // recording that is the very document the session starts on.
+      const bootstrap = (marker || '') + HARVEST_SOURCE;
+      await cdp.send('Runtime.evaluate', { expression: bootstrap }, sessionId).catch(() => {});
+    }
 
     if (allowedOrigin) {
       const { frameTree } = await cdp.send('Page.getFrameTree', {}, sessionId);
@@ -249,20 +318,27 @@ export class Page {
 
     // An unhandled dialog locks CDP and takes the whole crawl with it. Cancel every
     // confirm/alert/prompt; accept beforeunload so navigation is never wedged.
-    page.cleanups.push(cdp.listen('Page.javascriptDialogOpening', sessionId, params => {
-      page.dialogs.push({ type: params.type, message: params.message });
-      const accept = params.type === 'beforeunload';
-      cdp.send('Page.handleJavaScriptDialog', { accept }, sessionId).catch(() => {});
-    }));
+    //
+    // A passive page must not do this. Whoever is driving the browser owns its dialogs,
+    // and answering one on their behalf changes the run being recorded into a different
+    // run. The cost is that an unanswered dialog stalls our own evaluations until the
+    // driver deals with it, which is the correct place for that cost to land.
+    if (!passive) {
+      page.cleanups.push(cdp.listen('Page.javascriptDialogOpening', sessionId, params => {
+        page.dialogs.push({ type: params.type, message: params.message });
+        const accept = params.type === 'beforeunload';
+        cdp.send('Page.handleJavaScriptDialog', { accept }, sessionId).catch(() => {});
+      }));
 
-    // Stray popups are invisible to the driver; close them so they cannot swallow input.
-    await cdp.send('Target.setDiscoverTargets', { discover: true });
-    page.cleanups.push(cdp.listen('Target.targetCreated', null, params => {
-      const info = params.targetInfo;
-      if (!info || info.type !== 'page' || info.targetId === targetId) return;
-      if (info.browserContextId && info.browserContextId !== browserContextId) return;
-      cdp.send('Target.closeTarget', { targetId: info.targetId }).catch(() => {});
-    }));
+      // Stray popups are invisible to the driver; close them so they cannot swallow input.
+      await cdp.send('Target.setDiscoverTargets', { discover: true });
+      page.cleanups.push(cdp.listen('Target.targetCreated', null, params => {
+        const info = params.targetInfo;
+        if (!info || info.type !== 'page' || info.targetId === targetId) return;
+        if (info.browserContextId && info.browserContextId !== browserContextId) return;
+        cdp.send('Target.closeTarget', { targetId: info.targetId }).catch(() => {});
+      }));
+    }
 
     return page;
   }
@@ -403,6 +479,13 @@ export class Page {
 
   async close() {
     for (const cleanup of this.cleanups) cleanup();
+    // A passive page is somebody else's tab. Detach from it; closing it would end the
+    // session being recorded.
+    if (this.passive) {
+      try { await this.cdp.send('Target.detachFromTarget', { sessionId: this.sessionId }); }
+      catch { /* already gone */ }
+      return;
+    }
     try { await this.cdp.send('Target.closeTarget', { targetId: this.targetId }); } catch { /* already gone */ }
     try { await this.cdp.send('Target.disposeBrowserContext', { browserContextId: this.browserContextId }); }
     catch { /* already gone */ }

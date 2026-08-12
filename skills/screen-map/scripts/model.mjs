@@ -6,7 +6,45 @@
 
 import { createHash } from 'node:crypto';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+/**
+ * Statuses a stored route may be built from, weakest last.
+ *
+ * `verified` was walked and proved to land where the map says. `observed` happened once,
+ * in front of a recorder, and was never replayed — which is a real claim about the app and
+ * a much weaker claim about reproducibility. Nothing may quietly treat the second as the
+ * first: every query names which of the two it is standing on.
+ */
+export const VERIFIED_ONLY = new Set(['verified']);
+export const VERIFIED_OR_OBSERVED = new Set(['verified', 'observed']);
+
+/**
+ * Bring a v1 map forward in memory. A map on disk predates provenance entirely, and the
+ * honest reading of it is "one crawl, at the commit the run recorded" — so that is what
+ * every entry gets. Refusing to load it instead would strand every map made before this
+ * version behind a re-crawl nobody asked for.
+ */
+export function migrateMap(map) {
+  if (!map || map.schema !== 1) return map;
+  const commit = (map.app && map.app.commit) || null;
+  const at = (map.run && (map.run.finishedAt || map.run.startedAt)) || null;
+  const stamped = item => ({
+    ...item,
+    source: 'crawl',
+    commit,
+    recordedAt: at,
+    lastObservedCommit: commit,
+    lastObservedAt: at,
+    ...(item.status === 'verified' ? { verifiedAtCommit: commit } : {}),
+  });
+  return {
+    ...map,
+    schema: 2,
+    states: (map.states || []).map(stamped),
+    transitions: (map.transitions || []).map(stamped),
+  };
+}
 
 // ---------- route templating ----------
 
@@ -334,6 +372,159 @@ export function classifyAction(action = {}, policy = {}) {
   return { class: unknownClass, classifiedBy: 'default', reason: 'not positively recognized as safe' };
 }
 
+// ---------- registry ----------
+
+/**
+ * The one place a screen or an action becomes a map entry.
+ *
+ * There is now more than one way to build a map — a crawl walks the app, a recording
+ * watches somebody else walk it — and the two must agree on identity down to the byte.
+ * A recorder that computed a route template or a signature even slightly differently
+ * would file the screen the crawl already knows as a second node, and the graph would
+ * quietly stop connecting.
+ *
+ * Identity and classification only. Sampling, budgets, the queue and the mutating gate
+ * are *crawl policy* and deliberately stay with the crawl: a recorder that inherited the
+ * crawl's frontier queue would be walking edges nobody asked it to walk.
+ *
+ * `seed` adopts an existing map — its arrays are extended in place and its id counters
+ * continue — which is how a recording adds to what a crawl already found.
+ */
+function nextIdFrom(items, prefix) {
+  let highest = -1;
+  const shape = new RegExp('^' + prefix + '(\\d+)$');
+  for (const item of items) {
+    const match = shape.exec(String((item && item.id) || ''));
+    if (match) highest = Math.max(highest, Number(match[1]));
+  }
+  let next = highest + 1;
+  return () => prefix + (next++);
+}
+
+export function createRegistry({ config = {}, seed = null, stamp = {} } = {}) {
+  const states = (seed && seed.states) || [];
+  const transitions = (seed && seed.transitions) || [];
+  const entrypoints = (seed && seed.entrypoints) || [];
+
+  const source = stamp.source || 'crawl';
+  const commit = stamp.commit === undefined ? null : stamp.commit;
+  const now = stamp.now || (() => new Date().toISOString());
+
+  /**
+   * Three times, three different questions: when this was first seen, when it was last
+   * seen, when it was last proved. Collapsing them loses the one that matters — an entry
+   * re-observed today under a recording would otherwise keep answering with the commit of
+   * a crawl three weeks ago, and freshness built on that reads the wrong age.
+   */
+  const firstStamp = () => {
+    const at = now();
+    return { source, commit, recordedAt: at, lastObservedCommit: commit, lastObservedAt: at };
+  };
+  const restamp = item => {
+    item.lastObservedCommit = commit;
+    item.lastObservedAt = now();
+    return item;
+  };
+
+  const byKey = new Map(states.map(state => [stateKey(state.route, state.signature), state]));
+  const transitionKey = (fromId, actionKey) => JSON.stringify([fromId, actionKey]);
+  const byTransitionKey = new Map(
+    transitions.map(transition => [transitionKey(transition.from, transition.action && transition.action.key), transition]));
+
+  const nextStateId = nextIdFrom(states, 's');
+  const nextTransitionId = nextIdFrom(transitions, 't');
+
+  function upsertState(observation) {
+    const route = routeTemplate(observation.pathname, config);
+    const signature = fingerprintSignature(observation.fingerprint);
+    const key = stateKey(route, signature);
+    const existing = byKey.get(key);
+    if (existing) return { state: restamp(existing), isNew: false };
+    const state = {
+      id: nextStateId(),
+      ...firstStamp(),
+      route, signature,
+      kind: stateKind(observation.fingerprint),
+      title: stateTitle({ ...observation, route }),
+      // On a templated route the heading belongs to one record, not to the screen.
+      titleIsSample: route.includes(':'),
+      evidence: {
+        urlSample: observation.pathname + (observation.search || ''),
+        headings: observation.fingerprint.headings || [],
+        landmarks: observation.fingerprint.landmarks || [],
+        forms: observation.fingerprint.forms || [],
+        fields: observation.fingerprint.fields || [],
+        overlay: observation.fingerprint.overlay || null,
+      },
+    };
+    states.push(state);
+    byKey.set(key, state);
+    return { state, isNew: true };
+  }
+
+  /**
+   * `verdict` comes back with the transition because the caller needs the *reason*, which
+   * the stored record does not keep — only `classifiedBy`. The crawl writes that reason
+   * into `blockedReason`, and reconstructing it at the call site would mean classifying
+   * twice with two chances to disagree.
+   */
+  function upsertTransition(fromState, action) {
+    const identity = transitionKey(fromState.id, action.key);
+    const existing = byTransitionKey.get(identity);
+    const verdict = classifyAction(action, config.actionPolicy);
+    if (existing) return { transition: restamp(existing), isNew: false, verdict };
+    const transition = {
+      id: nextTransitionId(),
+      ...firstStamp(),
+      from: fromState.id,
+      to: null,
+      action: {
+        kind: action.kind, role: action.role, name: action.name,
+        href: action.href || null, hrefRaw: action.hrefRaw || null, external: !!action.external,
+        cssFallback: action.cssFallback, key: action.key,
+        ambiguous: !!action.ambiguous,
+        fallbackUsed: false,
+      },
+      class: verdict.class,
+      classifiedBy: verdict.classifiedBy,
+      status: 'unexplored',
+      blockedReason: null,
+      lastVerifiedAt: null,
+      verifiedAtCommit: null,
+      // Set only by a replay that tried this edge and could not reproduce it. An edge
+      // carrying it is never handed back as a route again — see `shortestSafePath`.
+      replayFailed: false,
+    };
+    transitions.push(transition);
+    byTransitionKey.set(identity, transition);
+    return { transition, isNew: true, verdict };
+  }
+
+  return {
+    states, transitions, entrypoints,
+    upsertState, upsertTransition,
+    live: () => ({ states, transitions, entrypoints }),
+    byId: id => states.find(state => state.id === id) || null,
+    keyOf: observation =>
+      stateKey(routeTemplate(observation.pathname, config), fingerprintSignature(observation.fingerprint)),
+  };
+}
+
+/**
+ * Coverage by status. `notExecuted` deliberately excludes `observed`: those edges *were*
+ * executed, just not by this tool, and filing them under "never pressed" would understate
+ * what is known about the app by exactly the amount a recording contributed.
+ */
+export function statusCounts(transitions = []) {
+  const counts = { verified: 0, observed: 0, unexplored: 0, sampled: 0, blocked: 0, failed: 0 };
+  for (const transition of transitions) {
+    if (counts[transition.status] === undefined) continue;
+    counts[transition.status] += 1;
+  }
+  counts.notExecuted = counts.unexplored + counts.sampled + counts.blocked + counts.failed;
+  return counts;
+}
+
 // ---------- graph queries ----------
 
 export function statesByRoute(map, route) {
@@ -352,12 +543,21 @@ export function transitionsFrom(map, stateId) {
 /**
  * Replay paths are safe-only by design: a path containing a mutating step is not
  * reproducible, and a route the map hands out must be walkable again.
+ *
+ * `statuses` defaults to `verified` alone, so the ordinary answer is still built only
+ * from edges that were walked and proved. A caller that explicitly asks for `observed`
+ * too is taking a weaker route knowingly, and is expected to say so to its own reader.
+ *
+ * An edge whose replay was tried and failed is excluded from both — it is the one case
+ * where the map has positive evidence that the step does not work, and handing it back
+ * would be worse than having no route at all.
  */
-export function shortestSafePath(map, fromStateId, toStateId, { safeOnly = true } = {}) {
+export function shortestSafePath(map, fromStateId, toStateId, { safeOnly = true, statuses = VERIFIED_ONLY } = {}) {
   if (fromStateId === toStateId) return [];
   const outgoing = new Map();
   for (const transition of map.transitions || []) {
-    if (transition.status !== 'verified' || !transition.to) continue;
+    if (!statuses.has(transition.status) || !transition.to) continue;
+    if (transition.replayFailed) continue;
     if (safeOnly && transition.class !== 'safe') continue;
     if (!outgoing.has(transition.from)) outgoing.set(transition.from, []);
     outgoing.get(transition.from).push(transition);
@@ -400,7 +600,10 @@ export function pathFromEntrypoints(map, toStateId, fromStateId = null, options 
  * hand back a non-reproducible route is right; refusing to say it exists is not.
  */
 export function mutatingDetour(map, toStateId, fromStateId = null) {
-  const resolved = pathFromEntrypoints(map, toStateId, fromStateId, { safeOnly: false });
+  // A recorded mutating step is exactly this payload's subject: somebody already walked
+  // it by hand, which is the only way it was ever going to be walked.
+  const resolved = pathFromEntrypoints(map, toStateId, fromStateId,
+    { safeOnly: false, statuses: VERIFIED_OR_OBSERVED });
   if (!resolved) return null;
   const steps = resolved.path.filter(transition => transition.class !== 'safe');
   if (!steps.length) return null;
@@ -461,6 +664,46 @@ export function routeToSteps(map, resolved, baseUrl) {
   return steps;
 }
 
+/**
+ * The same route as a sequence of MCP browser tool calls.
+ *
+ * The one thing this must not do is invent a `ref`. Those tools address elements by an id
+ * minted inside a single accessibility snapshot, so a ref written here would be a
+ * plausible-looking value that never matches anything — the worst kind of wrong. Instead
+ * every click is preceded by its own `browser_snapshot`, and `match` says what to look for
+ * in the result: the caller resolves the ref, because the caller is the only one who can.
+ */
+export function routeToMcpSteps(map, resolved, baseUrl) {
+  const originState = stateById(map, resolved.origin);
+  const origin = (baseUrl || map.app?.baseUrl || '')
+    + (originState ? originState.evidence?.urlSample || originState.route : '/');
+  const steps = [{ tool: 'browser_navigate', args: { url: origin } }];
+
+  for (const transition of resolved.path) {
+    const action = transition.action || {};
+    steps.push({ tool: 'browser_snapshot', args: {} });
+    // `element` is the human-readable description those tools ask for; `match` is the
+    // machine-readable half the caller uses to find the ref in the snapshot above.
+    const described = action.name
+      ? `${action.role || action.kind} "${action.name}"`
+      : `${action.role || action.kind} at ${action.cssFallback || 'unknown position'}`;
+    const step = { tool: 'browser_click', args: { element: described }, refFrom: 'browser_snapshot' };
+    if (action.ambiguous && action.cssFallback) {
+      // Position was the only thing that told it apart, and a snapshot does not carry
+      // position. Say so rather than offering a name that matches several elements.
+      step.match = { css: action.cssFallback };
+      step.note = 'several controls share this name; only the CSS position tells them apart';
+    } else if (action.name && action.role) {
+      step.match = { role: action.role, name: action.name };
+      if (action.kind === 'link' && action.hrefRaw) step.match.href = action.hrefRaw;
+    } else if (action.cssFallback) {
+      step.match = { css: action.cssFallback };
+    }
+    steps.push(step);
+  }
+  return steps;
+}
+
 function escapeCell(text) {
   return String(text ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
 }
@@ -480,10 +723,11 @@ function mermaidText(text, limit = 28) {
  * can actually check, which is the step the whole workflow rests on — a reviewer who
  * cannot see the shape of the app cannot tell a good crawl from a broken one.
  *
- * Only verified transitions are drawn, because only those are claims the map makes
- * about walking. What was *not* walked is not hidden: it rides on the node it belongs
- * to as a count, so a screen the crawl barely opened looks different from one it
- * exhausted.
+ * Only transitions somebody actually took are drawn — walked by the crawl, or watched
+ * during a recording — and the two are drawn differently, because a reviewer checking
+ * the shape of the app has to be able to see which edges are proved. What was *not*
+ * taken is not hidden either: it rides on the node it belongs to as a count, so a screen
+ * the crawl barely opened looks different from one it exhausted.
  */
 export function renderMermaid(map) {
   const states = map.states || [];
@@ -498,7 +742,7 @@ export function renderMermaid(map) {
   const edges = new Map();
   const unexplored = new Map();
   for (const transition of map.transitions || []) {
-    if (transition.status !== 'verified' || !transition.to) {
+    if (!VERIFIED_OR_OBSERVED.has(transition.status) || !transition.to) {
       unexplored.set(transition.from, (unexplored.get(transition.from) || 0) + 1);
       continue;
     }
@@ -508,8 +752,12 @@ export function renderMermaid(map) {
       continue;
     }
     const key = transition.from + '>' + transition.to;
-    if (!edges.has(key)) edges.set(key, { from: transition.from, to: transition.to, names: [] });
-    edges.get(key).names.push(transition.action?.name || transition.action?.kind || '?');
+    if (!edges.has(key)) edges.set(key, { from: transition.from, to: transition.to, names: [], verified: false });
+    const edge = edges.get(key);
+    edge.names.push(transition.action?.name || transition.action?.kind || '?');
+    // One verified transition is enough to make the edge a walked claim; an edge drawn
+    // from recordings alone must not look like one.
+    if (transition.status === 'verified') edge.verified = true;
   }
 
   const lines = ['```mermaid', 'flowchart LR'];
@@ -532,7 +780,8 @@ export function renderMermaid(map) {
   for (const edge of edges.values()) {
     const [first, ...rest] = edge.names;
     const label = mermaidText(first, 24) + (rest.length ? ` +${rest.length}` : '');
-    lines.push(`  ${edge.from} -->|"${label}"| ${edge.to}`);
+    const arrow = edge.verified ? '-->' : '-.->';
+    lines.push(`  ${edge.from} ${arrow}|"${label}"| ${edge.to}`);
   }
   if (entrypoints.size) {
     lines.push(`  classDef entry stroke-width:3px`);
@@ -541,7 +790,8 @@ export function renderMermaid(map) {
   lines.push('```');
   lines.push('');
   lines.push('Stadium = entrypoint · hexagon = overlay · ↻ actions that stay on the screen ·'
-    + ' ⊘ actions recorded but never executed. Only verified transitions are drawn.');
+    + ' ⊘ actions recorded but never executed. A solid arrow was walked and proved;'
+    + ' a dashed arrow was observed once during a recording and never replayed.');
   return lines;
 }
 
@@ -614,6 +864,19 @@ export function renderMarkdown(map, freshness = {}) {
     .filter(key => coverage[key]).map(key => `${coverage[key]} ${key}`).join(', ');
   lines.push(`- Coverage: ${coverage.states ?? 0} states, ${coverage.actionsSeen ?? 0} actions seen, `
     + `${coverage.executed ?? 0} executed, ${notExecutedCount} not executed${breakdown ? ` (${breakdown})` : ''}`);
+  if (coverage.observed) {
+    lines.push(`- Recorded: ${coverage.observed} edges were watched during a session and never replayed`
+      + ' — real, but unproved.');
+  }
+  for (const recording of map.recordings || []) {
+    const unfinished = recording.stoppedBy === 'incomplete' || recording.stoppedBy === 'crashed';
+    lines.push(`- Recording ${recording.finishedAt || recording.startedAt}: `
+      + `${recording.edges ?? 0} edges, ${recording.states ?? 0} new screens`
+      + (recording.droppedActions ? `, ${recording.droppedActions} actions dropped` : '')
+      + (recording.commit ? ` (at \`${recording.commit}\`)` : '')
+      + (unfinished ? ` — **${recording.stoppedBy}**: this recording never reported finishing,`
+        + ' so these numbers are a checkpoint rather than a total' : ''));
+  }
   // A crawl stops for two different kinds of reason, and conflating them misleads: a
   // budget is a ceiling the caller set and can raise, while the rest mean the run never
   // came back — the map on disk is whatever had been walked at that moment.

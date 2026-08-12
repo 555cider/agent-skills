@@ -48,7 +48,35 @@
     "should_trigger": true
   },
   {
+    "query": "Watch my browser session and turn what I walk through into a map I can reuse.",
+    "should_trigger": true
+  },
+  {
+    "query": "playwright 로 돌아다닌 걸 기록해서 다음에 덜 헤매게 맵으로 남겨줘.",
+    "should_trigger": true
+  },
+  {
+    "query": "Attach to the Chrome I already have on the debug port and record the screens I visit.",
+    "should_trigger": true
+  },
+  {
+    "query": "The crawl refuses to submit the form, so let me walk the wizard myself while you capture the path.",
+    "should_trigger": true
+  },
+  {
     "query": "This button's padding is off by a few pixels — fix it.",
+    "should_trigger": false
+  },
+  {
+    "query": "Summarize what I did in this chat session into release notes.",
+    "should_trigger": false
+  },
+  {
+    "query": "Record a screencast video of me demoing the app for the sales team.",
+    "should_trigger": false
+  },
+  {
+    "query": "Set up Playwright in this repo with a config and a first example test.",
     "should_trigger": false
   },
   {

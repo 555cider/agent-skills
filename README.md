@@ -83,18 +83,24 @@ directories yourself.
   where it cannot dirty the tree and where git deletes it on removal — because branch
   isolation buys nothing while every worktree's dev server fights for :5173. Never pushes.
 - [`skills/screen-map/`](skills/screen-map/README.md) — an agent-readable map of a web
-  app: which screens exist and the concrete action that moves between any two. One
-  crawl writes a **snapshot** (`.screen-map/map.json`) pinned to the app commit; maps
-  are never merged, so old and new observations cannot tangle. A node is a route
+  app: which screens exist and the concrete action that moves between any two. Two
+  things write it (`.screen-map/map.json`): `crawl` walks the app itself, and `record`
+  **attaches to a browser somebody else is driving** — Playwright over CDP, dom-picker,
+  a person — and files what they reach. Recording is how the screens behind a login or a
+  form submit get mapped at all, since a crawl refuses to press them. Every entry carries
+  the commit it was seen at, so a crawl and later recordings can share one file without
+  old and new observations tangling. A node is a route
   template plus a deliberately lossy DOM signature, so `/items/1` and `/items/2`
   collapse into one screen while an open modal or dropdown stays its own. It is
   not a sitemap: it records what you click to move between screens, not a URL
   hierarchy. The action policy is **positive recognition** — an action runs only
   when a rule proves it safe,
   unrecognized ones need `--allow-mutating`, and destructive ones are never
-  executed under any flag, though their edges are still recorded. Later sessions
-  ask `route --to '/orders/:id'` and get an executable action sequence that was
-  walked end to end, plus a freshness verdict against the current commit.
+  executed under any flag, though their edges are still recorded. Recording never
+  dispatches input at all, and never closes a browser it did not open. Later sessions
+  ask `route --to '/orders/:id'` and get an executable action sequence, a freshness
+  verdict against the current commit, and whether the path was **walked and proved** or
+  only **watched once**.
 - [`skills/step-back/`](skills/step-back/) — the two ways effort goes wrong, treated
   as one dial: shipping the first thing that worked, and still verifying something
   that was fine forty tool calls ago. The premise is that the judgment already

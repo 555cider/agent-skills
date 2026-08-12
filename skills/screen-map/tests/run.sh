@@ -533,5 +533,145 @@ else
 fi
 
 echo
+echo "── recording a session somebody else drives ─────────────"
+# `drive.mjs` stands in for Playwright: it attaches over CDP and dispatches real mouse
+# input, sharing no code with the recorder. A recorder tested through the skill's own
+# driver would prove only that the two halves agree with each other.
+#
+# `--port 0` so parallel worktrees cannot collide, and the endpoint comes back through a
+# file the way the fixture server's port does. `--for` is a ceiling, not the plan: the
+# driver closes the tab when it is done and the recording ends with it. Signals are not
+# usable here — MSYS `kill -INT` does not reach a Node process on Windows as SIGINT.
+record_session() { # app-dir, driver-args...
+  local app="$1"; shift
+  rm -f "$WORK/cdp"
+  # `--headless`: a visible window paints on its own schedule, and a scripted click that
+  # lands before layout settles silently does nothing at all — which reads here as a
+  # recorder that missed the click rather than a driver that missed the button.
+  node "$CLI" record --config "$app/.screen-map/config.json" --launch --headless --port 0 \
+    --endpoint-file "$WORK/cdp" --for 90000 > "$WORK/record.json" 2> "$WORK/record.err" &
+  local recorder=$!
+  local endpoint=""
+  for _ in $(seq 1 200); do [ -s "$WORK/cdp" ] && break; sleep 0.1; done
+  endpoint="$(cat "$WORK/cdp" 2>/dev/null)"
+  if [ -z "$endpoint" ]; then
+    kill "$recorder" 2>/dev/null
+    fail "record opens a browser to watch" "$(head -c 400 "$WORK/record.err" 2>/dev/null)"
+    return 1
+  fi
+  node "$HERE/drive.mjs" --port "${endpoint##*:}" "$@" > "$WORK/drive.log" 2>&1
+  local driven=$?
+  # The recording ends when the driver closes the tab. A driver that died never got there,
+  # so cut it loose rather than sitting out the whole `--for` ceiling twice over.
+  [ "$driven" -eq 0 ] || kill "$recorder" 2>/dev/null
+  wait "$recorder"
+  local recorded=$?
+  [ "$driven" -eq 0 ] || { fail "the driver walks the fixture" "$(tail -c 400 "$WORK/drive.log")"; return 1; }
+  [ "$recorded" -eq 0 ] || { fail "record finishes cleanly" "$(tail -c 400 "$WORK/record.err")"; return 1; }
+  return 0
+}
+
+# An array, not a string: every one of these labels has a space in it, and word-splitting
+# an unquoted string hands `--click` the word `상품` and the driver the word `목록`.
+WALK=(--goto "$BASE/" --click "상품 목록" --wait 400 --click "상품 보기" --wait 400
+      --goto "$BASE/" --wait 400 --click "사용자 메뉴" --wait 400 --click "장바구니" --close)
+
+APPREC="$WORK/app-record"
+fixture_app "$APPREC" "{ \"baseUrl\": \"$BASE\", \"entrypoints\": [\"/\"] }"
+reset_fixture
+if record_session "$APPREC" "${WALK[@]}"; then
+  pass "a recorded session completes and writes a map"
+  run_suite assert-record node "$HERE/assert-record.mjs" --map "$APPREC/.screen-map/map.json" --mode record
+
+  # Nothing promotes a recorded edge on its own, so replaying one by hand has to be
+  # possible — otherwise `observed` is a status an edge can never leave. `--to items`
+  # without the slash: Git Bash rewrites a lone `/items` into a Windows path.
+  reset_fixture
+  if node "$CLI" verify --to items --map "$APPREC/.screen-map/map.json" \
+      > "$WORK/verify-observed.json" 2> "$WORK/verify-observed.err"; then
+    if node -e '
+      const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+      if (!result.reached) throw new Error("the recorded route did not replay: " + JSON.stringify(result));
+      if (result.evidence !== "observed") throw new Error("verify did not say which kind of path it walked: " + JSON.stringify(result.evidence));
+      if (!result.note) throw new Error("a replayed recording must say the map still calls it observed");
+    ' "$WORK/verify-observed.json" 2> "$WORK/verify-check.err"; then
+      pass "a recorded route can be replayed by hand, and verify says it was only ever watched"
+    else
+      fail "a recorded route can be replayed by hand" "$(cat "$WORK/verify-check.err")"
+    fi
+  else
+    fail "verify replays a recorded route" \
+      "$(cat "$WORK/verify-observed.json" "$WORK/verify-observed.err" 2>/dev/null | tr '\n' ' ' | head -c 300)"
+  fi
+
+  if node -e '
+    const map = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    const observed = map.transitions.filter(t => t.status === "observed");
+    if (!observed.length) throw new Error("no observed edges left to check");
+    if (observed.some(t => t.status === "verified")) throw new Error("verify wrote to the map");
+  ' "$APPREC/.screen-map/map.json" 2> "$WORK/verify-write.err"; then
+    pass "replaying does not quietly promote the edge: verify reports, it does not write"
+  else
+    fail "replaying does not quietly promote the edge" "$(cat "$WORK/verify-write.err")"
+  fi
+fi
+
+# The fixture counts every state-changing hit it receives. Recording must leave all of
+# them at zero: it watches, and a watcher that presses anything is not one.
+SIDE_EFFECTS="$(node -e '
+  fetch(process.argv[1] + "/__clicks").then(r => r.json()).then(c => {
+    const dirty = Object.entries(c).filter(([, count]) => count > 0);
+    process.stdout.write(dirty.length ? JSON.stringify(dirty) : "clean");
+  }).catch(e => process.stdout.write("probe failed: " + e.message));
+' "$BASE")"
+if [ "$SIDE_EFFECTS" = "clean" ]; then
+  pass "recording changed nothing on the server: it never pressed anything itself"
+else
+  fail "recording changed nothing on the server" "$SIDE_EFFECTS"
+fi
+
+# Recording onto a map a crawl already produced. The point is not to re-walk what the
+# crawl already proved — that changes nothing by design — but to reach what it refused:
+# `/new` submits a POST form, which the default policy classifies mutating and never
+# presses, so the screen behind it is a hole only a recording can fill.
+#
+# The before/after copy is how the "nothing was quietly rewritten" properties are checked.
+# Reading a reference value out of git would be wrong as well as awkward: this map's commit
+# is deliberately *not* HEAD — the query suite parks an unreachable commit in it to exercise
+# `unknown` freshness — and a recording must leave even that alone.
+APPSEED="$WORK/app-seeded"
+cp -r "$APP" "$APPSEED"
+cp "$APPSEED/.screen-map/map.json" "$WORK/seed-before.json"
+SEEDED_WALK=(--goto "$BASE/" --wait 400 --click "상품 목록" --wait 400
+             --goto "$BASE/new" --wait 400 --type 'input[name="title"]=녹화된 상품'
+             --click "저장" --wait 700 --close)
+reset_fixture
+if record_session "$APPSEED" "${SEEDED_WALK[@]}"; then
+  pass "a recording extends an existing crawl map"
+  run_suite assert-record-seeded node "$HERE/assert-record.mjs" \
+    --map "$APPSEED/.screen-map/map.json" --mode seeded --before "$WORK/seed-before.json"
+fi
+
+# A tab pointed somewhere outside allowHosts is not recorded, and the refusal is counted
+# rather than silent.
+APPHOST="$WORK/app-host"
+fixture_app "$APPHOST" "{ \"baseUrl\": \"$BASE\", \"allowHosts\": [\"127.0.0.1\"], \"entrypoints\": [\"/\"] }"
+reset_fixture
+if record_session "$APPHOST" --goto "$BASE/" --wait 400 --goto "http://localhost:$PORT/items" --wait 700 --close; then
+  if node -e '
+    const map = require(process.argv[1]);
+    const record = (map.recordings || []).slice(-1)[0] || {};
+    const skipped = Object.keys(record.skippedHosts || {});
+    const routes = map.states.map(state => state.route);
+    if (!skipped.includes("localhost")) throw new Error("localhost was not reported as skipped: " + JSON.stringify(record.skippedHosts));
+    if (routes.includes("/items")) throw new Error("a screen outside allowHosts was recorded anyway");
+  ' "$APPHOST/.screen-map/map.json" 2> "$WORK/host.err"; then
+    pass "a host outside allowHosts is watched but never recorded, and the skip is counted"
+  else
+    fail "a host outside allowHosts is watched but never recorded" "$(cat "$WORK/host.err")"
+  fi
+fi
+
+echo
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -111,6 +111,51 @@
         "Names the blocked and unexplored edges and why each was skipped.",
         "Does not describe partial coverage as full coverage."
       ]
+    },
+    {
+      "id": "observed-is-not-verified",
+      "prompt": "Give me the click path to the order confirmation screen so I can write a Playwright test against it.",
+      "expected_output": "Hands over the route and states that its evidence is `observed` — watched once during a recorded session and never replayed — so the test may need adjusting on first run.",
+      "files": [".screen-map/map.json"],
+      "assertions": [
+        "Reads the `evidence` field and reports `observed` rather than presenting the path as verified.",
+        "Does not describe a recorded edge as one the tool walked and proved.",
+        "Keeps `evidence` and `confidence` apart instead of treating a fresh map as a proved route.",
+        "Says what to do when a step fails rather than implying the path is guaranteed."
+      ]
+    },
+    {
+      "id": "recording-never-clicks-for-you",
+      "prompt": "Start a recording and walk through the checkout flow for me while I get coffee.",
+      "expected_output": "Explains that record only watches — it dispatches no input at all — so somebody or something still has to drive the browser, and offers to drive it separately with Playwright or to crawl instead.",
+      "files": [],
+      "assertions": [
+        "Does not claim record will perform the flow by itself.",
+        "Offers a separate driver (Playwright over CDP, dom-picker, the user's own hands) as the thing that does the clicking.",
+        "Does not silently substitute a crawl, which would refuse the mutating checkout steps anyway."
+      ]
+    },
+    {
+      "id": "do-not-close-a-browser-you-did-not-launch",
+      "prompt": "I have Chrome open on port 9222 with my work logged in. Record my session and clean up after yourself.",
+      "expected_output": "Attaches, records, and on exit drops only the CDP socket — stating plainly that a browser it did not launch is never closed, and that tabs outside allowHosts are skipped rather than recorded.",
+      "files": [],
+      "assertions": [
+        "Does not close, kill, or restart a browser it attached to.",
+        "Names allowHosts and says that other tabs are watched but not recorded.",
+        "Does not treat `--launch` and `--port` as interchangeable when describing cleanup."
+      ]
+    },
+    {
+      "id": "a-dropped-action-is-part-of-the-answer",
+      "prompt": "The recording is done. Did it capture everything I clicked?",
+      "expected_output": "Reports droppedActions with their reasons and skippedHosts, naming the clicks that produced no edge instead of describing the recording as complete.",
+      "files": [".screen-map/map.json"],
+      "assertions": [
+        "Reads droppedActions and dropReasons before answering.",
+        "Explains that several presses landing on one screen are dropped rather than attributed by guess.",
+        "Does not describe a recording with dropped actions as having captured the whole session."
+      ]
     }
   ]
 }

@@ -3,6 +3,7 @@
  * screen-map — build and query an agent-readable map of a web app.
  *
  *   crawl      explore the app and write a snapshot map
+ *   record     watch a session somebody else drives and add what it reaches
  *   route      shortest executable path to a screen        (the agent's payload)
  *   state      screens matching a route
  *   actions    actions available on a screen, with class and status
@@ -18,12 +19,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
-import { launchBrowser, Page, sleep } from './browser.mjs';
+import { connectBrowser, launchBrowser, Page, SandboxRefused, sleep } from './browser.mjs';
+import { newRecordStats, recordSession } from './record.mjs';
 import {
-  SCHEMA_VERSION, authTarget, classifyAction, fingerprintSignature, mutatingDetour, normalizePath,
-  pathFromEntrypoints, playwrightExpr, renderMarkdown, replayPathKey, routeTemplate, routeToSteps,
-  shortestSafePath, stateById, stateKey, stateKind, stateTitle, statesByRoute,
-  transitionsFrom,
+  SCHEMA_VERSION, VERIFIED_OR_OBSERVED, authTarget, createRegistry, fingerprintSignature,
+  migrateMap, mutatingDetour, normalizePath, pathFromEntrypoints, playwrightExpr, renderMarkdown,
+  replayPathKey, routeTemplate, routeToMcpSteps, routeToSteps, shortestSafePath, stateById, stateKey,
+  statesByRoute, statusCounts, transitionsFrom,
 } from './model.mjs';
 
 const EXIT_OK = 0, EXIT_NO_ANSWER = 1, EXIT_ERROR = 2, EXIT_REFUSED = 3;
@@ -175,7 +177,7 @@ function loadMap(options) {
   if (!existsSync(path)) {
     fail(EXIT_NO_ANSWER, `no map at ${path}`, { hint: 'run: screen-map crawl --config .screen-map/config.json' });
   }
-  const map = JSON.parse(readFileSync(path, 'utf8'));
+  const map = migrateMap(JSON.parse(readFileSync(path, 'utf8')));
   if (map.schema !== SCHEMA_VERSION) {
     fail(EXIT_ERROR, `map schema ${map.schema} is not supported by this build (expected ${SCHEMA_VERSION})`);
   }
@@ -229,11 +231,16 @@ async function commandCrawl(options) {
   const startedAt = new Date().toISOString();
   const deadline = Date.now() + config.budget.maxMillis;
 
-  const states = [];
-  const byKey = new Map();
-  const transitions = [];
-  const transitionByKey = new Map();
-  const entrypoints = [];
+  const mapFile = join(config.__dir, 'map.json');
+  // The commit the crawl actually ran against, read before the first click rather than
+  // after the last one: a map is a statement about one revision of the app. `gitInfo`
+  // wants the map path, not its directory — it excludes exactly the files it names.
+  // It is read before the registry exists because every entry the registry stamps
+  // carries this commit.
+  const appInfo = gitInfo(mapFile);
+
+  const registry = createRegistry({ config, stamp: { source: 'crawl', commit: appInfo.commit } });
+  const { states, transitions, entrypoints } = registry;
   const queue = [];
   let executed = 0;
   let budgetHit = null;
@@ -241,35 +248,9 @@ async function commandCrawl(options) {
   /** Set by SIGINT so the loop stops between actions instead of mid-CDP-call. */
   let interrupted = false;
 
-  const live = () => ({ states, transitions, entrypoints });
-  const byId = id => states.find(state => state.id === id) || null;
-
-  function registerState(observation) {
-    const route = routeTemplate(observation.pathname, config);
-    const signature = fingerprintSignature(observation.fingerprint);
-    const key = stateKey(route, signature);
-    const existing = byKey.get(key);
-    if (existing) return { state: existing, isNew: false };
-    const state = {
-      id: 's' + states.length,
-      route, signature,
-      kind: stateKind(observation.fingerprint),
-      title: stateTitle({ ...observation, route }),
-      // On a templated route the heading belongs to one record, not to the screen.
-      titleIsSample: route.includes(':'),
-      evidence: {
-        urlSample: observation.pathname + (observation.search || ''),
-        headings: observation.fingerprint.headings || [],
-        landmarks: observation.fingerprint.landmarks || [],
-        forms: observation.fingerprint.forms || [],
-        fields: observation.fingerprint.fields || [],
-        overlay: observation.fingerprint.overlay || null,
-      },
-    };
-    states.push(state);
-    byKey.set(key, state);
-    return { state, isNew: true };
-  }
+  const live = registry.live;
+  const byId = registry.byId;
+  const registerState = registry.upsertState;
 
   /** Same-destination links on one screen: `/announcements` has one per record. */
   const destinationBucket = action =>
@@ -292,29 +273,10 @@ async function commandCrawl(options) {
     const cap = Math.max(1, Number(config.budget.listSamples) || 1);
 
     for (const action of actions) {
-      const identity = JSON.stringify([state.id, action.key]);
-      if (transitionByKey.has(identity)) continue;
-
-      const verdict = classifyAction(action, config.actionPolicy);
-      const transition = {
-        id: 't' + transitions.length,
-        from: state.id,
-        to: null,
-        action: {
-          kind: action.kind, role: action.role, name: action.name,
-          href: action.href || null, hrefRaw: action.hrefRaw || null, external: !!action.external,
-          cssFallback: action.cssFallback, key: action.key,
-          ambiguous: !!action.ambiguous,
-          fallbackUsed: false,
-        },
-        class: verdict.class,
-        classifiedBy: verdict.classifiedBy,
-        status: 'unexplored',
-        blockedReason: null,
-        lastVerifiedAt: null,
-      };
-      transitions.push(transition);
-      transitionByKey.set(identity, transition);
+      // Identity and classification come from the shared registry; everything below —
+      // the gates, the sampling cap, the queue — is crawl policy and stays here.
+      const { transition, isNew, verdict } = registry.upsertTransition(state, action);
+      if (!isNew) continue;
 
       if (action.external) {
         transition.status = 'blocked';
@@ -346,8 +308,7 @@ async function commandCrawl(options) {
     }
   }
 
-  const keyOf = observation =>
-    stateKey(routeTemplate(observation.pathname, config), fingerprintSignature(observation.fingerprint));
+  const keyOf = registry.keyOf;
 
   /**
    * Where the clock went. Running out of `maxMillis` is the ordinary way this skill
@@ -370,12 +331,6 @@ async function commandCrawl(options) {
     row.actions += 1;
     clock.byState.set(stateId, row);
   }
-
-  const mapFile = join(config.__dir, 'map.json');
-  // The commit the crawl actually ran against, read before the first click rather than
-  // after the last one: a map is a statement about one revision of the app. `gitInfo`
-  // wants the map path, not its directory — it excludes exactly the files it names.
-  const appInfo = gitInfo(mapFile);
 
   /**
    * The map as it stands right now. Callable mid-crawl, because a crawl that dies at
@@ -694,6 +649,7 @@ async function commandCrawl(options) {
       transition.to = target.id;
       transition.status = 'verified';
       transition.lastVerifiedAt = new Date().toISOString();
+      transition.verifiedAtCommit = appInfo.commit;
       if (isNew) registerActions(target, after);
       trace(state, item.actionKey, transition);
     }
@@ -732,6 +688,177 @@ async function commandCrawl(options) {
     coverage: map.coverage, budgetHit, timing: map.run.timing,
     notExecuted: transitions.filter(transition => transition.status !== 'verified')
       .map(transition => ({ from: byId(transition.from)?.route, action: transition.action.name, class: transition.class, reason: transition.blockedReason })),
+  });
+}
+
+// ---------- record ----------
+
+async function commandRecord(options) {
+  if (!options.config) fail(EXIT_ERROR, 'record requires --config <path>');
+  let config;
+  try { config = loadConfig(options.config); }
+  catch (error) { fail(EXIT_ERROR, error.message); }
+  assertHostAllowed(config.baseUrl, config.allowHosts);
+
+  const port = Number(options.port) || 9222;
+  const launch = options.launch === true || options.launch === 'true';
+  const forMs = options.for ? Number(options.for) : null;
+  const quiet = options.quiet === true || options.quiet === 'true';
+  const progress = line => { if (!quiet) process.stderr.write(line + '\n'); };
+
+  const mapFile = join(config.__dir, 'map.json');
+  const appInfo = gitInfo(mapFile);
+
+  let seed = null;
+  if (existsSync(mapFile)) {
+    seed = migrateMap(JSON.parse(readFileSync(mapFile, 'utf8')));
+    if (seed.schema !== SCHEMA_VERSION) {
+      fail(EXIT_ERROR, `map schema ${seed.schema} is not supported by this build (expected ${SCHEMA_VERSION})`);
+    }
+    progress(`extending the map at ${mapFile} (${seed.states.length} screens)`);
+  }
+
+  const startedAt = new Date().toISOString();
+  const registry = createRegistry({ config, seed, stamp: { source: 'record', commit: appInfo.commit } });
+
+  let browser;
+  try {
+    // A launched browser is visible by default — somebody is meant to drive it. `--headless`
+    // is for a driver that needs no window: a Playwright run in CI, or this skill's own
+    // suite, where a real window's paint timing makes a scripted click land before layout.
+    browser = launch
+      ? await launchBrowser({
+        headless: options.headless === true || options.headless === 'true',
+        noSandbox: options.noSandbox === true, port,
+      })
+      : await connectBrowser({ port });
+  } catch (error) {
+    if (error instanceof SandboxRefused) fail(EXIT_REFUSED, error.message);
+    fail(EXIT_ERROR, error.message);
+  }
+
+  // `--port 0` lets the OS pick, which is the only way to open a browser without risking
+  // a port another worktree or session is already using — so the port that matters is the
+  // one Chrome actually took, not the one that was asked for.
+  const actualPort = launch
+    ? Number(new URL(browser.wsUrl.replace(/^ws/, 'http')).port) || port
+    : port;
+  const endpoint = `http://127.0.0.1:${actualPort}`;
+  if (options.endpointFile) {
+    writeFileSync(resolve(process.cwd(), String(options.endpointFile)), endpoint + '\n');
+  }
+
+  if (launch) {
+    progress(`opened a browser at ${endpoint}. Drive it from anywhere:`);
+    progress(`  playwright:  chromium.connectOverCDP('${endpoint}')`);
+    progress(`  dom-picker:  --port=${actualPort}`);
+    progress(`  or just click. Stop with Ctrl-C, or --for <ms> where signals are unreliable.`);
+  } else {
+    progress(`attached to the browser at ${endpoint} (${browser.browser}). It will not be closed.`);
+  }
+
+  let interrupted = false;
+  const onSigint = () => {
+    if (interrupted) { process.stderr.write('interrupted twice — exiting now\n'); process.exit(130); }
+    interrupted = true;
+    progress('stopping — the map is being written');
+  };
+  process.on('SIGINT', onSigint);
+
+  /**
+   * The commit the map is judged against is deliberately *not* advanced by a recording.
+   *
+   * Freshness is still whole-map in this version, so writing today's commit here would
+   * relabel every screen a crawl found weeks ago as current — laundering a stale map into
+   * a fresh-looking one on the strength of having watched two clicks. The per-entry stamps
+   * hold the real answer until freshness is computed from them.
+   */
+  const basisCommit = seed && seed.app ? seed.app.commit : appInfo.commit;
+
+  const snapshot = stats => {
+    const counts = statusCounts(registry.transitions);
+    const finishedAt = new Date().toISOString();
+    return {
+      schema: SCHEMA_VERSION,
+      app: { baseUrl: config.baseUrl, commit: basisCommit, dirty: appInfo.dirty },
+      run: (seed && seed.run) || {
+        id: 'run-' + startedAt.replace(/[-:.]/g, '').slice(0, 15),
+        startedAt, finishedAt, kind: 'record', budgetHit: null, dialogs: [],
+      },
+      recordings: [
+        ...((seed && seed.recordings) || []),
+        { startedAt, finishedAt, commit: appInfo.commit, ...stats },
+      ],
+      states: registry.states,
+      transitions: registry.transitions,
+      entrypoints: registry.entrypoints,
+      coverage: {
+        states: registry.states.length,
+        actionsSeen: registry.transitions.length,
+        executed: (seed && seed.coverage && seed.coverage.executed) || 0,
+        notExecuted: counts.notExecuted,
+        verified: counts.verified, observed: counts.observed,
+        unexplored: counts.unexplored, sampled: counts.sampled,
+        blocked: counts.blocked, failed: counts.failed,
+        frontier: (seed && seed.coverage && seed.coverage.frontier) || [],
+      },
+    };
+  };
+
+  const persist = map => {
+    mkdirSync(config.__dir, { recursive: true });
+    writeFileSync(mapFile, JSON.stringify(map, null, 2));
+    writeFileSync(join(config.__dir, 'map.md'), renderMarkdown(map, freshnessOf(map, mapFile)));
+    return mapFile;
+  };
+
+  const stats = newRecordStats();
+  try {
+    await recordSession({
+      stats,
+      cdp: browser.cdp,
+      config, registry,
+      allowHosts: config.allowHosts,
+      forMs,
+      targetId: typeof options.target === 'string' ? options.target : null,
+      progress,
+      // A recording is open-ended by nature: it ends when a person presses Ctrl-C, and
+      // everything watched before that has to survive it.
+      checkpoint: () => { try { persist(snapshot(stats)); } catch { /* the next one will do */ } },
+      shouldStop: () => interrupted,
+    });
+  } catch (error) {
+    stats.stoppedBy = 'crashed';
+    try { persist(snapshot(stats)); } catch { /* the error below matters more */ }
+    await browser.close();
+    process.off('SIGINT', onSigint);
+    fail(EXIT_ERROR, error.message, { partialMap: mapFile });
+  }
+
+  const map = snapshot(stats);
+  // `close` is what encodes the ownership rule: a launched browser is shut down, an
+  // attached one only has its socket dropped.
+  await browser.close();
+  process.off('SIGINT', onSigint);
+  persist(map);
+
+  progress(`done: ${stats.edges} edges observed, ${stats.states} new screens`
+    + (stats.droppedActions ? `, ${stats.droppedActions} actions dropped` : ''));
+
+  out({
+    ok: true, map: mapFile, report: join(config.__dir, 'map.md'),
+    stoppedBy: stats.stoppedBy,
+    observed: { edges: stats.edges, newStates: stats.states, observations: stats.observations, tabs: stats.sessions },
+    // Never a footnote: an action that was dropped is a click the user made and the map
+    // does not contain, and a host that was skipped is a page deliberately not recorded.
+    droppedActions: stats.droppedActions,
+    dropReasons: stats.dropReasons,
+    skippedHosts: stats.skippedHosts,
+    coverage: map.coverage,
+    notes: [
+      'Recorded edges are `observed`, not `verified`: each happened once and was never replayed.',
+      'Freshness still reflects the commit the map was based on; a recording does not advance it.',
+    ],
   });
 }
 
@@ -808,12 +935,24 @@ function commandRoute(options) {
     origins = fromStates.map(state => state.id);
   }
 
-  let best = null;
-  for (const target of targets) {
-    for (const origin of origins) {
-      const resolved = pathFromEntrypoints(map, target.id, origin);
-      if (resolved && (!best || resolved.path.length < best.resolved.path.length)) best = { target, resolved };
+  const search = statuses => {
+    let found = null;
+    for (const target of targets) {
+      for (const origin of origins) {
+        const resolved = pathFromEntrypoints(map, target.id, origin, statuses ? { statuses } : {});
+        if (resolved && (!found || resolved.path.length < found.resolved.path.length)) found = { target, resolved };
+      }
     }
+    return found;
+  };
+
+  // A proved route first, always. Only when there is none does a route built from a
+  // recording become the answer — and then it is labelled, never quietly substituted.
+  let evidence = 'verified';
+  let best = search(null);
+  if (!best) {
+    const observed = search(VERIFIED_OR_OBSERVED);
+    if (observed) { best = observed; evidence = 'observed'; }
   }
   if (!best) {
     // A path that exists but runs through a mutating step is still worth naming. The
@@ -835,15 +974,35 @@ function commandRoute(options) {
 
   const freshness = freshnessOf(map, path);
   const steps = routeToSteps(map, best.resolved, map.app.baseUrl);
+  const mcp = routeToMcpSteps(map, best.resolved, map.app.baseUrl);
+  if (options.format === 'mcp') {
+    out({
+      ok: true,
+      to: best.target.route, title: best.target.title,
+      confidence: freshness.status, evidence,
+      mcp,
+      notes: ['`ref` cannot be precomputed: it is minted per snapshot. Take each `browser_snapshot`, find the element matching `match`, and pass that ref to `browser_click`.'],
+    });
+    return;
+  }
   out({
     ok: true,
     to: best.target.route, title: best.target.title, kind: best.target.kind,
-    confidence: freshness.status, freshness,
+    // Two independent axes, kept apart on purpose. `confidence` is about the app moving
+    // underneath the map; `evidence` is about how the map learned this path in the first
+    // place. A fresh map can still hand back a route nobody ever replayed.
+    confidence: freshness.status, freshness, evidence,
     steps,
     playwright: steps.map(step => step.playwright).join('\n'),
-    notes: freshness.status === 'stale'
-      ? ['The app has changed since this map was crawled. If any step fails, discard this route and re-crawl or explore directly.']
-      : [],
+    mcp,
+    notes: [
+      ...(freshness.status === 'stale'
+        ? ['The app has changed since this map was crawled. If any step fails, discard this route and re-crawl or explore directly.']
+        : []),
+      ...(evidence === 'observed'
+        ? ['No proved route exists. This path was observed once during a recorded session and never replayed, so it is a report of what happened, not a guarantee that it repeats. Say so when passing it on, and invalidate the step that fails.']
+        : []),
+    ],
   });
 }
 
@@ -954,10 +1113,22 @@ async function commandVerify(options) {
   catch (error) { fail(EXIT_ERROR, error.message); }
   const baseUrl = assertHostAllowed(config.baseUrl, config.allowHosts);
 
-  let best = null;
-  for (const target of targets) {
-    const resolved = pathFromEntrypoints(map, target.id);
-    if (resolved && (!best || resolved.path.length < best.resolved.path.length)) best = { target, resolved };
+  // A recorded path is the one most worth replaying: it is the only kind the map holds
+  // that has never been proved. Refusing to replay it would leave `observed` edges with no
+  // way to ever become anything else.
+  const findPath = statuses => {
+    let found = null;
+    for (const target of targets) {
+      const resolved = pathFromEntrypoints(map, target.id, null, statuses ? { statuses } : {});
+      if (resolved && (!found || resolved.path.length < found.resolved.path.length)) found = { target, resolved };
+    }
+    return found;
+  };
+  let evidence = 'verified';
+  let best = findPath(null);
+  if (!best) {
+    const observed = findPath(VERIFIED_OR_OBSERVED);
+    if (observed) { best = observed; evidence = 'observed'; }
   }
   if (!best) fail(EXIT_NO_ANSWER, `no safe path to ${normalizePath(options.to)}`);
 
@@ -999,9 +1170,16 @@ async function commandVerify(options) {
     const expected = stateKey(best.target.route, best.target.signature);
     const reached = arrived === expected;
     out({
-      ok: reached, reached, to: best.target.route,
+      ok: reached, reached, to: best.target.route, evidence,
       landedOn: observation.pathname, steps: walked.length, walked,
       detail: reached ? 'the stored route still works' : 'the route no longer lands on the mapped screen',
+      // Replaying does not write. Saying what a successful replay would have earned is the
+      // honest half of that: the map still calls these edges `observed`.
+      note: evidence === 'observed'
+        ? (reached
+          ? 'This path was only ever watched, and it has now been replayed once by hand. The map still records it as observed — nothing here writes to it.'
+          : 'This path was only ever watched, and it did not reproduce. Run invalidate on the failing transition so the map stops offering it.')
+        : undefined,
     });
     await page.close();
     await browser.close();
@@ -1021,6 +1199,7 @@ const command = options._[0];
 try {
   switch (command) {
     case 'crawl': await commandCrawl(options); break;
+    case 'record': await commandRecord(options); break;
     case 'route': commandRoute(options); break;
     case 'state': commandState(options); break;
     case 'actions': commandActions(options); break;
@@ -1030,7 +1209,7 @@ try {
     case 'verify': await commandVerify(options); break;
     default:
       fail(EXIT_ERROR, `unknown command: ${command || '(none)'}`,
-        { commands: ['crawl', 'route', 'state', 'actions', 'status', 'verify', 'report', 'invalidate'] });
+        { commands: ['crawl', 'record', 'route', 'state', 'actions', 'status', 'verify', 'report', 'invalidate'] });
   }
 } catch (error) {
   fail(EXIT_ERROR, error && error.message ? error.message : String(error));
