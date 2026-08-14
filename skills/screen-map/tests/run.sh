@@ -573,7 +573,12 @@ record_session() { # app-dir, driver-args...
 
 # An array, not a string: every one of these labels has a space in it, and word-splitting
 # an unquoted string hands `--click` the word `상품` and the driver the word `목록`.
+# `--back` presses the browser's own back button. It is in the walk because a person
+# driving an app uses it constantly, and it is the one screen change with no control
+# behind it — the recorder has to file it as a transition rather than as an arrival from
+# nowhere.
 WALK=(--goto "$BASE/" --click "상품 목록" --wait 400 --click "상품 보기" --wait 400
+      --back --wait 400
       --goto "$BASE/" --wait 400 --click "사용자 메뉴" --wait 400 --click "장바구니" --close)
 
 APPREC="$WORK/app-record"

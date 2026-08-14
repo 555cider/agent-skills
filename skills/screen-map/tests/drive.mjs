@@ -22,6 +22,7 @@ for (let index = 0; index < args.length; index++) {
   if (flag === '--port') { port = Number(value); index++; continue; }
   if (flag === '--host') { host = value; index++; continue; }
   if (flag === '--close') { steps.push({ kind: 'close' }); continue; }
+  if (flag === '--back') { steps.push({ kind: 'back' }); continue; }
   if (['--goto', '--click', '--wait', '--type', '--enter', '--newtab'].includes(flag)) {
     steps.push({ kind: flag.slice(2), value });
     index++;
@@ -109,6 +110,17 @@ for (const step of steps) {
     await sleep(1500);
     await client.send('Target.closeTarget', { targetId: pageTarget.targetId }).catch(() => {});
     break;
+  }
+  if (step.kind === 'back') {
+    // The browser's own back button, the way a real driver presses it — Playwright's
+    // `goBack` is this same call. Not `history.back()` from a script: that would be the
+    // page navigating itself, which is a different thing for the recorder to see.
+    const history = await client.send('Page.getNavigationHistory', {}, sessionId);
+    const previous = history.entries[history.currentIndex - 1];
+    if (!previous) throw new Error('driver: nothing to go back to');
+    await client.send('Page.navigateToHistoryEntry', { entryId: previous.id }, sessionId);
+    await sleep(900);
+    continue;
   }
   if (step.kind === 'newtab') {
     await client.send('Target.createTarget', { url: step.value });

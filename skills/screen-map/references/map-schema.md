@@ -12,6 +12,14 @@ snapshot of one commit, so each record says when it was seen and when it was pro
 A version 1 map still loads. It is migrated in memory — every entry becomes `source: "crawl"` at the
 commit the run recorded — and is written back as version 2 the next time anything saves it.
 
+**Fields added since are optional, and absent means `false`.** `nondeterministic`, `inert` and
+`toAlternatives` are written only once something has been observed that sets them, and `action.inNav`
+is written on every new edge but is missing from every older map. So a file written before any of
+them existed reads correctly without being migrated, which is why the version number has not moved:
+nothing about an older file has to change for a newer reader to be right about it. Never treat a
+missing one as unknown — it means no, and a reader that hedges there reports every old map as
+suspect.
+
 ```jsonc
 {
   "schema": 2,
@@ -67,14 +75,18 @@ commit the run recorded — and is written back as version 2 the next time anyth
     "id": "t7",
     "from": "s2",
     "to": "s3",                      // null when the action was never performed
+    "toAlternatives": [],            // absent unless this control has landed somewhere else too
+    "nondeterministic": false,       // absent unless it has; `route` stops promising such an edge
+    "inert": false,                  // absent unless the press changed screen, URL and network not at all
     "action": {
-      "kind": "click",               // "click" | "link" | "submit"
+      "kind": "click",               // "click" | "link" | "submit" | "history"
       "role": "button", "name": "전체 9999",   // name as displayed
       "href": null, "hrefRaw": null, "external": false,
       "cssFallback": "aside > nav > section:nth-of-type(1) > button:nth-of-type(1)",
       "key": "click:button:전체",    // identity: numeric tokens dropped from the name
       "ambiguous": false,            // true when only position disambiguated it
-      "fallbackUsed": false          // true when the key missed and cssFallback matched
+      "fallbackUsed": false,         // true when the key missed and cssFallback matched
+      "inNav": false                 // inside a nav landmark; half of what makes a control global
     },
     "class": "safe",                 // "safe" | "mutating" | "destructive"
     "classifiedBy": "same-origin-link",
@@ -145,6 +157,45 @@ works once. When no proved path exists but a recorded one does, `route` answers 
 `evidence: "observed"` plus a note — a report of what happened, not a guarantee that it repeats.
 `confidence` is a separate axis and stays freshness: a fresh map can still hand back a route nobody
 ever replayed.
+
+**One control is not always one destination.** When a `(from, action.key)` edge is seen to land
+somewhere other than its recorded `to`, the edge is not split — splitting it would file the same
+button as two controls and hide the only fact worth keeping. Instead `nondeterministic` is set, the
+displaced screen moves into `toAlternatives`, and `to` becomes the newer observation, which is what a
+caller replaying now is most likely to meet — **except that a watched observation never displaces a
+proved one.** A recording that sees the control land elsewhere is recorded as exactly that, but
+letting it take `to` would delete the crawl's proved destination from the graph and a route to that
+screen would stop existing on the strength of one thing somebody saw once. Recordings raise what is
+known and never lower it, here as with `status`. `route` will not build a promised path through such an
+edge: its first pass skips it, so an answer containing one comes back as `evidence: "observed"` with a
+note naming the step. This is the same idea as `replayFailed` — evidence that a step is not
+dependable is worth as much as evidence that it works.
+
+**`inert` means the press did nothing at all**: same screen, same URL, and not one request left the
+browser. It is recorded only by `crawl`, which is the only thing holding the network counter. A
+refresh or a retry button is *not* inert — it lands back on its own screen but does reach the server,
+and that difference is why the two are not one flag. Inert edges stay in `transitions`; `map.md`
+counts them separately (`⊙`) so a dead control does not read as a screen full of activity.
+
+**Browser history edges exist, and only recordings make them.** `action.kind: "history"` is a screen
+change with no control behind it — somebody pressed the browser's own back button while `record` was
+watching. The crawl never writes one: its `page.goBack()` is how the crawler returns to a screen, an
+implementation detail of walking, not something the app does.
+
+It is recognized by the tab's position in its own session history falling, asked of the browser
+rather than of the page. A listener inside the document cannot do this job: a back navigation to a
+different document builds a *new* document, and the `popstate` for the traversal never reaches a
+script injected into the page it lands on. Reading the history index is not driving, so the recorder
+stays as passive as it was. Like everything else a recording sees, the edge is `observed` — it
+happened once, and nothing walked it again to find out whether it repeats. A replay walks it with
+`goBack()`.
+
+**One-way screens and global navigation are derived, not stored.** Whether a screen can be got back
+from, and whether a control is site furniture rather than a step, are both computed from
+`transitions` when `status`, `route` or `report` runs. Keeping them in the file would create a second
+copy that can disagree with the graph it came from. `map.md` folds global navigation out of the
+diagram and lists it once; **routing keeps every one of those edges**, because a header link is
+usually the shortest and sturdiest way anywhere.
 
 An edge with `replayFailed: true` is excluded from routing entirely, `observed` or not. It is the
 one case where the map holds positive evidence that the step does not work, and offering it would be

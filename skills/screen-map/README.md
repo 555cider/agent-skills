@@ -58,6 +58,26 @@ screen comes back. Several presses landing on one screen are dropped and counted
 weaker `observed` status exists for the same reason — watching something happen once is evidence
 about the app and no evidence at all about whether it repeats.
 
+The one arrival that is *not* causeless is the back button, and it is recognized from outside the
+page: the tab's session-history index falling. A `popstate` listener injected into the document
+cannot do it, because a back navigation to a different document builds a new document and the
+traversal never reaches a script running in the page it lands on — measured, not assumed. Reading
+the history index is not driving, so the recorder stays passive.
+
+**One control, one edge — even when it wobbles.** A `(from, action.key)` edge that lands somewhere
+other than its recorded target is not split into two edges. Splitting would file one button as two
+controls and lose the only fact worth having: that it cannot be relied on. Instead the edge gains
+`nondeterministic`, the displaced screen moves to `toAlternatives`, and `route` will not build a
+promised path through it. Same principle as `replayFailed` — evidence that a step does *not* work is
+worth keeping.
+
+**Projections change the picture, never the graph.** `map.md` folds a site's global menu out of the
+diagram (a control inside a nav landmark, on most screens — counted, never classified by a model) and
+counts inert presses apart from real self-loops. Routing sees every edge regardless: a header link is
+usually the shortest and sturdiest way anywhere. One-way and unreachable screens are computed the
+same way, on read, and never stored — a derived field on disk is one more thing that can disagree
+with the graph it came from.
+
 **Positive recognition, not blocklisting.** An action runs by default only when a rule proves it
 safe. See `references/action-policy.md` — particularly why unknown defaults to `mutating` rather than
 `destructive`.

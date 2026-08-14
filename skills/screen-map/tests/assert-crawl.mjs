@@ -83,6 +83,18 @@ check('a same-origin link that redirects away is recorded', !!redirectedExternal
 check('an external redirect is blocked before it becomes a transition target',
   redirectedExternal?.status === 'blocked' && redirectedExternal?.blockedReason === 'external-origin',
   JSON.stringify({ status: redirectedExternal?.status, reason: redirectedExternal?.blockedReason }));
+// A press that changes nothing is not the same fact as a press that stays put. One is a
+// dead control; the other is a refresh, and the map is worth less if it calls them the same.
+const inert = map.transitions.filter(transition => transition.inert);
+check('a control wired to nothing is marked inert',
+  inert.length === 1 && inert[0].action.name === '펼치기',
+  'inert: ' + JSON.stringify(inert.map(t => t.action.name)));
+check('a control that stays put but reaches the server is not',
+  map.transitions.some(transition =>
+    transition.action.name === '새로고침' && transition.from === transition.to && !transition.inert),
+  JSON.stringify(map.transitions.filter(t => t.action.name === '새로고침')
+    .map(t => ({ to: t.to, from: t.from, inert: !!t.inert, status: t.status }))));
+
 check('the blocked external origin receives no document request', clicks.external === 0,
   'external server counted ' + clicks.external + ' requests');
 

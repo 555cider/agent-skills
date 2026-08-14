@@ -100,7 +100,13 @@ directories yourself.
   dispatches input at all, and never closes a browser it did not open. Later sessions
   ask `route --to '/orders/:id'` and get an executable action sequence, a freshness
   verdict against the current commit, and whether the path was **walked and proved** or
-  only **watched once**.
+  only **watched once**. It also says the two things a bare path leaves out: a step whose
+  control has been seen to land on more than one screen is named rather than promised, and
+  a target the map holds no safe way back from is called **one-way** before you walk in
+  rather than after. What recording adds to that is the browser's own back button — the one
+  screen change with no control behind it, caught by the tab's session-history index
+  falling, because a back navigation to another document never reaches a listener inside
+  the page it lands on.
 - [`skills/step-back/`](skills/step-back/) — the two ways effort goes wrong, treated
   as one dial: shipping the first thing that worked, and still verifying something
   that was fine forty tool calls ago. The premise is that the judgment already

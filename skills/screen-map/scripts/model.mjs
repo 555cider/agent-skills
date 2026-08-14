@@ -332,6 +332,13 @@ export function classifyAction(action = {}, policy = {}) {
   if (action.download) {
     return { class: 'destructive', classifiedBy: 'download', reason: 'download link' };
   }
+  // The browser's own back button. Only a recording ever produces one — the crawl's
+  // `goBack` is recovery and not app behaviour — and going back does not press anything,
+  // so this is safe by construction rather than by recognition. It stays under
+  // `actionPolicy.deny`, which is checked above.
+  if (action.kind === 'history') {
+    return { class: 'safe', classifiedBy: 'browser-history', reason: 'browser history traversal' };
+  }
   // A same-origin link whose name reads destructive stays refused: `GET /delete?id=1`
   // exists, and the markup cannot tell it apart from a navigation. The reason says it
   // was a link so a human reviewing map.md can see the one case worth an
@@ -484,6 +491,9 @@ export function createRegistry({ config = {}, seed = null, stamp = {} } = {}) {
         cssFallback: action.cssFallback, key: action.key,
         ambiguous: !!action.ambiguous,
         fallbackUsed: false,
+        // Harvested for classification (a logout in a nav is still a logout) and kept
+        // because it is also half of what makes a control global rather than content.
+        inNav: !!action.inNav,
       },
       class: verdict.class,
       classifiedBy: verdict.classifiedBy,
@@ -502,12 +512,39 @@ export function createRegistry({ config = {}, seed = null, stamp = {} } = {}) {
 
   return {
     states, transitions, entrypoints,
-    upsertState, upsertTransition,
+    upsertState, upsertTransition, observeTarget,
     live: () => ({ states, transitions, entrypoints }),
     byId: id => states.find(state => state.id === id) || null,
     keyOf: observation =>
       stateKey(routeTemplate(observation.pathname, config), fingerprintSignature(observation.fingerprint)),
   };
+}
+
+/**
+ * Where an edge learns its destination. `to` is one field and a control is not always one
+ * destination — a button that lands somewhere else the second time is still the same
+ * control, so splitting it into two edges would hide the one fact worth keeping. The
+ * disagreement is recorded on the edge instead, and routing stops treating it as proved.
+ * Same shape as `replayFailed`: positive evidence that a step is not dependable.
+ *
+ * The newer observation becomes `to` — it is what a caller replaying now is most likely to
+ * meet — and the one it displaced moves into `toAlternatives` rather than vanishing.
+ *
+ * With one exception, and it is the important one: **a watched observation never displaces
+ * a proved one.** A recording that sees this control land somewhere else is real evidence
+ * that it wobbles, and it is recorded as that; but letting it take `to` would delete the
+ * crawl's proved destination from the graph, and a route to that screen would stop
+ * existing on the strength of one thing somebody saw once. Recordings raise what is known
+ * and never lower it — the same rule that keeps them from touching `status`.
+ */
+export function observeTarget(transition, stateId, { proved = false } = {}) {
+  if (!stateId || transition.to === stateId) return transition;
+  if (!transition.to) { transition.to = stateId; return transition; }
+  const alternatives = transition.toAlternatives || (transition.toAlternatives = []);
+  for (const id of [transition.to, stateId]) if (!alternatives.includes(id)) alternatives.push(id);
+  transition.nondeterministic = true;
+  if (proved || transition.status !== 'verified') transition.to = stateId;
+  return transition;
 }
 
 /**
@@ -552,12 +589,19 @@ export function transitionsFrom(map, stateId) {
  * where the map has positive evidence that the step does not work, and handing it back
  * would be worse than having no route at all.
  */
-export function shortestSafePath(map, fromStateId, toStateId, { safeOnly = true, statuses = VERIFIED_ONLY } = {}) {
+export function shortestSafePath(
+  map, fromStateId, toStateId,
+  // `proofOnly` is the caller saying it wants a path it can promise, not merely one that
+  // has been walked: an edge seen to land on two different screens was walked and proved
+  // once each time, and is still not something to hand back as *the* way there.
+  { safeOnly = true, statuses = VERIFIED_ONLY, proofOnly = false } = {},
+) {
   if (fromStateId === toStateId) return [];
   const outgoing = new Map();
   for (const transition of map.transitions || []) {
     if (!statuses.has(transition.status) || !transition.to) continue;
     if (transition.replayFailed) continue;
+    if (proofOnly && transition.nondeterministic) continue;
     if (safeOnly && transition.class !== 'safe') continue;
     if (!outgoing.has(transition.from)) outgoing.set(transition.from, []);
     outgoing.get(transition.from).push(transition);
@@ -591,6 +635,58 @@ export function pathFromEntrypoints(map, toStateId, fromStateId = null, options 
     if (path && (best === null || path.length < best.length)) { best = path; bestOrigin = origin; }
   }
   return best === null ? null : { origin: bestOrigin, path: best };
+}
+
+/**
+ * Which screens can be reached, and which can be got back from. Two breadth-first passes
+ * over the same edge set — one forward from the entrypoints, one along reversed edges —
+ * answer both, and it is the pair that makes a one-way screen visible. A screen an agent
+ * can reach and then cannot leave by any safe recorded click is a trap, and discovering
+ * that after arriving is too late to be useful.
+ *
+ * Deliberately generous about evidence: `observed` counts. The question is whether a way
+ * back exists at all, and warning about a screen somebody has demonstrably walked out of
+ * would be a false alarm.
+ *
+ * Never stored in `map.json`. It is derived, and a derived field on disk is one more
+ * thing that can quietly disagree with the graph it came from.
+ */
+export function reachability(map, { safeOnly = true, statuses = VERIFIED_OR_OBSERVED } = {}) {
+  const edges = (map.transitions || []).filter(transition =>
+    statuses.has(transition.status) && transition.to && !transition.replayFailed
+    && !(safeOnly && transition.class !== 'safe'));
+
+  const spread = reverse => {
+    const next = new Map();
+    for (const transition of edges) {
+      const from = reverse ? transition.to : transition.from;
+      const to = reverse ? transition.from : transition.to;
+      if (!next.has(from)) next.set(from, []);
+      next.get(from).push(to);
+    }
+    const seen = new Set(map.entrypoints || []);
+    const queue = [...seen];
+    while (queue.length) {
+      for (const to of next.get(queue.shift()) || []) {
+        if (seen.has(to)) continue;
+        seen.add(to);
+        queue.push(to);
+      }
+    }
+    return seen;
+  };
+
+  const canReach = spread(false);
+  const canReturn = spread(true);
+  const entrypoints = new Set(map.entrypoints || []);
+  const oneWay = [];
+  const isolated = [];
+  for (const state of map.states || []) {
+    if (entrypoints.has(state.id)) continue;
+    if (!canReach.has(state.id)) isolated.push(state.id);
+    else if (!canReturn.has(state.id)) oneWay.push(state.id);
+  }
+  return { canReach, canReturn, oneWay, isolated };
 }
 
 /**
@@ -649,13 +745,16 @@ export function routeToSteps(map, resolved, baseUrl) {
   });
   for (const transition of resolved.path) {
     const target = stateById(map, transition.to);
+    // Nothing on the page to click: a history step is the browser going back, and the
+    // driver has to be told to do that rather than to find a control.
+    const history = transition.action.kind === 'history';
     steps.push({
       n: steps.length + 1,
       kind: transition.action.kind,
       role: transition.action.role,
       name: transition.action.name,
       class: transition.class,
-      playwright: `await ${playwrightExpr(transition.action)}.click()`,
+      playwright: history ? 'await page.goBack()' : `await ${playwrightExpr(transition.action)}.click()`,
       to: target ? target.route : null,
       toTitle: target ? target.title : null,
       transition: transition.id,
@@ -681,6 +780,8 @@ export function routeToMcpSteps(map, resolved, baseUrl) {
 
   for (const transition of resolved.path) {
     const action = transition.action || {};
+    // A history step addresses no element, so it needs no snapshot and no ref.
+    if (action.kind === 'history') { steps.push({ tool: 'browser_navigate_back', args: {} }); continue; }
     steps.push({ tool: 'browser_snapshot', args: {} });
     // `element` is the human-readable description those tools ask for; `match` is the
     // machine-readable half the caller uses to find the ref in the snapshot above.
@@ -719,6 +820,36 @@ function mermaidText(text, limit = 28) {
 }
 
 /**
+ * Which controls are the site's furniture rather than a step in anybody's journey. A
+ * global menu points at the same place from every screen, so drawn in full it turns the
+ * graph into one blob where everything touches everything. The picture folds these away
+ * and lists them once instead.
+ *
+ * Only the picture. Routing keeps every one of these edges, because a header link is
+ * usually the shortest and sturdiest way an agent has to get anywhere — the projection
+ * changes, the graph does not.
+ *
+ * Decided by counting rather than by asking a model: the control has to sit inside a nav
+ * landmark *and* appear on most of the screens. Two runs over the same app give the same
+ * answer, which is the only way a map stays comparable to itself.
+ */
+export function globalNavigationKeys(map, { minScreens = 3, share = 0.6 } = {}) {
+  const screens = (map.states || []).length;
+  if (screens < minScreens) return new Set();
+  const seenOn = new Map();
+  for (const transition of map.transitions || []) {
+    const key = transition.action && transition.action.key;
+    if (!key || !transition.action.inNav) continue;
+    if (!seenOn.has(key)) seenOn.set(key, new Set());
+    seenOn.get(key).add(transition.from);
+  }
+  const threshold = Math.max(minScreens, Math.ceil(screens * share));
+  const global = new Set();
+  for (const [key, on] of seenOn) if (on.size >= threshold) global.add(key);
+  return global;
+}
+
+/**
  * The map as a picture. The tables below it are the record; this is the part a human
  * can actually check, which is the step the whole workflow rests on — a reviewer who
  * cannot see the shape of the app cannot tell a good crawl from a broken one.
@@ -739,15 +870,23 @@ export function renderMermaid(map) {
   // navigation, and there are dozens of them on a real toolbar. Drawn, they bury the
   // graph in self-loops; counted on the node, they still show the screen was worked.
   const loops = new Map();
+  const inert = new Map();
   const edges = new Map();
   const unexplored = new Map();
+  const global = globalNavigationKeys(map);
+  let folded = 0;
   for (const transition of map.transitions || []) {
+    // Furniture, not a journey. Folded out of the picture and listed once below it.
+    if (global.has(transition.action && transition.action.key)) { folded += 1; continue; }
     if (!VERIFIED_OR_OBSERVED.has(transition.status) || !transition.to) {
       unexplored.set(transition.from, (unexplored.get(transition.from) || 0) + 1);
       continue;
     }
     if (!known.has(transition.from) || !known.has(transition.to)) continue;
     if (transition.from === transition.to) {
+      // A control that did nothing at all is not an action the screen has; counting it
+      // beside refresh and retry would inflate every toolbar into a busy screen.
+      if (transition.inert) { inert.set(transition.from, (inert.get(transition.from) || 0) + 1); continue; }
       loops.set(transition.from, (loops.get(transition.from) || 0) + 1);
       continue;
     }
@@ -764,6 +903,7 @@ export function renderMermaid(map) {
   for (const state of states) {
     const badges = [];
     if (loops.get(state.id)) badges.push(`↻${loops.get(state.id)}`);
+    if (inert.get(state.id)) badges.push(`⊙${inert.get(state.id)}`);
     if (unexplored.get(state.id)) badges.push(`⊘${unexplored.get(state.id)}`);
     const label = [
       mermaidText(state.route, 34),
@@ -790,8 +930,13 @@ export function renderMermaid(map) {
   lines.push('```');
   lines.push('');
   lines.push('Stadium = entrypoint · hexagon = overlay · ↻ actions that stay on the screen ·'
-    + ' ⊘ actions recorded but never executed. A solid arrow was walked and proved;'
+    + ' ⊙ actions that changed nothing at all · ⊘ actions recorded but never executed. A solid arrow was walked and proved;'
     + ' a dashed arrow was observed once during a recording and never replayed.');
+  if (folded) {
+    lines.push('');
+    lines.push(`${folded} global navigation edges are folded out of this picture and listed under`
+      + ' **Global navigation**. They are still in the map and `route` still uses them.');
+  }
   return lines;
 }
 
@@ -914,13 +1059,68 @@ export function renderMarkdown(map, freshness = {}) {
   }
   lines.push('');
 
+  // Listed once, because that is exactly what they are: one control repeated on every
+  // screen. The Transitions table below still carries every instance.
+  const globalKeys = globalNavigationKeys(map);
+  if (globalKeys.size) {
+    const byKey = new Map();
+    for (const transition of map.transitions || []) {
+      const key = transition.action && transition.action.key;
+      if (!globalKeys.has(key)) continue;
+      if (!byKey.has(key)) byKey.set(key, { action: transition.action, screens: new Set(), targets: new Set() });
+      const entry = byKey.get(key);
+      entry.screens.add(transition.from);
+      if (transition.to) entry.targets.add(transition.to);
+    }
+    lines.push('## Global navigation');
+    lines.push('');
+    lines.push('Controls inside a nav landmark that appear on most screens. They are folded out of the'
+      + ' diagram so the shape of the app stays visible; they are still in the map, and `route` still'
+      + ' uses them — a header link is often the shortest way somewhere.');
+    lines.push('');
+    lines.push('| Control | On screens | Leads to |');
+    lines.push('| --- | ---: | --- |');
+    for (const entry of byKey.values()) {
+      const targets = [...entry.targets].map(label).join(', ') || '_never pressed_';
+      lines.push(`| ${escapeCell(entry.action.name || entry.action.key)} | ${entry.screens.size} | ${escapeCell(targets)} |`);
+    }
+    lines.push('');
+  }
+
+  // Getting there is half the question. A screen with no way back is a screen an agent
+  // should decide about before it walks in, not after.
+  const { oneWay, isolated } = reachability(map);
+  if (oneWay.length || isolated.length) {
+    lines.push('## One-way and unreachable screens');
+    lines.push('');
+    if (oneWay.length) {
+      lines.push('Reached by a safe recorded click, with no safe recorded click leading back to an'
+        + ' entrypoint. Plan the exit before going in.');
+      lines.push('');
+      for (const id of oneWay) lines.push(`- ${label(id)}`);
+      lines.push('');
+    }
+    if (isolated.length) {
+      lines.push('No safe recorded click reaches these at all — they are in the map because a URL or a'
+        + ' recording landed on them. Reaching them again means going there directly.');
+      lines.push('');
+      for (const id of isolated) lines.push(`- ${label(id)}`);
+      lines.push('');
+    }
+  }
+
   lines.push('## Transitions');
   lines.push('');
   lines.push('| From | Action | To | Class | Status |');
   lines.push('| --- | --- | --- | --- | --- |');
   for (const transition of map.transitions || []) {
     const action = transition.action || {};
-    const target = transition.to ? label(transition.to) : (transition.blockedReason ? `_${transition.blockedReason}_` : '_unknown_');
+    let target = transition.to ? label(transition.to) : (transition.blockedReason ? `_${transition.blockedReason}_` : '_unknown_');
+    // Two destinations for one control is the kind of thing a table hides unless it says so.
+    if (transition.nondeterministic) {
+      const others = (transition.toAlternatives || []).filter(id => id !== transition.to).map(label);
+      target += ` ⚠ also ${others.join(', ') || 'elsewhere'}`;
+    }
     lines.push(`| ${escapeCell(label(transition.from))} | ${action.kind} ${escapeCell(action.name || action.href || '')} | ${escapeCell(target)} | ${transition.class} | ${transition.status} |`);
   }
   lines.push('');
@@ -934,6 +1134,21 @@ export function renderMarkdown(map, freshness = {}) {
     for (const transition of notExecuted) {
       const action = transition.action || {};
       lines.push(`- ${label(transition.from)} → **${escapeCell(action.name || action.href || action.kind)}** (${transition.class}, ${transition.status}${transition.blockedReason ? `: ${transition.blockedReason}` : ''})`);
+    }
+    lines.push('');
+  }
+
+  const inertEdges = (map.transitions || []).filter(transition => transition.inert);
+  if (inertEdges.length) {
+    lines.push('## Controls that did nothing');
+    lines.push('');
+    lines.push('Pressed, and afterwards the screen, the URL and the network were all unchanged. Either'
+      + ' the control is dead, or it needs state this crawl did not have. Not a way to anywhere —'
+      + ' listed so that is a fact about the app rather than a gap in the map.');
+    lines.push('');
+    for (const transition of inertEdges) {
+      const action = transition.action || {};
+      lines.push(`- ${label(transition.from)} → **${escapeCell(action.name || action.href || action.kind)}**`);
     }
     lines.push('');
   }

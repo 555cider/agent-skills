@@ -48,6 +48,24 @@ if (!seeded) {
     `kinds: ${map.states.map(s => s.kind).join(', ')}`);
   check('an edge out of that overlay is recorded too',
     observed.some(t => (byId.get(t.from) || {}).kind === 'overlay'));
+
+  // The back button is the one screen change with no control behind it. Filed as an
+  // arrival from nowhere it would promote the screen to an entrypoint and lose the edge;
+  // filed as a click it would name a control nobody pressed.
+  const back = observed.find(t => t.action && t.action.kind === 'history');
+  check('pressing the browser back button is recorded as a transition', !!back,
+    `kinds seen: ${[...new Set(map.transitions.map(t => t.action && t.action.kind))].join(', ')}`);
+  if (back) {
+    check('it leads back to the screen the walk came from',
+      routeOf(back.from) === '/items/:id' && routeOf(back.to) === '/items',
+      `${routeOf(back.from)} → ${routeOf(back.to)}`);
+    check('it is safe to replay: going back presses nothing', back.class === 'safe', back.class);
+    check('and the screen it landed on is not promoted to an entrypoint by arriving there',
+      !map.entrypoints.includes(back.to) || (byId.get(back.to) || {}).reachable !== 'direct-url');
+  }
+  check('the crawl-side back button does not exist: only a recording makes one',
+    map.transitions.filter(t => t.action && t.action.kind === 'history')
+      .every(t => t.status === 'observed'));
 }
 
 // `source` says who *found* the entry, not who last learned something about it. An edge

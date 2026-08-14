@@ -2,10 +2,11 @@
 
 import {
   SCHEMA_VERSION, VERIFIED_OR_OBSERVED,
-  authTarget, classifyAction, countsTowardSettle, createRegistry, fingerprintSignature, migrateMap,
-  normalizePath, pathFromEntrypoints,
-  playwrightExpr, renderMarkdown, renderMermaid, renderTiming, replayPathKey, routeTemplate,
-  routeToMcpSteps, shortestSafePath, stateKind,
+  authTarget, classifyAction, countsTowardSettle, createRegistry, fingerprintSignature,
+  globalNavigationKeys, migrateMap,
+  normalizePath, observeTarget, pathFromEntrypoints,
+  playwrightExpr, reachability, renderMarkdown, renderMermaid, renderTiming, replayPathKey,
+  routeTemplate, routeToMcpSteps, routeToSteps, shortestSafePath, stateKind,
   storageSeedSource,
 } from '../scripts/model.mjs';
 
@@ -466,6 +467,144 @@ const risky = renderMermaid({
   entrypoints: [], transitions: [],
 }).join('\n');
 check('label syntax cannot break the diagram', !risky.includes('"quoted"') && !risky.includes('<b>'));
+
+// ---------- one control, two destinations ----------
+//
+// `to` is one field and a control is not always one destination. Splitting the edge would
+// file one button as two controls and lose the only fact worth keeping: that it wobbles.
+
+const wobbly = { id: 'tw', from: 's1', to: null, class: 'safe', status: 'verified', action: { key: 'kw' } };
+observeTarget(wobbly, 's2', { proved: true });
+eq('a first destination is simply recorded', [wobbly.to, !!wobbly.nondeterministic], ['s2', false]);
+observeTarget(wobbly, 's2', { proved: true });
+check('seeing the same destination again changes nothing', !wobbly.nondeterministic);
+observeTarget(wobbly, 's3', { proved: true });
+eq('a second destination is kept beside the first, not instead of it',
+  [wobbly.to, wobbly.nondeterministic, wobbly.toAlternatives], ['s3', true, ['s2', 's3']]);
+
+// A recording raises what is known and never lowers it. Letting one watched observation
+// take `to` would delete the crawl's proved destination, and the route to that screen
+// would stop existing on the strength of something somebody saw once.
+const proved = { id: 'tp', from: 's1', to: 's2', class: 'safe', status: 'verified', action: { key: 'kp' } };
+observeTarget(proved, 's9');
+eq('a watched observation does not displace a proved destination',
+  [proved.to, proved.nondeterministic, proved.toAlternatives], ['s2', true, ['s2', 's9']]);
+observeTarget(proved, 's9', { proved: true });
+eq('a proved one does', proved.to, 's9');
+const watched = { id: 'tq', from: 's1', to: 's2', class: 'safe', status: 'observed', action: { key: 'kq' } };
+observeTarget(watched, 's9');
+eq('and one watched observation may replace another', watched.to, 's9');
+
+const wobblyMap = {
+  ...map,
+  transitions: map.transitions.map(entry => entry.id === 't1' ? { ...entry, nondeterministic: true } : entry),
+};
+check('a path that can only run through an unreliable step is not promised',
+  shortestSafePath(wobblyMap, 's0', 's2', { proofOnly: true }) === null);
+eq('the unreliable step is still in the graph, and still an answer of last resort',
+  shortestSafePath(wobblyMap, 's0', 's2').map(step => step.id), ['t0', 't1']);
+
+// ---------- getting back out ----------
+//
+// Reaching a screen is half the question. A screen with no way back is one an agent should
+// decide about before walking in, and the map is the only place that can say so.
+
+const hop = (from, to, extra = {}) => ({
+  id: `${from}>${to}`, from, to, class: 'safe', status: 'verified',
+  action: { kind: 'click', role: 'button', name: `${from}→${to}`, key: `k:${from}>${to}` },
+  ...extra,
+});
+const returnMap = {
+  entrypoints: ['e'],
+  states: [{ id: 'e' }, { id: 'a' }, { id: 'b' }, { id: 'dead' }, { id: 'orphan' }],
+  transitions: [
+    hop('e', 'a'), hop('a', 'e'),
+    hop('a', 'b'), hop('b', 'a'),
+    hop('e', 'dead'),
+  ],
+};
+const returns = reachability(returnMap);
+eq('a screen with no way back is named', returns.oneWay, ['dead']);
+eq('a screen nothing reaches is named separately', returns.isolated, ['orphan']);
+check('a screen inside a cycle is not a trap', !returns.oneWay.includes('b'));
+check('an entrypoint is neither', !returns.oneWay.includes('e') && !returns.isolated.includes('e'));
+eq('a screen reachable only through a mutating step counts as unreached',
+  reachability(map).isolated, ['s3']);
+
+const trapReport = renderMarkdown({
+  entrypoints: ['e'],
+  states: [
+    { id: 'e', route: '/', title: '홈', kind: 'page' },
+    { id: 'dead', route: '/dead', title: '막다른 화면', kind: 'page' },
+  ],
+  transitions: [hop('e', 'dead')],
+});
+check('the report says which screens have no way back',
+  trapReport.includes('One-way and unreachable screens') && trapReport.includes('/dead'));
+
+// ---------- site furniture ----------
+//
+// A global menu points at the same place from every screen. Drawn in full it turns the
+// graph into one blob — but it is still the shortest way anywhere, so only the picture
+// folds it away.
+
+const navEdge = (from, to, key, name) => ({
+  id: `${from}:${key}`, from, to, class: 'safe', status: 'verified',
+  action: { kind: 'link', role: 'link', name, key, inNav: true },
+});
+const furnished = {
+  entrypoints: ['n0'],
+  states: ['n0', 'n1', 'n2', 'n3', 'n4'].map(id => ({ id, route: `/${id}`, title: id, kind: 'page' })),
+  transitions: [
+    ...['n0', 'n1', 'n2', 'n3', 'n4'].map(id => navEdge(id, 'n0', 'link:link:홈', '홈')),
+    navEdge('n1', 'n2', 'link:link:희귀', '희귀'),
+    navEdge('n2', 'n3', 'link:link:희귀', '희귀'),
+    hop('n0', 'n1'),
+  ],
+};
+const globalKeys = globalNavigationKeys(furnished);
+check('a control on every screen is furniture', globalKeys.has('link:link:홈'));
+check('a control on two screens out of five is not', !globalKeys.has('link:link:희귀'));
+check('nothing is folded away on a map too small to tell',
+  globalNavigationKeys({ states: [{ id: 'n0' }, { id: 'n1' }], transitions: furnished.transitions }).size === 0);
+
+const furnishedDiagram = renderMermaid(furnished).join('\n');
+check('the diagram folds the global menu out', !furnishedDiagram.includes('홈'));
+check('and says how many it folded, so the picture is not quietly wrong',
+  furnishedDiagram.includes('global navigation edges are folded'));
+eq('routing still uses it — folding is a projection, not a deletion',
+  shortestSafePath(furnished, 'n4', 'n0').map(step => step.action.key), ['link:link:홈']);
+
+// ---------- a press that did nothing ----------
+
+const inertDiagram = renderMermaid({
+  entrypoints: [],
+  states: [{ id: 'i0', route: '/x', title: 'x', kind: 'page' }],
+  transitions: [
+    { id: 'i1', from: 'i0', to: 'i0', class: 'safe', status: 'verified', action: { kind: 'click', name: '새로고침', key: 'k1' } },
+    { id: 'i2', from: 'i0', to: 'i0', class: 'safe', status: 'verified', inert: true, action: { kind: 'click', name: '죽은 버튼', key: 'k2' } },
+  ],
+}).join('\n');
+check('a retry still counts as an action the screen has', inertDiagram.includes('↻1'));
+check('a dead control is counted apart from it', inertDiagram.includes('⊙1'));
+
+// ---------- the back button ----------
+
+eq('history is safe by construction, not by recognition',
+  classifyAction({ kind: 'history', name: 'back', key: 'history:back' }).class, 'safe');
+const historyResolved = {
+  origin: 's1',
+  path: [{
+    id: 'th', from: 's2', to: 's1', class: 'safe', status: 'observed',
+    action: { kind: 'history', role: 'browser', name: 'back', key: 'history:back' },
+  }],
+};
+const historyMap = { ...map, app: { baseUrl: 'http://localhost:1' } };
+eq('a history step is walked, not clicked',
+  routeToSteps(historyMap, historyResolved, 'http://localhost:1')[1].playwright, 'await page.goBack()');
+const historyMcp = routeToMcpSteps(historyMap, historyResolved, 'http://localhost:1');
+eq('and needs no snapshot, because it addresses no element',
+  historyMcp.map(step => step.tool), ['browser_navigate', 'browser_navigate_back']);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
