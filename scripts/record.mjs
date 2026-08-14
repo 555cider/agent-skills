@@ -16,6 +16,16 @@
  */
 
 import { Page, sleep } from './browser.mjs';
+import { observeTarget } from './model.mjs';
+
+/**
+ * The one action nobody clicked. Fixed shape because there is nothing on the page to
+ * describe: `key` is what makes it one edge per screen pair rather than a new one each time.
+ */
+const HISTORY_ACTION = {
+  kind: 'history', role: 'browser', name: 'back', key: 'history:back',
+  href: null, hrefRaw: null, external: false, cssFallback: null, ambiguous: false, inNav: false,
+};
 
 const BINDING = '__screenMapEmit';
 
@@ -95,7 +105,12 @@ export async function recordSession({
       contexts.delete(params.executionContextId);
     }));
 
-    const recorder = { sessionId, targetId: id, contexts, pending: [], lastState: null, busy: false, dirty: true };
+    const recorder = {
+      sessionId, targetId: id, contexts, pending: [], lastState: null,
+      // Where this tab last sat in its own session history. A drop means somebody went back.
+      historyIndex: null,
+      busy: false, dirty: true,
+    };
     recorders.set(id, recorder);
     stats.sessions += 1;
 
@@ -170,6 +185,11 @@ export async function recordSession({
 
       const outstanding = recorder.pending;
       recorder.pending = [];
+      // Asked of the browser, not of the page: a cross-document back builds a new document,
+      // so nothing injected into the page ever hears the traversal that created it.
+      const historyIndex = await recorder.page.historyIndex();
+      const wentBack = historyIndex !== null && recorder.historyIndex !== null
+        && historyIndex < recorder.historyIndex;
 
       if (outstanding.length === 1 && !outstanding[0].from) {
         // Pressed before this tab had produced a screen at all — usually a click on the
@@ -189,10 +209,23 @@ export async function recordSession({
           transition.status = 'observed';
           transition.blockedReason = null;
         }
-        transition.to = state.id;
+        observeTarget(transition, state.id);
         stats.edges += 1;
         progress(`${fromState.route} :: ${cause.action.key} → ${state.route}`
           + ` [${before} → ${transition.status}] (${transition.class})`);
+        checkpoint();
+      } else if (outstanding.length === 0 && wentBack && recorder.lastState
+        && recorder.lastState.id !== state.id) {
+        // The browser's own back button: a screen change with no control behind it. This is
+        // the only place such an edge is ever made — the crawl's `goBack` is recovery, not
+        // something the app does. It stays `observed` like everything else a recording sees:
+        // it happened once, and nothing has walked it a second time to find out whether it
+        // repeats. A replay walks it with `goBack()`.
+        const { transition } = registry.upsertTransition(recorder.lastState, HISTORY_ACTION);
+        if (transition.status !== 'verified') { transition.status = 'observed'; transition.blockedReason = null; }
+        observeTarget(transition, state.id);
+        stats.edges += 1;
+        progress(`${recorder.lastState.route} :: back → ${state.route} [observed]`);
         checkpoint();
       } else if (outstanding.length > 1) {
         // Several presses, one screen: any one of them could be the cause and none of
@@ -212,6 +245,7 @@ export async function recordSession({
       }
 
       recorder.lastState = state;
+      if (historyIndex !== null) recorder.historyIndex = historyIndex;
     } finally {
       recorder.busy = false;
     }

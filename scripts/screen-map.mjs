@@ -23,9 +23,9 @@ import { connectBrowser, launchBrowser, Page, SandboxRefused, sleep } from './br
 import { newRecordStats, recordSession } from './record.mjs';
 import {
   SCHEMA_VERSION, VERIFIED_OR_OBSERVED, authTarget, createRegistry, fingerprintSignature,
-  migrateMap, mutatingDetour, normalizePath, pathFromEntrypoints, playwrightExpr, renderMarkdown,
-  replayPathKey, routeTemplate, routeToMcpSteps, routeToSteps, shortestSafePath, stateById, stateKey,
-  statesByRoute, statusCounts, transitionsFrom,
+  migrateMap, mutatingDetour, normalizePath, observeTarget, pathFromEntrypoints, playwrightExpr,
+  reachability, renderMarkdown, replayPathKey, routeTemplate, routeToMcpSteps, routeToSteps,
+  shortestSafePath, stateById, stateKey, statesByRoute, statusCounts, transitionsFrom,
 } from './model.mjs';
 
 const EXIT_OK = 0, EXIT_NO_ANSWER = 1, EXIT_ERROR = 2, EXIT_REFUSED = 3;
@@ -612,6 +612,9 @@ async function commandCrawl(options) {
       }
 
       const blockedBefore = page.blockedNavigations.length;
+      // Kept to tell a dead control from a live one that happens to stay put — see below.
+      const completionsBefore = page.completions;
+      const urlBefore = reached.observation && reached.observation.url;
       const clicked = await timed('act.click', () => page.click(item.actionKey, transition.action.cssFallback));
       if (clicked.via === 'css') transition.action.fallbackUsed = true;
       if (!clicked.ok) {
@@ -646,8 +649,14 @@ async function commandCrawl(options) {
       }
 
       const { state: target, isNew } = registerState(after);
-      transition.to = target.id;
+      observeTarget(transition, target.id, { proved: true });
       transition.status = 'verified';
+      // Same screen, same URL, and not one request went out: nothing happened. A refresh
+      // or a retry also lands back on its own screen, but it reaches the server, and that
+      // is the difference between an action worth knowing about and a dead control.
+      if (target.id === state.id && after.url === urlBefore && page.completions === completionsBefore) {
+        transition.inert = true;
+      }
       transition.lastVerifiedAt = new Date().toISOString();
       transition.verifiedAtCommit = appInfo.commit;
       if (isNew) registerActions(target, after);
@@ -935,11 +944,12 @@ function commandRoute(options) {
     origins = fromStates.map(state => state.id);
   }
 
-  const search = statuses => {
+  const search = (statuses, extra = {}) => {
     let found = null;
     for (const target of targets) {
       for (const origin of origins) {
-        const resolved = pathFromEntrypoints(map, target.id, origin, statuses ? { statuses } : {});
+        const resolved = pathFromEntrypoints(map, target.id, origin,
+          { ...(statuses ? { statuses } : {}), ...extra });
         if (resolved && (!found || resolved.path.length < found.resolved.path.length)) found = { target, resolved };
       }
     }
@@ -948,8 +958,10 @@ function commandRoute(options) {
 
   // A proved route first, always. Only when there is none does a route built from a
   // recording become the answer — and then it is labelled, never quietly substituted.
+  // `proofOnly` holds an edge seen to lead two different places out of that first pass:
+  // it was verified, and it still cannot be promised.
   let evidence = 'verified';
-  let best = search(null);
+  let best = search(null, { proofOnly: true });
   if (!best) {
     const observed = search(VERIFIED_OR_OBSERVED);
     if (observed) { best = observed; evidence = 'observed'; }
@@ -975,13 +987,31 @@ function commandRoute(options) {
   const freshness = freshnessOf(map, path);
   const steps = routeToSteps(map, best.resolved, map.app.baseUrl);
   const mcp = routeToMcpSteps(map, best.resolved, map.app.baseUrl);
+  // Handing back a way in without saying there is no way out answers half the question.
+  const oneWayNote = reachability(map).oneWay.includes(best.target.id)
+    ? [`\`${best.target.route}\` is one-way: the map holds no safe click path back to an entrypoint.`
+      + ' Plan the exit — a direct navigation, or a step the crawl was not allowed to press — before walking in.']
+    : [];
+  // A step that has landed on more than one screen is in the answer only because nothing
+  // steadier exists. Naming it is the difference between a route the caller watches and
+  // one that fails three steps in with no idea which step was the weak one.
+  const unstableNote = best.resolved.path
+    .map((transition, index) => ({ transition, index }))
+    .filter(entry => entry.transition.nondeterministic)
+    .map(entry => `Step ${entry.index + 1} (${entry.transition.action?.name || entry.transition.action?.key || entry.transition.id})`
+      + ' has been seen to land on more than one screen. Check where you actually are after it'
+      + ' rather than assuming the rest of the path still applies.');
   if (options.format === 'mcp') {
     out({
       ok: true,
       to: best.target.route, title: best.target.title,
       confidence: freshness.status, evidence,
       mcp,
-      notes: ['`ref` cannot be precomputed: it is minted per snapshot. Take each `browser_snapshot`, find the element matching `match`, and pass that ref to `browser_click`.'],
+      notes: [
+        '`ref` cannot be precomputed: it is minted per snapshot. Take each `browser_snapshot`, find the element matching `match`, and pass that ref to `browser_click`.',
+        ...unstableNote,
+        ...oneWayNote,
+      ],
     });
     return;
   }
@@ -1002,6 +1032,8 @@ function commandRoute(options) {
       ...(evidence === 'observed'
         ? ['No proved route exists. This path was observed once during a recorded session and never replayed, so it is a report of what happened, not a guarantee that it repeats. Say so when passing it on, and invalidate the step that fails.']
         : []),
+      ...unstableNote,
+      ...oneWayNote,
     ],
   });
 }
@@ -1048,7 +1080,13 @@ function commandActions(options) {
         status: transition.status,
         blockedReason: transition.blockedReason,
         to: transition.to ? stateById(map, transition.to)?.route : null,
-        playwright: playwrightExpr(transition.action),
+        nondeterministic: transition.nondeterministic || undefined,
+        alsoSeenAt: transition.nondeterministic
+          ? (transition.toAlternatives || []).map(id => stateById(map, id)?.route || id)
+          : undefined,
+        playwright: transition.action.kind === 'history'
+          ? 'await page.goBack()'
+          : playwrightExpr(transition.action),
       })),
     })),
   });
@@ -1058,6 +1096,9 @@ function commandStatus(options) {
   const { map, path } = loadMap(options);
   const freshness = freshnessOf(map, path);
   const notVerified = map.transitions.filter(transition => transition.status !== 'verified');
+  // Derived on read, never stored: a reachability field on disk is one more thing that can
+  // disagree with the transitions it was computed from.
+  const { oneWay, isolated } = reachability(map);
   out({
     ok: true,
     status: freshness.status,
@@ -1068,6 +1109,8 @@ function commandStatus(options) {
     states: map.states.length,
     transitions: map.transitions.length,
     notExecuted: notVerified.length,
+    oneWay: oneWay.length,
+    isolated: isolated.length,
     budgetHit: map.run?.budgetHit || null,
     map: path,
   });

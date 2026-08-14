@@ -115,6 +115,10 @@ const server = createServer((req, res) => {
     visits += 1;
     return send(res, 200, page('index.html').replace('{{VISITS}}', String(visits)));
   }
+  // A request that reaches the server and changes nothing on screen. It exists so the
+  // crawl can be shown to tell that apart from a control wired to nothing at all; it
+  // counts nothing, so no other test's arithmetic moves when it is hit.
+  if (path === '/api/ping') return send(res, 200, '{"ok":true}', 'application/json');
   if (path === '/gated') return send(res, 200, page('gated.html'));
   if (path === '/items') {
     itemsVisits += 1;

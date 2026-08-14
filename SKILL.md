@@ -61,6 +61,12 @@ paths, resolved against the working directory. `crawl` takes neither — it writ
 Execute those steps with whatever browser tooling is at hand. If a step fails, stop trusting the
 map: run `invalidate --transition <id> --reason '…'` and continue by exploring directly.
 
+Read `notes` before handing a route on. Two of them are about the route itself rather than the map:
+a step marked **unstable** is a control that has been seen to land on more than one screen, so check
+where you actually are after it instead of assuming the rest of the path still applies; and a target
+marked **one-way** is a screen the map holds no safe click path back from, which is worth knowing
+before you walk in rather than after. `status` counts both (`oneWay`, `isolated`).
+
 The two fields answer different questions and neither substitutes for the other. `confidence` is
 freshness — has the app moved since the map was made. `evidence` is `verified` when every step was
 walked and proved, and `observed` when no proved route existed and the answer came from a recorded
@@ -147,6 +153,11 @@ crawled run unsandboxed on an account that can do anything, so only point it at 
    holds two hundred buttons costs more than twenty ordinary pages. When `maxMillis` keeps running
    out, read `coverage.actionsSeen` before raising it: a small app with a big control surface is
    the normal reason, and narrowing `entrypoints` buys more than a longer clock.
+
+   If `run.timing` blames `act.settle` and the figure is close to the settle ceiling times the
+   action count, the app is leaving requests open rather than being slow. A `fetch()` whose response
+   body is never read is the usual culprit: the stream stays open, the request never finishes, and
+   every action waits out the whole timeout on a screen that was ready in milliseconds.
 
    Credentials come from the environment through `${VAR}`. Never write one into the file.
 
@@ -239,10 +250,13 @@ so parallel sessions cannot collide.
 
 Three things a recording will not do, each of which would be a lie:
 
-- **It will not invent a click.** Arrive at a screen by typing a URL, a scripted `goto`, or the back
-  button and the screen is recorded with `reachable: "direct-url"` — no edge. Press several things
-  before one screen comes back and none of them can be shown to be the cause, so all are dropped and
-  counted in `droppedActions`.
+- **It will not invent a click.** Arrive at a screen by typing a URL or a scripted `goto` and the
+  screen is recorded with `reachable: "direct-url"` — no edge. Press several things before one screen
+  comes back and none of them can be shown to be the cause, so all are dropped and counted in
+  `droppedActions`. The one screen change with no control behind it that *is* filed as an edge is the
+  browser's **back button**, recognized by the tab's position in its own session history falling:
+  `kind: "history"`, replayed as `goBack()`. A crawl never produces one — its own `goBack` is how the
+  crawler returns to a screen, not something the app does.
 - **It will not record outside `allowHosts`.** Another tab on another site is watched and skipped,
   counted in `skippedHosts`. Recording a browser you also use means pointing it at a config whose
   allowlist you have read.

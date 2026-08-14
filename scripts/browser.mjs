@@ -355,6 +355,21 @@ export class Page {
     return response.result.value === undefined ? null : JSON.parse(response.result.value);
   }
 
+  /**
+   * Where this tab sits in its own session history, or null if it cannot be read.
+   *
+   * This is how a back button is told from a typed URL, and it has to be asked from out
+   * here: a cross-document traversal builds a new document, so a `popstate` listener
+   * injected into the page never hears the traversal that produced it — measured, not
+   * assumed. Reading is not driving; the recorder stays passive.
+   */
+  async historyIndex() {
+    try {
+      const history = await this.cdp.send('Page.getNavigationHistory', {}, this.sessionId);
+      return typeof history?.currentIndex === 'number' ? history.currentIndex : null;
+    } catch { return null; }
+  }
+
   async navigate(url, { timeout = 20000 } = {}) {
     const loaded = new Promise(resolve => {
       const stop = this.cdp.listen('Page.loadEventFired', this.sessionId, () => { stop(); resolve(true); });

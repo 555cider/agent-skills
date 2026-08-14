@@ -6,6 +6,12 @@
   <main>
     <h1>상품 목록</h1>
     <button id="filter" type="button">필터</button>
+    <!-- Two controls that both stay on this screen, and only one of them does anything.
+         `새로고침` reaches the server and changes nothing visible; `펼치기` is wired to
+         nothing at all. The crawl has to tell them apart, or a dead button reads as an
+         action the screen has. -->
+    <button id="reload" type="button">새로고침</button>
+    <button id="dead" type="button">펼치기</button>
     <ul>
       <li><a href="/items/1">상품 보기</a></li>
       <li><a href="/items/2">상품 보기</a></li>
@@ -26,6 +32,11 @@
   <script>
     document.getElementById('filter').addEventListener('click', () => document.getElementById('dlg').showModal());
     document.getElementById('close').addEventListener('click', () => document.getElementById('dlg').close());
+    // `.text()` is not decoration: an unread response body leaves the stream open, the
+    // request never finishes, and the crawler waits out its whole settle timeout on a
+    // screen that was ready in milliseconds.
+    document.getElementById('reload').addEventListener('click',
+      () => { fetch('/api/ping', { cache: 'no-store' }).then(response => response.text()); });
   </script>
 </body>
 </html>
