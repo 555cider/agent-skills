@@ -922,23 +922,48 @@ class MemoryService:
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = path.open("a+")
         acquired = False
+        unlock: Any = None
         try:
-            try:
-                import fcntl
+            if os.name == "nt":
+                # Windows has no fcntl, and the previous fallback was
+                # `acquired = os.name == "nt"` — an unconditional yes. Every worker a
+                # Stop/SessionEnd hook launched therefore ran, all at once, on the one
+                # machine where the store is busiest. Job leases still stop duplicate
+                # *work*, but nothing stopped duplicate *processes* from piling onto the
+                # write lock, which is the shape of the 41s p99 the prompt hook sees.
+                # `msvcrt.locking` with LK_NBLCK is the platform's non-blocking
+                # equivalent and fails with OSError when another process holds it.
+                try:
+                    import msvcrt
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-            except (ImportError, BlockingIOError, OSError):
-                # DB leases still prevent duplicate work on platforms without fcntl.
-                acquired = os.name == "nt"
-            yield acquired
-        finally:
-            if acquired and os.name != "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+
+                    def unlock() -> None:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+                except (ImportError, OSError):
+                    acquired = False
+            else:
                 try:
                     import fcntl
 
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except (ImportError, OSError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+
+                    def unlock() -> None:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+                except (ImportError, BlockingIOError, OSError):
+                    acquired = False
+            yield acquired
+        finally:
+            if acquired and unlock is not None:
+                try:
+                    unlock()
+                except OSError:
                     pass
             handle.close()
 

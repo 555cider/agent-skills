@@ -403,16 +403,35 @@ class Retriever:
             "elapsed_ms": round(elapsed_ms, 3),
             "token_estimate": consumed,
         }
-        self.db.conn.execute(
-            "INSERT INTO retrieval_queries(id,repo_key,prompt_hash,mode,harness,created_at) VALUES(?,?,?,?,?,?)",
-            (query_id, project, digest_text(prompt), mode, harness, now),
-        )
-        for item in [*items, *conflicts]:
-            self.db.conn.execute(
-                "INSERT OR IGNORE INTO retrieval_feedback(query_id,memory_id,exposed,created_at,updated_at) "
-                "VALUES(?,?,1,?,?)",
-                (query_id, item["id"], now, now),
-            )
+        # One lock acquisition, not 1+N. The connection is in autocommit mode
+        # (`isolation_level=None`, db.py), so every bare `execute` is its own
+        # implicit transaction — this log used to take and release the write lock
+        # once for the query row plus once per exposed memory. That is what made
+        # the prompt hook contend: several agents (Claude worktrees, Codex,
+        # OpenCode) share one store, so acquisitions serialize across processes
+        # and a `UserPromptSubmit` hook averaged 3.4s against its own 5s timeout.
+        # Batching preserves every row and every guarantee; only the lock traffic
+        # changes.
+        # The answer is already built. Logging that we produced it is bookkeeping for
+        # `feedback`, and bookkeeping must never cost the caller the answer — under a
+        # busy store this write can fail, and an exception here would throw the packet
+        # away and leave the prompt with no memory at all. Losing a feedback row only
+        # costs that one query its usefulness score.
+        try:
+            with self.db.transaction(immediate=True):
+                self.db.conn.execute(
+                    "INSERT INTO retrieval_queries(id,repo_key,prompt_hash,mode,harness,created_at) VALUES(?,?,?,?,?,?)",
+                    (query_id, project, digest_text(prompt), mode, harness, now),
+                )
+                exposures = [(query_id, item["id"], now, now) for item in [*items, *conflicts]]
+                if exposures:
+                    self.db.conn.executemany(
+                        "INSERT OR IGNORE INTO retrieval_feedback(query_id,memory_id,exposed,created_at,updated_at) "
+                        "VALUES(?,?,1,?,?)",
+                        exposures,
+                    )
+        except sqlite3.Error:
+            packet["logged"] = False
         return packet
 
     @staticmethod

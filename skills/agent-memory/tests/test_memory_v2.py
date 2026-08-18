@@ -938,3 +938,30 @@ def test_golden_bilingual_paraphrase_hit_at_five(memory):
         )
         hits += expected_id in {item["id"] for item in packet["items"]}
     assert hits / len(cases) >= 0.9
+
+
+def test_worker_lock_is_exclusive_between_holders(tmp_path):
+    """Two workers must not both believe they hold the lock.
+
+    On Windows there is no `fcntl`, and the fallback used to be
+    `acquired = os.name == "nt"` — an unconditional yes. Every worker a
+    Stop/SessionEnd hook launched therefore ran concurrently on the one platform
+    where the store is busiest, piling onto the single write lock. Job leases stop
+    duplicate *work*; nothing stopped duplicate *processes*.
+    """
+    home = tmp_path / "memory"
+    first_db = Database(home)
+    second_db = Database(home)
+    try:
+        first = MemoryService(first_db, NullProvider())
+        second = MemoryService(second_db, NullProvider())
+        with first.worker_lock() as first_acquired:
+            with second.worker_lock() as second_acquired:
+                assert first_acquired is True
+                assert second_acquired is False
+        # Releasing must hand the lock back, or one crashed worker wedges the queue.
+        with second.worker_lock() as after_release:
+            assert after_release is True
+    finally:
+        first_db.close()
+        second_db.close()
