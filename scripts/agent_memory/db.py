@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-from .constants import DB_FILENAME, SCHEMA_VERSION, VECTOR_DIMENSIONS
+from .constants import BUSY_TIMEOUT_MS, DB_FILENAME, SCHEMA_VERSION, VECTOR_DIMENSIONS
 from .util import MemoryError, stable_json, utc_now
 
 
@@ -173,7 +173,9 @@ CREATE TABLE IF NOT EXISTS memory_vector_map (
 
 
 class Database:
-    def __init__(self, home: Path, *, readonly: bool = False) -> None:
+    def __init__(
+        self, home: Path, *, readonly: bool = False, busy_timeout_ms: int = BUSY_TIMEOUT_MS
+    ) -> None:
         self.home = home
         self.path = home / DB_FILENAME
         if readonly:
@@ -190,7 +192,7 @@ class Database:
             self.conn = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.execute("PRAGMA busy_timeout=5000")
+        self.conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
         self.conn.execute("PRAGMA secure_delete=ON")
         if not readonly:
             self.conn.execute("PRAGMA journal_mode=WAL")

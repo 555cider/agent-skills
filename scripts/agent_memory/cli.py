@@ -11,9 +11,11 @@ from typing import Any, Sequence
 
 from . import __version__
 from .constants import (
+    BUSY_TIMEOUT_MS,
     DEFAULT_LIMIT,
     DEFAULT_TOKEN_BUDGET,
     HARNESSES,
+    HOOK_BUSY_TIMEOUT_MS,
     MEMORY_KINDS,
     MEMORY_STATES,
     SCOPES,
@@ -105,8 +107,10 @@ def _repo_global_ceiling(cwd: Path) -> set[str] | None:
     return allowed
 
 
-def _open(args: argparse.Namespace, *, provider: bool = True) -> tuple[Database, MemoryService]:
-    db = Database(memory_home(getattr(args, "memory_home", None)))
+def _open(
+    args: argparse.Namespace, *, provider: bool = True, busy_timeout_ms: int = BUSY_TIMEOUT_MS
+) -> tuple[Database, MemoryService]:
+    db = Database(memory_home(getattr(args, "memory_home", None)), busy_timeout_ms=busy_timeout_ms)
     if not provider:
         selected = NullProvider()
     else:
@@ -388,7 +392,11 @@ def command_hook(args: argparse.Namespace) -> int:
         event_name = args.event or str(data.get("hook_event_name") or data.get("event") or "")
         kind = MemoryService.normalize_hook_kind(event_name)
         cwd = resolve_cwd(str(data.get("cwd") or args.cwd or os.getcwd()))
-        db, service = _open(args)
+        # A hook blocks the host's prompt loop, so it waits on the shared store's
+        # write lock for a bounded moment and then gives up — see
+        # HOOK_BUSY_TIMEOUT_MS. The `except` below already turns that into a
+        # silent, empty result, which is the right failure for a hook.
+        db, service = _open(args, busy_timeout_ms=HOOK_BUSY_TIMEOUT_MS)
         try:
             capture = service.capture_event(
                 harness=args.harness, kind=kind, data=data, cwd=cwd
