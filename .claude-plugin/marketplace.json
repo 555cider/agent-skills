@@ -1,0 +1,96 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "555cider-agent-skills",
+  "description": "Agent skills shared across coding-agent harnesses: durable memory, plan graph, peer review, UI audit, DOM picker, screen map, worktree lifecycle, step-back.",
+  "owner": {
+    "name": "555cider"
+  },
+  "plugins": [
+    {
+      "name": "agent-skills",
+      "source": "./",
+      "description": "Every skill in this collection at once. Install this OR the individual plugins below, never both.",
+      "category": "productivity"
+    },
+    {
+      "name": "agent-memory",
+      "source": "./skills/agent-memory",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Evidence-aware durable memory shared across Claude, Codex, and OpenCode, authoritative in SQLite, with redacted observation and lifecycle review.",
+      "category": "productivity"
+    },
+    {
+      "name": "plan-graph",
+      "source": "./skills/plan-graph",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Persistent plan context per repository: explicit prerequisites, replacement lineage, and pruning of closed plan trees through a transactional CLI.",
+      "category": "productivity"
+    },
+    {
+      "name": "peer-review",
+      "source": "./skills/peer-review",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Second opinion on a plan, spec, or option set from other reviewer CLIs (codex, claude, opencode, agy) run in parallel and saved to the repository.",
+      "category": "development"
+    },
+    {
+      "name": "ui-audit",
+      "source": "./skills/ui-audit",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Visual QA gate that measures the live DOM first — contrast, overflow, focus, target size, widget contracts — before any screen is called done.",
+      "category": "design"
+    },
+    {
+      "name": "dom-picker",
+      "source": "./skills/dom-picker",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Turn a UI issue pointed at in a running web app into a minimal source edit, verified on the same element in Chromium.",
+      "category": "design"
+    },
+    {
+      "name": "screen-map",
+      "source": "./skills/screen-map",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Agent-readable map of a web app: which screens exist and the concrete action that moves between any two, built by crawling or by recording a browser someone else drives.",
+      "category": "development"
+    },
+    {
+      "name": "worktree-cycle",
+      "source": "./skills/worktree-cycle",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Git worktree lifecycle as two guarded scripts: start branches from the local integration branch and reserves a dev-server port block; finish squash-merges and cleans up. Never pushes.",
+      "category": "development"
+    },
+    {
+      "name": "step-back",
+      "source": "./skills/step-back",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Countable tripwires that force a reassessment before work is declared done, and before effort stops being proportional to the job.",
+      "category": "productivity"
+    }
+  ]
+}

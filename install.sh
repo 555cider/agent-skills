@@ -214,6 +214,26 @@ resolve_phys() {
   ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null
 }
 
+# plugin_conflict_ids <name>: print every Claude Code plugin id that already
+# ships this skill, one per line; print nothing when there is no conflict.
+#
+# Claude Code plugins are a second, independent delivery channel for the very
+# same SKILL.md files: `claude plugin install <name>@<marketplace>` copies them
+# under ~/.claude/plugins/ and loads them from there, with no relation to
+# ~/.agents/skills/. A skill delivered through both channels is loaded twice in
+# every Claude Code session. The registry is keyed "<plugin>@<marketplace>", so
+# a substring match on the key is enough; the "agent-skills" bundle plugin
+# carries every skill in this repository under one id and therefore collides
+# with all of them.
+plugin_conflict_ids() {
+  local name="$1"
+  local registry="$HOME/.claude/plugins/installed_plugins.json"
+  [ -f "$registry" ] || return 0
+  grep -Eo "\"(${name}|agent-skills)@[A-Za-z0-9._-]+\"" "$registry" 2>/dev/null \
+    | tr -d '"' | sort -u || true
+  return 0
+}
+
 split_branch_status() {
   local branch="$1"
   local status
@@ -499,6 +519,15 @@ for name in "${SKILL_NAMES[@]}"; do
   fi
 
   printf '\nskill: %s\n' "$name"
+
+  plugin_conflicts="$(plugin_conflict_ids "$name")"
+  if [ -n "$plugin_conflicts" ]; then
+    printf '  WARN also installed as a Claude Code plugin:\n' >&2
+    printf '         %s\n' $plugin_conflicts >&2
+    printf '       Claude Code loads this skill twice while both channels are in place.\n' >&2
+    printf '       Keep one: `claude plugin uninstall <id>`, or leave %s out of this run.\n' "$name" >&2
+    warnings=$((warnings + 1))
+  fi
 
   # Tier 1: install into ~/.agents/skills/<name>/
   if [ "$LOCAL_MODE" = "1" ]; then

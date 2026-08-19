@@ -124,6 +124,44 @@ directories yourself.
 
 ## Install
 
+Two channels ship the same skills. **Use one per skill** — a skill installed
+through both is loaded twice in every Claude Code session. `install.sh` and
+`uninstall.sh` read Claude Code's plugin registry and warn when they find the
+other channel's copy of a skill they are about to touch.
+
+| | Claude Code plugin | `install.sh` |
+| --- | --- | --- |
+| Harnesses | Claude Code only | Claude Code, Codex, anything reading `~/.agents/skills/` |
+| Installs into | `~/.claude/plugins/` | `~/.agents/skills/` + per-harness links |
+| Needs a checkout | no | yes (for `install.sh` itself) |
+| Update | `/plugin update <name>` | `git pull` in `~/.agents/skills/<name>/` |
+
+### Claude Code plugin
+
+```
+/plugin marketplace add 555cider/agent-skills
+/plugin install screen-map@555cider-agent-skills     # one skill
+/plugin install agent-skills@555cider-agent-skills   # all of them, one plugin
+```
+
+The marketplace lists every skill as its own plugin plus one `agent-skills`
+bundle that carries all of them — install whichever you want, not both for the
+same skill. The marketplace is named `555cider-agent-skills` rather than
+`agent-skills` because Anthropic reserves the bare name for its own GitHub
+organization; `claude plugin marketplace add` refuses it from anywhere else.
+
+Nothing under `skills/` is arranged for plugins: each entry in
+[`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) points at
+`./skills/<name>` and declares `"skills": ["."]`, because `SKILL.md` sits at
+that directory's root. The bundle is the repository root itself, described by
+[`.claude-plugin/plugin.json`](.claude-plugin/plugin.json), where `skills/` is
+auto-loaded.
+
+Codex reads none of this. If you use Codex — or any harness other than Claude
+Code — use `install.sh` below.
+
+### install.sh — every harness
+
 Clone this monorepo just to get `install.sh` — the script installs each
 selected skill into its own location (you can `rm -rf` this monorepo
 afterwards if you only want to use skills, not edit them).
@@ -228,6 +266,11 @@ For each skill, this removes:
 - `~/.codex/skills/<name>` (harness link, if present)
 - `~/.agents/skills/<name>/` (the installed skill directory, if present)
 
+It does not touch `~/.claude/plugins/`. A skill installed through the plugin
+channel is removed with `claude plugin uninstall <name>@555cider-agent-skills`;
+`uninstall.sh` reports that copy when it finds one instead of silently leaving
+half the skill installed.
+
 Idempotent — re-running is safe; already-absent paths are reported and
 skipped. Works on POSIX symlinks, NTFS junctions, and plain
 directories alike. Re-installing later just re-runs `./install.sh
@@ -244,13 +287,32 @@ local checkout while the split branch is still unpublished.
    `core.autocrlf=true` checks it out as CRLF and its scripts break under any
    shell stricter than Git Bash. `tests/validate-skill-evals.py` fails the build
    if the copy is missing or has drifted from the root rules.
-2. Commit and push to `main`.
-3. [`.github/workflows/split.yml`](.github/workflows/split.yml) runs
+2. Add the skill to [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json)
+   as its own entry — `"source": "./skills/<new-skill>"`, `"skills": ["."]`,
+   a semver `version`, and a one-line description. The bundle plugin picks the
+   skill up on its own (it serves the repository root), but the individual
+   plugin does not exist until the entry does. Bump that `version` when the
+   skill's behavior changes — it is what `claude plugin list` shows and what
+   `claude plugin tag` releases against; installs themselves track the commit,
+   so a stale number misinforms rather than breaks.
+   `tests/validate-plugin-manifests.py` fails the build if the manifest and
+   `skills/` disagree, so a skill cannot be published half-registered.
+3. Commit and push to `main`.
+4. [`.github/workflows/split.yml`](.github/workflows/split.yml) runs
    `git subtree split --prefix=skills/<new-skill>` and force-pushes the
    result to `split/<new-skill>`. This takes ~30 s.
-4. Users get the skill via `./install.sh <new-skill>`. Before the split branch
-   exists, maintainers can run the same command from the monorepo checkout and
-   install the local copy.
+5. Users get the skill via `./install.sh <new-skill>`, or via
+   `/plugin install <new-skill>@555cider-agent-skills` once `main` carries the
+   marketplace entry. Before the split branch exists, maintainers can run the
+   install command from the monorepo checkout and install the local copy.
+
+Before pushing a manifest change, check it the way a user's client will:
+
+```bash
+claude plugin validate .claude-plugin/marketplace.json --strict
+claude plugin validate .claude-plugin/plugin.json --strict
+python3 tests/validate-plugin-manifests.py
+```
 
 The split branches are derived artifacts. Never commit to them
 directly — your work will be overwritten on the next `main` push.
@@ -267,5 +329,11 @@ directly — your work will be overwritten on the next `main` push.
   synced directory from the monorepo checkout.
 - **Tool-neutral:** `~/.agents/skills/` is the converging convention; any
   agent that reads it finds the skill without per-tool config.
+- **Two distribution surfaces, one source:** the Claude Code plugin channel is
+  where Claude Code users expect to find things, and it needs no checkout; but
+  it reaches only Claude Code. `~/.agents/skills/` reaches every harness. Both
+  serve the same `skills/<name>/` directories, and neither one required
+  rearranging them — the plugin manifests live entirely at the repository root,
+  so `git subtree split` and `install.sh` never see them.
 - **No symlink chains:** harness dirs link directly to
   `~/.agents/skills/<name>/`. One hop, no intermediate.

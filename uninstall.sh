@@ -207,6 +207,26 @@ remove_agent_memory_launcher() {
   return "$status"
 }
 
+# plugin_conflict_ids <name>: print every Claude Code plugin id that already
+# ships this skill, one per line; print nothing when there is no conflict.
+#
+# Claude Code plugins are a second, independent delivery channel for the very
+# same SKILL.md files: `claude plugin install <name>@<marketplace>` copies them
+# under ~/.claude/plugins/ and loads them from there, with no relation to
+# ~/.agents/skills/. A skill delivered through both channels is loaded twice in
+# every Claude Code session. The registry is keyed "<plugin>@<marketplace>", so
+# a substring match on the key is enough; the "agent-skills" bundle plugin
+# carries every skill in this repository under one id and therefore collides
+# with all of them.
+plugin_conflict_ids() {
+  local name="$1"
+  local registry="$HOME/.claude/plugins/installed_plugins.json"
+  [ -f "$registry" ] || return 0
+  grep -Eo "\"(${name}|agent-skills)@[A-Za-z0-9._-]+\"" "$registry" 2>/dev/null \
+    | tr -d '"' | sort -u || true
+  return 0
+}
+
 errors=0
 for name in "${SELECTED[@]}"; do
   # Refuse empty / path-traversal names — defensive, never expected from
@@ -220,6 +240,15 @@ for name in "${SELECTED[@]}"; do
   esac
 
   printf '\nskill: %s\n' "$name"
+
+  plugin_conflicts="$(plugin_conflict_ids "$name")"
+  if [ -n "$plugin_conflicts" ]; then
+    printf '  note   also installed as a Claude Code plugin:\n'
+    printf '           %s\n' $plugin_conflicts
+    printf '         this script removes nothing under ~/.claude/plugins/;\n'
+    printf '         run `claude plugin uninstall <id>` for that copy.\n'
+  fi
+
   if ! clone_removal_safe "$AGENTS_ROOT/$name"; then
     errors=$((errors + 1))
     continue

@@ -14,6 +14,7 @@ on:
     paths:
       - 'skills/**'
       - 'tests/**'
+      - '.claude-plugin/**'
       - 'install.sh'
       - 'uninstall.sh'
       - '.github/workflows/split.yml'
@@ -22,6 +23,7 @@ on:
     paths:
       - 'skills/**'
       - 'tests/**'
+      - '.claude-plugin/**'
       - 'install.sh'
       - 'uninstall.sh'
       - '.github/workflows/split.yml'
@@ -54,6 +56,8 @@ jobs:
             agentskills validate "$(dirname "$manifest")"
           done
           python3 tests/validate-skill-evals.py
+      - name: Validate Claude Code plugin manifests
+        run: python3 tests/validate-plugin-manifests.py
       - name: Run deterministic regression suites
         run: |
           set -euo pipefail

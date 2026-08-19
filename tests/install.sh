@@ -405,6 +405,69 @@ test_agent_memory_shadow_requires_windows_launcher_on_path() {
   [ ! -e "$home/.codex/hooks.json" ] || fail "expected no Codex hooks to be written"
 }
 
+# The plugin channel installs the same SKILL.md files under ~/.claude/plugins/
+# with no relation to ~/.agents/skills/, so nothing in the filesystem layout
+# reveals the duplicate — only Claude Code's own registry does.
+test_install_warns_when_the_skill_is_also_a_claude_code_plugin() {
+  local home="$WORK/plugin-conflict-home"
+  local out="$WORK/plugin-conflict-install.out"
+  local err="$WORK/plugin-conflict-install.err"
+
+  mkdir -p "$home/.claude/plugins" "$home/.codex"
+  cat >"$home/.claude/plugins/installed_plugins.json" <<'JSON'
+{
+  "version": 2,
+  "plugins": {
+    "step-back@555cider-agent-skills": [
+      { "scope": "user", "installPath": "/plugins/cache/step-back" }
+    ]
+  }
+}
+JSON
+
+  HOME="$home" "$INSTALL" --local step-back >"$out" 2>"$err" ||
+    fail "expected install to still succeed when the skill is also a plugin"
+
+  grep -F "also installed as a Claude Code plugin" "$err" >/dev/null ||
+    fail "expected install to warn about the plugin-channel duplicate"
+  grep -F "step-back@555cider-agent-skills" "$err" >/dev/null ||
+    fail "expected the warning to name the conflicting plugin id"
+  [ -f "$home/.agents/skills/step-back/SKILL.md" ] ||
+    fail "expected the warning not to block the install"
+}
+
+# The bundle plugin carries every skill under one id, so it conflicts with each
+# of them individually — matching on the skill name alone would miss it.
+test_uninstall_reports_the_claude_code_plugin_copy_it_cannot_remove() {
+  local home="$WORK/plugin-conflict-uninstall-home"
+  local out="$WORK/plugin-conflict-uninstall.out"
+  local err="$WORK/plugin-conflict-uninstall.err"
+
+  mkdir -p "$home/.claude/plugins" "$home/.codex"
+  HOME="$home" "$INSTALL" --local step-back \
+    >"$WORK/plugin-conflict-preinstall.out" 2>"$WORK/plugin-conflict-preinstall.err"
+  cat >"$home/.claude/plugins/installed_plugins.json" <<'JSON'
+{
+  "version": 2,
+  "plugins": {
+    "agent-skills@555cider-agent-skills": [
+      { "scope": "user", "installPath": "/plugins/cache/agent-skills" }
+    ]
+  }
+}
+JSON
+
+  HOME="$home" "$UNINSTALL" step-back >"$out" 2>"$err" ||
+    fail "expected uninstall to exit 0 when a plugin copy remains"
+
+  grep -F "also installed as a Claude Code plugin" "$out" >/dev/null ||
+    fail "expected uninstall to report the remaining plugin copy"
+  grep -F "agent-skills@555cider-agent-skills" "$out" >/dev/null ||
+    fail "expected the bundle plugin id to be reported for a single skill"
+  [ ! -e "$home/.agents/skills/step-back" ] ||
+    fail "expected the local install to be removed regardless"
+}
+
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
 test_default_fallback_does_not_overwrite_mismatched_plain_directory
 test_local_install_overwrites_dirty_managed_clone
@@ -416,5 +479,7 @@ test_uninstall_preserves_clone_without_upstream
 test_directory_without_skill_md_is_not_a_skill
 test_agent_memory_shadow_one_command_setup
 test_agent_memory_shadow_requires_windows_launcher_on_path
+test_install_warns_when_the_skill_is_also_a_claude_code_plugin
+test_uninstall_reports_the_claude_code_plugin_copy_it_cannot_remove
 
 echo "install tests passed"
