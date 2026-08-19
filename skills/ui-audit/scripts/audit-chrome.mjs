@@ -203,13 +203,29 @@ function findChrome() {
 // ---------- minimal CDP client over built-in WebSocket ----------
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Chrome is a process tree, not a process: killing the launcher leaves the
+// zygote and renderers running, reparented and still writing the profile we
+// are about to delete. Windows already got the tree treatment via taskkill /T;
+// POSIX gets it by launching Chrome as its own process-group leader
+// (detached) so the whole group can be signalled with a negative pid.
+const CHROME_DETACHED = process.platform !== 'win32';
+
+function killChromeTree(proc) {
+  if (!proc.pid) return;
+  try {
+    if (process.platform === 'win32') { spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F']); return; }
+    if (CHROME_DETACHED) { process.kill(-proc.pid, 'SIGKILL'); return; }
+  } catch { /* group already gone — fall through to the single-process kill */ }
+  try { proc.kill('SIGKILL'); } catch {}
+}
+
 async function launchChrome() {
   const bin = findChrome();
   const profile = mkdtempSync(join(tmpdir(), 'uisplint-'));
   const args = ['--headless=new', '--disable-gpu', '--no-first-run',
     '--disable-extensions', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
   if (allowNoSandbox) args.splice(2, 0, '--no-sandbox');
-  const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: CHROME_DETACHED });
   let wsUrl;
   try { wsUrl = await new Promise((resolve, reject) => {
     let buf = '';
@@ -222,7 +238,7 @@ async function launchChrome() {
     });
     proc.on('exit', c => { clearTimeout(to); reject(new Error('Chrome exited (' + c + ') before listening')); });
   }); } catch (error) {
-    try { proc.kill(); } catch {}
+    killChromeTree(proc);
     rmSync(profile, { recursive: true, force: true });
     throw error;
   }
@@ -1196,20 +1212,23 @@ try {
   });
 } finally {
   try { cdp.ws.close(); } catch {}
-  // On Windows a bare kill can orphan the --headless child processes; kill the
-  // whole tree by PID.
-  try {
-    if (process.platform === 'win32' && proc.pid) spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
-    else proc.kill('SIGKILL');
-  } catch {}
+  killChromeTree(proc);
   await new Promise(resolve => {
     if (proc.exitCode !== null) return resolve();
     const timer = setTimeout(resolve, 1000);
     proc.once('exit', () => { clearTimeout(timer); resolve(); });
   });
+  // Removal has to be confirmed, not merely attempted: rmSync unlinks files a
+  // still-shutting-down renderer holds open and reports success, and that
+  // renderer then writes the profile back. Loop until the directory is gone
+  // AND stays gone, so the check below reports what is actually on disk.
   for (let attempt = 0; attempt < 10; attempt++) {
-    try { rmSync(profile, { recursive: true, force: true }); break; }
-    catch { await sleep(100 * (attempt + 1)); }
+    try { rmSync(profile, { recursive: true, force: true }); } catch {}
+    if (!existsSync(profile)) {
+      await sleep(50);
+      if (!existsSync(profile)) break;
+    }
+    await sleep(100 * (attempt + 1));
   }
   if (existsSync(profile)) console.error(`WARNING: Chrome temporary profile could not be removed: ${profile}`);
 }
