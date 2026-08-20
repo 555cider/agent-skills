@@ -120,6 +120,25 @@ yours:
 # park the main worktree's tracked changes across the merge: --autostash-tracked
 ```
 
+### One finish at a time
+
+Every worktree of a repository shares **one index and one main working tree**, so two finishes
+are not independent. `git merge --squash` *stages* its result without committing, so a second
+finish sees that staged work as "local changes", fails, and its recovery would discard it —
+someone else's merge, thrown away. The guard below cannot prevent this on its own: it looks
+once, and the other session can stage in the window that follows.
+
+So the mutating half runs under an exclusive lock in the repository's **common** git dir
+(`worktree-cycle-finish.lock`), shared by every worktree. A second finish is refused by name
+rather than racing; a lock whose owner process is gone is treated as stale and taken over, so a
+killed run cannot block the repository forever. The clean guard is then re-checked under the
+lock, because anything staged before it was acquired is only visible then.
+
+A merge that fails is also no longer reset blindly. `reset --hard` runs **only** when the index
+carries unmerged entries — proof that the merge really ran and left conflicts. When git refuses
+*before* touching anything ("local changes would be overwritten"), the tree is left exactly as
+found: whatever made it refuse is not ours to discard.
+
 Guards — any violation stops the run **before anything is modified**:
 
 - The caller is not standing inside the worktree being removed.
