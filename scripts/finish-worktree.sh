@@ -207,6 +207,43 @@ echo "────────────────────────�
 [ "$DRY" = "1" ] && { info "dry-run — stopping here (nothing was changed)"; exit 0; }
 
 # ── execute ─────────────────────────────────────────────────────────────────
+# Serialize against other finishes in this repository.
+#
+# Every worktree shares ONE index and ONE main working tree, so two finishes are not
+# independent: `git merge --squash` STAGES its result without committing, and a second finish
+# then sees that staged work as "local changes", fails, and its recovery discards it. Guard B
+# cannot prevent that — it looks once, and the other session can stage in the window that
+# follows. The mutating half therefore runs under an exclusive lock, taken in the COMMON git
+# dir so every worktree of the repository contends for the same one (unlike $GIT_DIR).
+LOCK="$(git rev-parse --git-common-dir)/worktree-cycle-finish.lock"
+LOCK_HELD=""
+release_lock() { if [ -n "${LOCK_HELD:-}" ]; then rm -rf "$LOCK"; LOCK_HELD=""; fi; }
+if mkdir "$LOCK" 2>/dev/null; then
+  LOCK_HELD=1
+  printf '%s
+' "$$" > "$LOCK/pid"
+else
+  holder="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  # A lock whose owner is gone is stale — a killed run must not block the repository forever.
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+    info "removing a stale finish lock left by pid $holder"
+    rm -rf "$LOCK"
+    if mkdir "$LOCK" 2>/dev/null; then LOCK_HELD=1; printf '%s
+' "$$" > "$LOCK/pid"; fi
+  fi
+  [ -n "$LOCK_HELD" ] || die "another worktree-cycle finish is running here (pid ${holder:-unknown}).
+    Two finishes share one index and one working tree, so running them at once can destroy the
+    other one's staged merge. Wait for it to finish, then re-run."
+fi
+trap 'release_lock' EXIT
+
+# Guard B again, now that the lock is held. The first check ran before the lock existed, so
+# anything another session staged in between is only visible now.
+if [ "$TRACKED_DIRTY" = "0" ] && ! { git diff --quiet && git diff --cached --quiet; }; then
+  die "the main worktree gained uncommitted tracked changes while this run was starting —
+    another session is probably mid-merge. Nothing was changed; re-run once it settles."
+fi
+
 # 0) Park the colliding untracked files in a stash. Nothing is deleted: a stash is recoverable
 #    and visible in `git stash list`, unlike moving the files aside by hand.
 # Stash ORDER IS A CONTRACT. `git stash pop`/`drop` reject a raw commit SHA ("is not a stash
@@ -273,17 +310,29 @@ restore_all_stashes() {
 # 1) Squash merge. On conflict, restore the main worktree — safe because the tree is clean by
 #    now, either because guard B proved it or because --autostash-tracked parked the changes.
 if ! git merge --squash "$BRANCH"; then
-  # A conflicted squash records no MERGE_HEAD, so `git merge --abort` cannot be used here
-  # ("no merge to abort"). `reset --hard` is the recovery: it also clears the branch state
-  # git wrote during the attempt, SQUASH_MSG included.
-  git reset --hard HEAD
+  # Two very different failures land here, and only one of them may be reset.
+  #
+  # Unmerged index entries mean the merge really ran and left conflicts in the tree. A
+  # conflicted squash records no MERGE_HEAD, so `git merge --abort` cannot be used ("no merge
+  # to abort"); `reset --hard` is the recovery, and it also clears SQUASH_MSG.
+  if [ -n "$(git ls-files -u)" ]; then
+    git reset --hard HEAD
+    restore_all_stashes
+    die "squash merge conflicted → main worktree restored, nothing committed. The branch content overlaps changes already on '$BASE'; check that '$BRANCH' was branched from '$BASE' HEAD, then merge by hand"
+  fi
+  # Otherwise git refused BEFORE modifying anything — typically "local changes would be
+  # overwritten". Resetting here would throw away exactly what made it refuse, which is not
+  # ours to discard. Leave the tree as found and say so.
   restore_all_stashes
-  die "squash merge conflicted → main worktree restored, nothing committed. The branch content overlaps changes already on '$BASE'; check that '$BRANCH' was branched from '$BASE' HEAD, then merge by hand"
+  die "squash merge refused before modifying anything — the tree was left untouched (no reset).
+    Usual cause: '$BASE' carries local changes to paths '$BRANCH' also touches, often another
+    session's staged merge. Inspect with 'git -C \"$MAIN\" status', let it settle or commit
+    those changes, then re-run."
 fi
 
 # 2) Commit. -F keeps multi-line messages intact and avoids any argv quoting surprises.
 msgfile="$(mktemp)"
-trap 'rm -f "$msgfile"' EXIT
+trap 'rm -f "$msgfile"; release_lock' EXIT
 printf '%s\n' "$MSG" > "$msgfile"
 if ! git commit -F "$msgfile"; then
   # The stash is deliberately NOT popped here: the merge already wrote those paths into the
