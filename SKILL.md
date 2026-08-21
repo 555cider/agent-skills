@@ -168,11 +168,16 @@ query packet.
 ```bash
 agent-memory doctor --format json
 agent-memory gc --format json
-agent-memory export --cwd "$PWD" --format json
+agent-memory export --scope global --format json > global-memory.json
+agent-memory import global-memory.json --dry-run --format json
 agent-memory integrate --mode off --harness all --apply
 ```
 
-`export` excludes raw events. `gc` enforces TTLs. `integrate off` removes only
+`export` excludes raw events; `--scope global|project|all` picks what to carry,
+and without it the original `--cwd`/`--include-global` contract still holds.
+`import` replays an export into this store, adding and merging only — records
+land in the review queue unless `--trust` says the file is your own backup.
+`gc` enforces TTLs. `integrate off` removes only
 managed adapters and keeps the v2 DB. Configure optional providers only through
 environment variables; API keys never belong in memory or config files.
 

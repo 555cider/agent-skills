@@ -266,8 +266,35 @@ def command_feedback(args: argparse.Namespace) -> int:
 def command_export(args: argparse.Namespace) -> int:
     db, service = _open(args, provider=False)
     try:
+        # A global-only export must not need a repository to stand in.
+        project = None if args.scope in {"global", "all"} else _project(args)
         _emit(
-            service.export(project=_project(args), include_global=args.include_global),
+            service.export(
+                project=project, include_global=args.include_global, scope=args.scope
+            ),
+            args.format,
+        )
+        return 0
+    finally:
+        db.close()
+
+
+def command_import(args: argparse.Namespace) -> int:
+    raw = Path(args.file).read_text(encoding="utf-8") if args.file else sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise MemoryError(f"export payload is not valid JSON: {exc}") from exc
+    db, service = _open(args, provider=False)
+    try:
+        _emit(
+            service.import_records(
+                payload,
+                project=_project(args) if args.cwd else None,
+                trust=args.trust,
+                scope=args.scope,
+                dry_run=args.dry_run,
+            ),
             args.format,
         )
         return 0
@@ -573,8 +600,22 @@ def build_parser() -> argparse.ArgumentParser:
     export = sub.add_parser("export", help="Export structured memory without raw events")
     export.add_argument("--cwd")
     export.add_argument("--include-global", action="store_true")
+    export.add_argument("--scope", choices=("global", "project", "all"))
     _format(export)
     export.set_defaults(func=command_export)
+
+    importer = sub.add_parser("import", help="Replay an export into this store, adding and merging only")
+    importer.add_argument("file", nargs="?", help="Export file; stdin when omitted")
+    importer.add_argument("--cwd", help="Adopt project-scoped records into this repository")
+    importer.add_argument("--scope", choices=("global", "project", "all"), default="all")
+    importer.add_argument(
+        "--trust",
+        action="store_true",
+        help="Restore the exported state instead of queueing everything for review",
+    )
+    importer.add_argument("--dry-run", action="store_true")
+    _format(importer)
+    importer.set_defaults(func=command_import)
 
     gc = sub.add_parser("gc", help="Apply TTLs and compact lifecycle metadata")
     _format(gc)

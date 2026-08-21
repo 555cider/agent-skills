@@ -86,4 +86,7 @@ Exposure does not set `used`; only `feedback --used` does.
   (records backfilled with embeddings when a provider is configured).
 - `doctor`: DB integrity/version/WAL, retrieval backends, provider, queue,
   memory states, trust, integrations, conflicts, and v1 artifact detection.
-- `export`: `agent-memory.export.v2`; raw event payloads are excluded.
+- `export`: `agent-memory.export.v2` with `scope`, `repo_key`, `repo_keys`,
+  `exported_at`, and `memories`; raw event payloads are excluded.
+- `import`: `imported`, `merged`, `remapped`, `review_queued`, `dry_run`, and
+  `skipped` entries carrying `statement` and `reason`.

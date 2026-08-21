@@ -61,3 +61,25 @@ A repo `.agent-memory.json` is an additional ceiling:
 
 It can intersect or remove user grants. It cannot add one. A malformed policy
 fails closed for global memory.
+
+## Import
+
+An export file is data from somewhere else, so `import` is a trust boundary,
+not a restore. By default every record enters as `inferred`, which activation
+can only ever turn into `provisional`: a file from another person cannot mint
+an actionable memory, only fill the review queue. `--trust` is the explicit
+statement "this came from me" and replays the exported authority, confidence,
+and state.
+
+Either way import only adds and merges. It never deletes, never overwrites,
+and never lowers the state of a memory already stored, so the worst outcome of
+a wrong file is a review queue to reject. A live tombstone still blocks
+rehydration, so importing a backup does not resurrect what was forgotten, and
+records the source had already retracted or expired are not carried over.
+
+Identity is content, not id: kind, scope, repo key, normalized statement,
+conditions, and path globs. Ids are reissued on the way in. Project records
+keep their original repo key, which is derived from the git origin and is
+therefore the same key the repository will compute once it is cloned on the new
+machine; `--cwd` overrides it to adopt someone else's project memory into a
+local checkout.
