@@ -25,4 +25,5 @@ fi
 PYTHONPATH="$skill_root/scripts" "$python_bin" -m pytest -q "$skill_root/tests"
 python3 -m py_compile "$skill_root/scripts/memory.py" "$skill_root"/scripts/agent_memory/*.py
 node --check "$skill_root/adapters/opencode.js"
+node "$skill_root/tests/opencode_adapter.test.mjs"
 bash -n "$skill_root/bin/agent-memory"
