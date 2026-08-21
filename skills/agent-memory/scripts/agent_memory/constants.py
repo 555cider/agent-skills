@@ -5,6 +5,7 @@ DB_FILENAME = "agent-memory.sqlite3"
 EVENT_SCHEMA = "agent-memory.event.v2"
 RECORD_SCHEMA = "memory.record.v2"
 PACKET_SCHEMA = "agent-memory.packet.v2"
+EXPORT_SCHEMA = "agent-memory.export.v2"
 PROVIDER_REQUEST_SCHEMA = "agent-memory.provider.request.v2"
 PROVIDER_RESPONSE_SCHEMA = "agent-memory.provider.response.v2"
 
@@ -26,6 +27,8 @@ MEMORY_KINDS = {
 MEMORY_STATES = {"active", "provisional", "disputed", "retracted", "expired"}
 AUTHORITIES = {"explicit", "approved", "verified", "inferred", "assistant"}
 SCOPES = {"project", "global"}
+# What `export --scope` accepts; "project+global" is the legacy --include-global pair.
+EXPORT_SCOPES = {"project", "project+global", "global", "all"}
 HARNESSES = {"claude", "codex", "opencode", "generic"}
 
 RAW_CHAT_TTL_DAYS = 7

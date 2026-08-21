@@ -16,6 +16,8 @@ from typing import Any, Iterator, Sequence
 from .constants import (
     EVENT_KINDS,
     EVENT_SCHEMA,
+    EXPORT_SCHEMA,
+    EXPORT_SCOPES,
     HANDOFF_TTL_DAYS,
     HARNESSES,
     MAX_EVENT_TEXT,
@@ -45,6 +47,28 @@ from .util import (
     utc_now,
     word_tokens,
 )
+
+
+def content_digest(candidate: Candidate, project: str | None) -> str:
+    """Identity of a memory's content, independent of when or how it was stored.
+
+    Import relies on this being the *only* notion of sameness: record ids are
+    reissued on the way in, so an export replayed into the store it came from
+    has to collapse onto the existing rows rather than duplicate them.
+    """
+
+    return digest_text(
+        stable_json(
+            {
+                "kind": candidate.kind,
+                "scope": candidate.scope,
+                "repo_key": project,
+                "statement": normalize_text(candidate.statement),
+                "conditions": sorted(candidate.conditions),
+                "paths": sorted(candidate.path_globs),
+            }
+        )
+    )
 
 
 def _json_list(raw: str | None) -> list[Any]:
@@ -706,18 +730,7 @@ class MemoryService:
                 return None
             if explicit_override:
                 self.db.conn.execute("DELETE FROM tombstones WHERE digest=?", (tombstone,))
-            content_hash = digest_text(
-                stable_json(
-                    {
-                        "kind": candidate.kind,
-                        "scope": candidate.scope,
-                        "repo_key": target_project,
-                        "statement": normalize_text(candidate.statement),
-                        "conditions": sorted(candidate.conditions),
-                        "paths": sorted(candidate.path_globs),
-                    }
-                )
-            )
+            content_hash = content_digest(candidate, target_project)
             existing = self.db.conn.execute(
                 "SELECT * FROM memories WHERE content_hash=? AND state!='retracted' ORDER BY updated_at DESC LIMIT 1",
                 (content_hash,),
@@ -1314,21 +1327,187 @@ class MemoryService:
             "outcome": safe_outcome,
         }
 
-    def export(self, *, project: str, include_global: bool = False) -> dict[str, Any]:
-        if include_global:
+    def export(
+        self,
+        *,
+        project: str | None = None,
+        include_global: bool = False,
+        scope: str | None = None,
+    ) -> dict[str, Any]:
+        if scope is None:
+            scope = "project+global" if include_global else "project"
+        elif scope not in EXPORT_SCOPES:
+            raise MemoryError(f"invalid scope: {scope}")
+        if scope != "global" and scope != "all" and not project:
+            raise MemoryError("a project is required to export project-scoped memory")
+
+        if scope == "global":
             rows = self.db.conn.execute(
-                "SELECT * FROM memories WHERE repo_key=? OR scope='global' ORDER BY created_at", (project,)
+                "SELECT * FROM memories WHERE scope='global' ORDER BY created_at"
+            ).fetchall()
+        elif scope == "all":
+            rows = self.db.conn.execute("SELECT * FROM memories ORDER BY created_at").fetchall()
+        elif scope == "project+global":
+            rows = self.db.conn.execute(
+                "SELECT * FROM memories WHERE repo_key=? OR scope='global' ORDER BY created_at",
+                (project,),
             ).fetchall()
         else:
             rows = self.db.conn.execute(
                 "SELECT * FROM memories WHERE repo_key=? ORDER BY created_at", (project,)
             ).fetchall()
+
+        memories = [record_from_row(self.db, row) for row in rows]
         return {
-            "schema": "agent-memory.export.v2",
+            "schema": EXPORT_SCHEMA,
+            "scope": scope,
             "repo_key": project,
+            "repo_keys": sorted({item["repo_key"] for item in memories if item["repo_key"]}),
             "exported_at": utc_now(),
-            "memories": [record_from_row(self.db, row) for row in rows],
+            "memories": memories,
         }
+
+    def import_records(
+        self,
+        payload: dict[str, Any],
+        *,
+        project: str | None = None,
+        trust: bool = False,
+        scope: str = "all",
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Replay an export into this store, adding and merging only.
+
+        Nothing here deletes, overwrites, or downgrades an existing memory, so
+        the worst a bad file can do is queue statements for review. Untrusted
+        records land as `inferred`, which `_activation` can only ever turn into
+        `provisional` — a stranger's file cannot mint an actionable memory.
+        """
+
+        if not isinstance(payload, dict) or payload.get("schema") != EXPORT_SCHEMA:
+            raise MemoryError(f"not an {EXPORT_SCHEMA} export payload")
+        if scope not in {"global", "project", "all"}:
+            raise MemoryError(f"invalid scope: {scope}")
+        records = payload.get("memories")
+        if not isinstance(records, list):
+            raise MemoryError("export payload carries no memories list")
+
+        report: dict[str, Any] = {
+            "dry_run": dry_run,
+            "imported": 0,
+            "merged": 0,
+            "remapped": 0,
+            "review_queued": 0,
+            "skipped": [],
+        }
+        known_ids = {
+            row[0] for row in self.db.conn.execute("SELECT id FROM memories").fetchall()
+        }
+
+        for item in records:
+            if not isinstance(item, dict):
+                self._skip(report, item, "malformed")
+                continue
+            record_scope = str(item.get("scope") or "")
+            if scope != "all" and record_scope != scope:
+                continue
+            if str(item.get("state") or "") in {"retracted", "expired"}:
+                self._skip(report, item, "inactive")
+                continue
+
+            if record_scope == "global":
+                target: str | None = None
+            else:
+                target = project or (str(item.get("repo_key")) if item.get("repo_key") else None)
+                if not target:
+                    self._skip(report, item, "unknown-project")
+                    continue
+                if project and item.get("repo_key") != project:
+                    report["remapped"] += 1
+
+            try:
+                candidate = self._imported_candidate(item, trust=trust)
+            except (MemoryError, ValueError):
+                self._skip(report, item, "malformed")
+                continue
+
+            if self._is_forgotten(candidate, target):
+                self._skip(report, item, "forgotten")
+                continue
+
+            if dry_run:
+                existing = self.db.conn.execute(
+                    "SELECT 1 FROM memories WHERE content_hash=? AND state!='retracted'",
+                    (content_digest(candidate, target),),
+                ).fetchone()
+                if existing:
+                    report["merged"] += 1
+                else:
+                    report["imported"] += 1
+                    if self._activation(candidate)[0] == "provisional":
+                        report["review_queued"] += 1
+                continue
+
+            try:
+                stored = self.create_memory(candidate, project=target or "")
+            except MemoryError:
+                self._skip(report, item, "unsafe")
+                continue
+            if stored is None:
+                self._skip(report, item, "forgotten")
+                continue
+            if stored["id"] in known_ids:
+                report["merged"] += 1
+                continue
+            known_ids.add(stored["id"])
+            report["imported"] += 1
+            if stored["state"] == "provisional":
+                report["review_queued"] += 1
+
+        return report
+
+    def _imported_candidate(self, item: dict[str, Any], *, trust: bool) -> Candidate:
+        """Turn an exported record back into a candidate for the normal write path.
+
+        Evidence keeps its summary and exit status but loses `event_id`: those
+        ids name raw events in the *source* store, and a dangling reference
+        would claim provenance this store cannot show.
+        """
+
+        confidence = float(item.get("confidence") or 0.0)
+        evidence = [
+            {key: value for key, value in entry.items() if key not in {"id", "event_id"}}
+            for entry in item.get("evidence") or []
+            if isinstance(entry, dict)
+        ]
+        candidate = Candidate(
+            kind=str(item.get("kind") or ""),
+            scope=str(item.get("scope") or ""),
+            statement=str(item.get("statement") or ""),
+            conditions=[str(value) for value in item.get("conditions") or []],
+            path_globs=[str(value) for value in item.get("path_globs") or []],
+            authority=str(item.get("authority") or "inferred") if trust else "inferred",
+            confidence=confidence if trust else min(confidence, 0.5),
+            evidence=evidence,
+            valid_until=item.get("valid_until"),
+            user_approved=trust and str(item.get("state") or "") == "active",
+        )
+        return candidate.validate()
+
+    def _is_forgotten(self, candidate: Candidate, project: str | None) -> bool:
+        digest = self._tombstone_digest(
+            candidate.statement, candidate.scope, project if candidate.scope == "project" else None
+        )
+        return bool(
+            self.db.conn.execute(
+                "SELECT 1 FROM tombstones WHERE digest=? AND expires_at>?", (digest, utc_now())
+            ).fetchone()
+        )
+
+    @staticmethod
+    def _skip(report: dict[str, Any], item: Any, reason: str) -> None:
+        statement = item.get("statement") if isinstance(item, dict) else None
+        report["skipped"].append({"statement": str(statement or ""), "reason": reason})
 
     def gc(self) -> dict[str, int]:
         now = utc_now()
