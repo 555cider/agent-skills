@@ -3,6 +3,7 @@
 // retention, activation, and provider filtering.
 import { existsSync } from "node:fs"
 import { spawnSync } from "node:child_process"
+import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -12,6 +13,19 @@ const python =
   process.env.AGENT_MEMORY_PYTHON ||
   [join(skillRoot, ".venv", "bin", "python"), join(skillRoot, ".venv", "Scripts", "python.exe")].find(existsSync) ||
   "python3"
+
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const PART_ID = /^prt_[0-9a-f]{12}[0-9A-Za-z]{14}$/
+let partCounter = 0
+
+// Same shape as OpenCode's Identifier.ascending("part"): the prefix, a 48-bit
+// hex clock, and 14 random base62 characters.
+function ascendingPartId() {
+  const clock = ((BigInt(Date.now()) << 12n) + BigInt(partCounter++)) & 0xffffffffffffn
+  let suffix = ""
+  for (const byte of randomBytes(14)) suffix += BASE62[byte % 62]
+  return `prt_${clock.toString(16).padStart(12, "0")}${suffix}`
+}
 
 function invoke(event, payload, timeout = 5000) {
   try {
@@ -65,10 +79,15 @@ export const AgentMemoryPlugin = async ({ directory }) => ({
       event_id: output?.message?.id,
     })
     if (!recalled.context) return
+    // OpenCode assigns part ids before this hook runs, so a part pushed here
+    // keeps whatever id we give it; an invalid one throws while saving the
+    // user message. Drop the recall rather than break the turn.
+    const id = ascendingPartId()
+    if (!PART_ID.test(id)) return
     // Mutate the parts array in place: OpenCode keeps its own reference, so
     // reassigning output.parts would be silently ignored.
     output.parts.push({
-      id: `agent-memory-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      id,
       sessionID: output.message.sessionID,
       messageID: output.message.id,
       type: "text",
