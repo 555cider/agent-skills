@@ -15,6 +15,9 @@
   "scrollPositions": ["top", "bottom"],
   "settleMs": 400,
   "waitForSelector": null,
+  "headed": false,
+  "disableGpu": true,
+  "chromeArgs": [],
   "themeInitScripts": { "app-dark": "document.documentElement.dataset.theme='dark'" },
   "apiMockPattern": "**/api/**",
   "stateMocks": {
@@ -145,7 +148,8 @@ Only high-confidence measured signals appear here. `Polish` remains in the total
   "schemaVersion": 2,
   "base_url": "http://localhost:3000",
   "generated_at": "2026-07-20T00:00:00.000Z",
-  "runner": { "name": "audit-chrome", "version": 2, "workers": 2, "durationMs": 4120 },
+  "runner": { "name": "audit-chrome", "version": 2, "workers": 2, "durationMs": 4120,
+    "chrome": { "headed": false, "disableGpu": true, "args": ["--headless=new", "--disable-gpu"] } },
   "matrix": [{
     "index": 0,
     "route": "/", "viewport": "desktop", "theme": "light", "state": "empty", "adaptation": "reflow-320",
@@ -188,6 +192,8 @@ Only high-confidence measured signals appear here. `Polish` remains in the total
 ```
 
 Cells are sorted by configuration index even when workers run concurrently. Fresh browser contexts isolate cookies, local storage, cache, and service workers.
+
+`runner.chrome` records the rendering path the numbers came from. By default the run is pinned to Chrome's software rasterizer (`--headless=new --disable-gpu`) so a threshold measured on one machine means the same thing on another and in CI, where there is no GPU at all. `disableGpu: false` hands the page back to the real driver, `headed: true` opens a visible window — the fastest way to see why a cell times out waiting for a condition — and `chromeArgs` appends further flags; `UI_AUDIT_DISABLE_GPU=0`, `UI_AUDIT_HEADED=1`, and `UI_AUDIT_CHROME_ARGS` are the environment equivalents. The debugging port, throwaway profile, and sandbox are not configurable: they are how the runner reaches Chrome, not how the page is painted.
 
 `ruleCoverage[]` preserves the manifest proof for each `window.__uiAudit()` invocation in configured scroll order. Each entry records `scroll`, `phase`, `rulesExpected`, `rulesRun`, `rulesMissing`, `rulesSkipped`, and `checked | error`; error entries also include `error`. Missing/non-array manifest fields, an empty expected manifest, skipped rules, or expected rules absent from that report's run list are errors. The cell-level `rulesExpected`, `rulesRun`, `rulesMissing`, and `rulesSkipped` fields remain aggregate compatibility evidence, not the completeness decision. Any error entry makes the cell an error even when the cell-level unions look complete.
 
