@@ -3,14 +3,14 @@
 #
 # Run: bash skills/ui-audit/tests/run.sh
 set -u
-export UI_SPLINT_SETTLE_MS=0
+export UI_AUDIT_SETTLE_MS=0
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$HERE/../scripts/audit-chrome.mjs"
 RULE_COVERAGE="$HERE/../scripts/rule-coverage.mjs"
 PY_RUNNER="$HERE/../scripts/run-ui-audit.py"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ui-audit-tests.XXXXXX")"
-PROFILES_BEFORE="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"
+PROFILES_BEFORE="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'ui-audit-profile-*' | wc -l)"
 SERVER_PID=""
 trap '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
 
@@ -291,7 +291,7 @@ for fixture in expected:
     cfg_path = work / (file_name + ".json")
     cfg_path.write_text(json.dumps(config), encoding="utf-8")
     run_env = os.environ.copy()
-    run_env["UI_SPLINT_SETTLE_MS"] = "350" if file_name == "kitchensink.html" else "0"
+    run_env["UI_AUDIT_SETTLE_MS"] = "350" if file_name == "kitchensink.html" else "0"
     result = subprocess.run(
         ["node", str(runner), base, "--config", str(cfg_path), "--out-dir", str(out_dir), "--no-screenshots"],
         stdout=subprocess.PIPE,
@@ -718,7 +718,7 @@ fi
 if python3 - "$HERE/../scripts/run-ui-audit.py" <<'PY'
 import importlib.util, pathlib, sys
 path = pathlib.Path(sys.argv[1])
-spec = importlib.util.spec_from_file_location("ui_splint_runner", path)
+spec = importlib.util.spec_from_file_location("ui_audit_runner", path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 assert mod.NODE_RUNNER.name == "audit-chrome.mjs"
@@ -754,9 +754,29 @@ else
   fail "skill requires functional duplicate-submission proof" "missing single-flight test contract"
 fi
 
+# ---- the rendering path is configurable and is recorded as evidence ----
+# Read off a run that already happened: the default costs no extra browser here.
+if python3 - "$WORK/pointer-cap/coverage.json" <<'PY'
+import json, sys
+chrome = json.load(open(sys.argv[1]))["runner"]["chrome"]
+assert chrome == {"headed": False, "disableGpu": True,
+                  "args": ["--headless=new", "--disable-gpu"]}, chrome
+PY
+then pass "default rendering path is recorded in coverage"; else fail "default rendering path is recorded in coverage" "missing or wrong runner.chrome"; fi
+
+# The one case worth its own browser: an option nothing exercises is an option that rots.
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/hover-valid.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"desktop","width":1280,"height":800,"isMobile":false,"dpr":1}],"disableGpu":false,"chromeArgs":["--force-color-profile=srgb"]}')" \
+  --out-dir "$WORK/chrome-override" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if python3 - "$WORK/chrome-override/coverage.json" <<'PY'
+import json, sys
+chrome = json.load(open(sys.argv[1]))["runner"]["chrome"]
+assert chrome["args"] == ["--headless=new", "--force-color-profile=srgb"], chrome
+PY
+then pass "disableGpu and chromeArgs override the rendering path"; else fail "disableGpu and chromeArgs override the rendering path" "override not applied"; fi
+
 PROFILES_AFTER=""
 for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-  PROFILES_AFTER="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'uisplint-*' | wc -l)"
+  PROFILES_AFTER="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'ui-audit-profile-*' | wc -l)"
   [ "$PROFILES_AFTER" = "$PROFILES_BEFORE" ] && break
   sleep 0.1
 done

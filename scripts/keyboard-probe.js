@@ -7,7 +7,7 @@
  * boundaries and inspect evidence, then send trusted Tab/Shift+Tab input via
  * Playwright or CDP Input.dispatchKeyEvent.
  */
-(function installUiSplintKeyboardProbe(root) {
+(function installUiAuditKeyboardProbe(root) {
   'use strict';
 
   if (root.__uiAuditKeyboardProbe) return;

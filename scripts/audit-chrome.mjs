@@ -126,7 +126,47 @@ const keyboardCfg = cfg.keyboardProbe || {};
 const hoverCfg = cfg.hoverProbe || {};
 const waitForSelector = cfg.waitForSelector || null;
 const workers = Number(cfg.workers ?? 2);
-const settleMs = Number(process.env.UI_SPLINT_SETTLE_MS ?? cfg.settleMs ?? 1200);
+const settleMs = Number(process.env.UI_AUDIT_SETTLE_MS ?? cfg.settleMs ?? 1200);
+
+/**
+ * Chrome launch mode.
+ *
+ * The defaults are deliberate, not incidental: `--headless=new` plus `--disable-gpu` pins every
+ * run to Chrome's software rasterizer, so a threshold measured on one machine means the same
+ * thing on another and in CI, where there is no GPU at all. That determinism is the point of the
+ * tool, which is why it stays the default.
+ *
+ * It is still a rendering choice, and a rendering choice a visual audit should be able to state
+ * and change. `disableGpu: false` hands the page back to the real driver (useful when the screen
+ * under review is GPU-composited and you want to see what a user with a GPU sees); `headed: true`
+ * puts a visible window on screen, which is the fastest way to find out why a cell that "times
+ * out waiting for condition" never got where it was going. `chromeArgs` appends anything else.
+ *
+ * Process-level arguments — the debugging port, the throwaway profile, the sandbox — are not
+ * configurable here. They are how the runner talks to Chrome at all, not how the page is painted.
+ * The resolved set is recorded in coverage.json so a run's rendering path is part of its evidence.
+ */
+const chromeHeaded = process.env.UI_AUDIT_HEADED === '1' || cfg.headed === true;
+const chromeDisableGpu = process.env.UI_AUDIT_DISABLE_GPU != null
+  ? process.env.UI_AUDIT_DISABLE_GPU !== '0'
+  : cfg.disableGpu !== false;
+const extraChromeArgs = (() => {
+  const fromEnv = process.env.UI_AUDIT_CHROME_ARGS;
+  const raw = fromEnv != null ? fromEnv.split(/\s+/).filter(Boolean) : cfg.chromeArgs;
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) configurationError('chromeArgs must be an array of strings');
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || !entry.trim()) configurationError('chromeArgs entries must be non-empty strings');
+  }
+  return raw;
+})();
+
+/** How the page gets painted — the part of the launch line a caller may legitimately change. */
+const renderingChromeArgs = [
+  ...(chromeHeaded ? [] : ['--headless=new']),
+  ...(chromeDisableGpu ? ['--disable-gpu'] : []),
+  ...extraChromeArgs,
+];
 
 function requireNonEmptyArray(name, value) {
   if (!Array.isArray(value) || value.length === 0) configurationError(`${name} must be a non-empty array`);
@@ -221,10 +261,10 @@ function killChromeTree(proc) {
 
 async function launchChrome() {
   const bin = findChrome();
-  const profile = mkdtempSync(join(tmpdir(), 'uisplint-'));
-  const args = ['--headless=new', '--disable-gpu', '--no-first-run',
+  const profile = mkdtempSync(join(tmpdir(), 'ui-audit-profile-'));
+  const args = [...renderingChromeArgs, '--no-first-run',
     '--disable-extensions', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
-  if (allowNoSandbox) args.splice(2, 0, '--no-sandbox');
+  if (allowNoSandbox) args.splice(renderingChromeArgs.length, 0, '--no-sandbox');
   const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: CHROME_DETACHED });
   let wsUrl;
   try { wsUrl = await new Promise((resolve, reject) => {
@@ -1246,7 +1286,13 @@ writeFileSync(join(outDir, 'coverage.json'), JSON.stringify({
   schemaVersion: 2,
   base_url: baseUrl,
   generated_at: new Date().toISOString(),
-  runner: { name: 'audit-chrome', version: 2, workers, durationMs },
+  runner: {
+    name: 'audit-chrome', version: 2, workers, durationMs,
+    // Which rendering path produced these numbers matters as much as the numbers: a contrast
+    // ratio measured on the software rasterizer and one measured on a real driver can disagree
+    // on the same screen, and nothing else in the output would say which one ran.
+    chrome: { headed: chromeHeaded, disableGpu: chromeDisableGpu, args: renderingChromeArgs },
+  },
   matrix,
   totals,
   advisoryTotals
