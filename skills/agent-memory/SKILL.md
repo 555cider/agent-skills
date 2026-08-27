@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: Use when work may depend on prior user preferences, repo-specific constraints, earlier decisions, verified procedures, recurring caveats, or handoff context; when the user asks to remember, forget, correct, review, or update memory (기억해줘, 잊어버려, 메모리 업데이트); or when durable context must transfer across Codex, Claude, OpenCode, or another coding agent. Do not use for self-contained requests, ordinary progress, secrets or personal data, or facts cheaply derivable from code, docs, git, or current tool output.
+description: Use when work may depend on prior user preferences, repo-specific constraints, earlier decisions, verified procedures, recurring caveats, or handoff context; when the user asks to remember, forget, correct, review, or update memory (기억해줘, 잊어버려, 메모리 업데이트); when durable context must transfer across Codex, Claude, OpenCode, or another coding agent; or when existing memory should be brought in from CLAUDE.md, AGENTS.md, ~/.codex/memories, or a .remember directory (메모리 가져오기, import, adopt). Do not use for self-contained requests, ordinary progress, secrets or personal data, or facts cheaply derivable from code, docs, git, or current tool output.
 license: MIT
 compatibility: Requires Python 3.11+, SQLite FTS5, and local filesystem access. sqlite-vec and model providers are optional.
 ---
@@ -127,6 +127,63 @@ agent-memory review reject <id> --format json
 Approval creates a new immutable revision and activates the record. Rejection
 uses the same hard-delete and tombstone semantics as forget.
 
+Filter a long queue with `--state`, `--scope`, `--kind`, `--source`, `--repo-key`,
+`--batch`, and `--all-projects`. An import spanning several repositories is invisible from
+inside any one of them without `--all-projects`.
+
+## Adopt memory another agent already has
+
+`adopt` reads the memory files Claude Code and Codex keep as plain markdown and
+puts them through the same trust boundary as `import`: everything arrives
+`inferred`/`provisional` for review, tombstones still block rehydration, and
+replaying an adoption merges instead of duplicating.
+
+```bash
+agent-memory adopt list --cwd "$PWD" --format json          # what this machine has
+agent-memory adopt --cwd "$PWD" --dry-run --format json     # what would be adopted
+agent-memory adopt --cwd "$PWD" --format json               # adopt into the queue
+```
+
+Sources are `claude-md` (`~/.claude/CLAUDE.md`, `<repo>/CLAUDE.md`,
+`<repo>/CLAUDE.local.md`), `codex-agents` (`AGENTS.md`), `codex-memory`
+(`~/.codex/memories/MEMORY.md`, `memory_summary.md`), and `remember`
+(`.remember/core-memories.md`). Pass `--source` to narrow, `--scan <repo>` to
+read another checkout's project files, and `--llm` to let the configured
+provider classify and restate what the parser delimited.
+
+**Scope is decided per record, never in bulk.** Home files are global; repo
+files are keyed to that repository; a Codex `Task Group` is routed by its
+`applies_to: cwd=` line to the repository it names. A `cwd` that is not a git
+repository on this machine is skipped as `unknown-project` — it is never widened
+to global. Do not pass `--cwd` expecting it to re-home someone else's records;
+it selects which repository's own files are read.
+
+**The durability line.** Memory is a rule store read into a ~1,200-token recall
+budget, so `adopt` carries statements about how work should be done and leaves
+records of what was done once. Session transcripts, `rollout_summaries/`,
+`raw_memories.md`, `.remember/now.md`/`today-*.md`/`recent.md`/`archive.md`, and
+the `Task Group`/`Task N`/`keywords` scaffolding inside `MEMORY.md` are all
+excluded; `--include-episodic` opens the narrative files when the user asks.
+
+**Review the whole adoption as one decision.** The report carries a `batch`
+token and a `groups` table counting records by source, scope, repository, and
+kind. Render that table, ask the user once which groups to accept, then resolve
+each accepted group with a single command:
+
+```bash
+agent-memory review approve --batch <token> --scope global --format json
+agent-memory review approve --batch <token> --repo-key <key> --format json
+agent-memory review reject  --batch <token> --scope project --format json
+```
+
+Never walk an adopted queue one `Enter` at a time. Bulk resolution requires
+`--batch`; there is no bare `--all`. Rejection tombstones the statement, so a
+rule turned down here stays out of the next adoption — say so before rejecting.
+
+Adopted global rules stay invisible to a repository until that repository grants
+trust for the kind, so finish with `policy trust grant` (below) or the adoption
+will look like it did nothing.
+
 ## Trust and observation controls
 
 Grant global recall narrowly by repo and kind:
@@ -170,6 +227,7 @@ agent-memory doctor --format json
 agent-memory gc --format json
 agent-memory export --scope global --format json > global-memory.json
 agent-memory import global-memory.json --dry-run --format json
+agent-memory adopt --cwd "$PWD" --dry-run --format json
 agent-memory integrate --mode off --harness all --apply
 ```
 
@@ -177,6 +235,8 @@ agent-memory integrate --mode off --harness all --apply
 and without it the original `--cwd`/`--include-global` contract still holds.
 `import` replays an export into this store, adding and merging only — records
 land in the review queue unless `--trust` says the file is your own backup.
+`adopt` does the same for another agent's markdown memory and never trusts.
+Both report a `batch` token that resolves their queue in one decision.
 `gc` enforces TTLs. `integrate off` removes only
 managed adapters and keeps the v2 DB. Configure optional providers only through
 environment variables; API keys never belong in memory or config files.

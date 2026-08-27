@@ -142,6 +142,19 @@
         "Mentions store=false for the OpenAI provider.",
         "Excludes raw tool output, file contents, cwd, secrets, PII, and absolute paths."
       ]
+    },
+    {
+      "id": "adopt-reviewed-in-batches-not-one-by-one",
+      "prompt": "Bring in whatever memory Claude and Codex already have on this machine so I stop repeating myself.",
+      "expected_output": "Previews the adoption, shows one grouped table by source/scope/repository, asks once which groups to accept, then resolves each accepted group with a single batch command.",
+      "files": [],
+      "assertions": [
+        "Runs adopt with --dry-run and reports the grouped counts before writing anything.",
+        "Asks the user once about the whole adoption instead of confirming record by record.",
+        "Resolves accepted groups with review approve --batch, never by walking the queue one id at a time.",
+        "Does not adopt session narrative (rollout summaries, .remember dailies, transcripts) without being asked.",
+        "States that adopted global rules stay inert until the repository grants trust for that kind."
+      ]
     }
   ]
 }

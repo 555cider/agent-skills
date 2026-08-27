@@ -78,5 +78,21 @@
   {
     "query": "Tell me whether this sentence sounds natural: I very like this tool.",
     "should_trigger": false
+  },
+  {
+    "query": "예전에 Codex 쓰면서 쌓인 메모리를 여기로 가져올 수 있나?",
+    "should_trigger": true
+  },
+  {
+    "query": "Pull the durable rules out of my CLAUDE.md and AGENTS.md into shared agent memory.",
+    "should_trigger": true
+  },
+  {
+    "query": "Open CLAUDE.md and fix the typo in the third bullet of the ports section.",
+    "should_trigger": false
+  },
+  {
+    "query": "What does the AGENTS.md at the repo root say about commit message format?",
+    "should_trigger": false
   }
 ]

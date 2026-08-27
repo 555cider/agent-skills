@@ -18,7 +18,24 @@ current prompt
   -> FTS5 + trigram + optional sqlite-vec candidates
   -> reciprocal-rank fusion and bounded boosts
   -> <=8 record / ~1200 token packet
+
+another agent's memory files            (sources.py)
+  -> discover CLAUDE.md / AGENTS.md / ~/.codex/memories / .remember
+  -> markdown blocks under their heading path
+  -> durability line: rules kept, session narrative dropped
+  -> scope routed per record (home / repo / applies_to cwd)
+  -> home directories rewritten to ~
+  -> agent-memory.export.v2 payload
+  -> import_records, untrusted            (the ordinary write path)
 ```
+
+`sources.py` reads files and never touches the database. Adoption reaches the
+store only through `import_records`, so redaction, tombstones, content-hash
+merging, and the `inferred`/`provisional` ceiling are enforced in one place for
+hooks, export files, and foreign memory alike. Its two judgements — which scope
+a record belongs to, and whether a statement is a rule or a record of what
+happened once — are made before the payload exists, because neither can be
+recovered downstream.
 
 Maintenance mode requires an explicit memory operation, or a change word
 ("instead of", "대신") combined with a durability marker ("from now on",
@@ -36,7 +53,8 @@ and vector tables are indexes, not alternate stores.
 - `events`: redacted zlib payload, digest, TTL, integration timestamp.
 - `memories`: current durable state.
 - `memory_revisions`: immutable snapshots for each revision.
-- `evidence`: local event/command/test evidence.
+- `evidence`: local event/command/test evidence, and the `import.batch` /
+  `import.<source>` rows that make one import addressable for bulk review.
 - `relations`: `supersedes` and `conflicts_with` graph edges.
 - `jobs`: pending/leased/done/dead work with retry metadata.
 - `retrieval_queries` and `retrieval_feedback`: exposure and actual-use signals.

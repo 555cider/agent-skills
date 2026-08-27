@@ -31,6 +31,17 @@ SCOPES = {"project", "global"}
 EXPORT_SCOPES = {"project", "project+global", "global", "all"}
 HARNESSES = {"claude", "codex", "opencode", "generic"}
 
+# External memory `adopt` can read. Named by the file family rather than the
+# harness because CLAUDE.md and AGENTS.md are separate files with separate
+# lifetimes even when one machine keeps both in sync by hand.
+ADOPT_SOURCES = ("claude-md", "codex-agents", "codex-memory", "remember")
+# Evidence kinds an import writes so a batch stays addressable afterwards.
+# `evidence.kind` is the only per-record label the v2 schema already has room
+# for, and bumping SCHEMA_VERSION to add a column would strand every existing
+# store: db.py refuses a version mismatch and there is no migration path.
+IMPORT_EVIDENCE_PREFIX = "import."
+IMPORT_BATCH_EVIDENCE = "import.batch"
+
 RAW_CHAT_TTL_DAYS = 7
 HANDOFF_TTL_DAYS = 14
 TOMBSTONE_TTL_DAYS = 7

@@ -11,6 +11,7 @@ from typing import Any, Sequence
 
 from . import __version__
 from .constants import (
+    ADOPT_SOURCES,
     BUSY_TIMEOUT_MS,
     DEFAULT_LIMIT,
     DEFAULT_TOKEN_BUDGET,
@@ -27,7 +28,14 @@ from .providers import NullProvider, ProviderError, UnavailableProvider, provide
 from .redaction import redact_text
 from .retrieval import Retriever
 from .service import MemoryService
-from .util import MemoryError, memory_home, repo_key, resolve_cwd
+from .sources import (
+    build_payload,
+    discover,
+    group_counts,
+    refine_with_provider,
+    select,
+)
+from .util import MemoryError, expand_user_path, memory_home, repo_key, resolve_cwd
 
 
 def _emit(value: Any, output_format: str = "text") -> None:
@@ -202,14 +210,97 @@ def command_review(args: argparse.Namespace) -> int:
     db, service = _open(args, provider=False)
     try:
         if args.review_action == "list":
-            result: Any = service.review_list(_project(args), state=args.state)
+            result: Any = service.review_list(
+                _project(args),
+                state=args.state,
+                batch=args.batch,
+                source=args.source,
+                scope=args.scope,
+                kind=args.kind,
+                repo=args.repo_key,
+                all_projects=args.all_projects,
+            )
         elif args.review_action == "show":
             result = service.get_memory(args.id)
         elif args.review_action == "approve":
-            result = service.approve(args.id)
+            result = (
+                service.resolve_batch(batch=args.batch, decision="approve", **_batch_filters(args))
+                if args.batch
+                else service.approve(_one_id(args))
+            )
         else:
-            result = {"removed": service.reject(args.id)}
+            result = (
+                service.resolve_batch(batch=args.batch, decision="reject", **_batch_filters(args))
+                if args.batch
+                else {"removed": service.reject(_one_id(args))}
+            )
         _emit(result, args.format)
+        return 0
+    finally:
+        db.close()
+
+
+def _batch_filters(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "source": args.source,
+        "scope": args.scope,
+        "kind": args.kind,
+        "repo": args.repo_key,
+    }
+
+
+def _one_id(args: argparse.Namespace) -> str:
+    """Require an explicit target when no batch narrows the decision.
+
+    Bulk resolution is reachable only through `--batch`; there is deliberately no
+    bare `--all`, because rejecting is a delete and the queue is the only thing
+    standing between an imported file and this store.
+    """
+    value = getattr(args, "id", None)
+    if not value:
+        raise MemoryError("a memory id is required, or --batch to resolve an import at once")
+    return str(value)
+
+
+def command_adopt(args: argparse.Namespace) -> int:
+    home = expand_user_path(args.home).resolve() if args.home else None
+    sources = discover(home=home, cwd=_cwd(args), scan_roots=[Path(item) for item in args.scan or []])
+    selected = select(sources, args.source or [])
+
+    if args.action == "list":
+        _emit(
+            [
+                {
+                    "source": item.source,
+                    "path": item.label,
+                    "scope": item.scope,
+                    "episodic": item.episodic,
+                    "repo_key": item.project,
+                }
+                for item in selected
+            ],
+            args.format,
+        )
+        return 0
+
+    built = build_payload(selected, include_episodic=args.include_episodic)
+    db, service = _open(args, provider=args.llm)
+    try:
+        if args.llm:
+            built["payload"]["memories"] = refine_with_provider(
+                service.provider, built["payload"]["memories"]
+            )
+            built["groups"] = group_counts(built["payload"]["memories"])
+        report = service.import_records(
+            built["payload"], project=None, trust=False, scope="all", dry_run=args.dry_run
+        )
+        # Records the converter refused never reached the store, but they are the
+        # same kind of outcome as the ones it refused, and a reviewer comparing a
+        # dry run against a real run should see one list, not two.
+        report["skipped"] = built["skipped"] + report["skipped"]
+        report["read"] = built["read"]
+        report["groups"] = built["groups"]
+        _emit(report, args.format)
         return 0
     finally:
         db.close()
@@ -552,17 +643,61 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = sub.add_parser("review", help="Inspect and resolve provisional or disputed memory")
     review_sub = review.add_subparsers(dest="review_action", required=True)
+
+    def _review_filters(target: argparse.ArgumentParser) -> None:
+        target.add_argument("--batch", help="Import batch token from an adopt/import report")
+        target.add_argument("--source", choices=sorted(ADOPT_SOURCES))
+        target.add_argument("--scope", choices=sorted(SCOPES))
+        target.add_argument("--kind", choices=sorted(MEMORY_KINDS))
+        target.add_argument("--repo-key", help="Narrow to one repository, as the report names it")
+
     review_list = review_sub.add_parser("list")
     review_list.add_argument("--cwd")
     review_list.add_argument("--state", choices=sorted(MEMORY_STATES))
+    review_list.add_argument("--all-projects", action="store_true")
+    _review_filters(review_list)
     _format(review_list)
     review_list.set_defaults(func=command_review)
-    for action in ("show", "approve", "reject"):
+
+    show = review_sub.add_parser("show")
+    show.add_argument("id")
+    show.add_argument("--cwd")
+    _format(show)
+    show.set_defaults(
+        func=command_review, batch=None, source=None, scope=None, kind=None, repo_key=None
+    )
+
+    for action in ("approve", "reject"):
         target = review_sub.add_parser(action)
-        target.add_argument("id")
+        # Optional so `--batch` can stand in for it; `_one_id` refuses the case
+        # where neither is given rather than letting a bare command act on
+        # everything in the queue.
+        target.add_argument("id", nargs="?")
         target.add_argument("--cwd")
+        _review_filters(target)
         _format(target)
         target.set_defaults(func=command_review)
+
+    adopt = sub.add_parser(
+        "adopt", help="Read another agent's memory files into this store for review"
+    )
+    adopt.add_argument("action", nargs="?", choices=("run", "list"), default="run")
+    adopt.add_argument(
+        "--source", action="append", choices=[*sorted(ADOPT_SOURCES), "all"],
+        help="Repeatable; default all",
+    )
+    adopt.add_argument("--cwd", help="Repository whose project-scoped files are read")
+    adopt.add_argument("--scan", action="append", help="Additional repository root, repeatable")
+    adopt.add_argument("--home", help="Override the home directory the global files are read from")
+    adopt.add_argument("--llm", action="store_true", help="Let the provider classify and restate")
+    adopt.add_argument(
+        "--include-episodic",
+        action="store_true",
+        help="Also read session narrative that records what happened, not what to do",
+    )
+    adopt.add_argument("--dry-run", action="store_true")
+    _format(adopt)
+    adopt.set_defaults(func=command_adopt)
 
     policy = sub.add_parser("policy", help="Manage cross-scope policy")
     policy_sub = policy.add_subparsers(dest="policy_area", required=True)
