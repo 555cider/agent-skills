@@ -88,5 +88,20 @@ Exposure does not set `used`; only `feedback --used` does.
   memory states, trust, integrations, conflicts, and v1 artifact detection.
 - `export`: `agent-memory.export.v2` with `scope`, `repo_key`, `repo_keys`,
   `exported_at`, and `memories`; raw event payloads are excluded.
-- `import`: `imported`, `merged`, `remapped`, `review_queued`, `dry_run`, and
-  `skipped` entries carrying `statement` and `reason`.
+- `import`: `batch`, `imported`, `merged`, `remapped`, `review_queued`,
+  `dry_run`, and `skipped` entries carrying `statement` and `reason`.
+- `adopt list`: an array of `source`, `path` (home collapsed to `~`), `scope`,
+  `episodic`, `repo_key`.
+- `adopt`: the `import` report plus `read` (per file: `source`, `path`, `scope`,
+  `episodic`, `records`) and `groups`. A `groups` row is `source`, `scope`,
+  `repo_key`, `kind`, `count`, and up to three `examples` — it is what a
+  reviewer should be shown so one question resolves the whole adoption. Its
+  `skipped` list merges converter drops (`unsafe`, `unknown-project`) with the
+  import's own, so a `--dry-run` reports the same outcome the real run produces.
+- `review approve --batch` / `reject --batch`: `batch`, `decision`, `count`, and
+  the `resolved` memory ids.
+
+The `batch` token is stored as an `import.batch` evidence row on every record an
+import wrote, alongside an `import.<source>` row naming the file family it came
+from. Those two evidence kinds are what `review --batch` and `review --source`
+match on; no table or column was added for them.

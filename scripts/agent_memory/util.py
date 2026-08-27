@@ -97,6 +97,18 @@ def repo_identity(cwd: Path) -> tuple[str, Path]:
     return identity, root
 
 
+def git_root(cwd: Path) -> Path | None:
+    """The git toplevel containing `cwd`, or None when it is not in a repository.
+
+    `repo_identity` deliberately falls back to a path identity for a plain
+    directory, which is right for the working directory the user is standing in
+    and wrong for a path parsed out of someone's notes: a directory that merely
+    exists should not mint a project key.
+    """
+    top = _git_value(cwd, "rev-parse", "--show-toplevel")
+    return Path(top).resolve() if top else None
+
+
 def repo_key(cwd: Path) -> str:
     identity, root = repo_identity(cwd)
     slug = re.sub(r"[^a-z0-9]+", "-", root.name.casefold()).strip("-") or "repo"

@@ -20,6 +20,8 @@ from .constants import (
     EXPORT_SCOPES,
     HANDOFF_TTL_DAYS,
     HARNESSES,
+    IMPORT_BATCH_EVIDENCE,
+    IMPORT_EVIDENCE_PREFIX,
     MAX_EVENT_TEXT,
     MAX_JOB_ATTEMPTS,
     MEMORY_KINDS,
@@ -27,6 +29,7 @@ from .constants import (
     PROCEDURE_STALE_DAYS,
     RAW_CHAT_TTL_DAYS,
     RECORD_SCHEMA,
+    SCOPES,
     TOMBSTONE_TTL_DAYS,
     TOOL_OUTPUT_LIMIT_BYTES,
 )
@@ -1196,19 +1199,110 @@ class MemoryService:
         return {"acquired": True, "processed": processed, "embedded": embedded}
 
     # -------------------------------------------------------------- lifecycle
-    def review_list(self, project: str, *, state: str | None = None) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM memories WHERE (scope='global' OR repo_key=?)"
-        params: list[Any] = [project]
+    def review_list(
+        self,
+        project: str,
+        *,
+        state: str | None = None,
+        batch: str | None = None,
+        source: str | None = None,
+        scope: str | None = None,
+        kind: str | None = None,
+        repo: str | None = None,
+        all_projects: bool = False,
+    ) -> list[dict[str, Any]]:
+        """List memory awaiting a decision, narrowed the way a reviewer thinks.
+
+        `all_projects` exists for imports: one `MEMORY.md` carries knowledge for
+        several repositories, so the queue it produces cannot be seen at all from
+        inside a single one.
+        """
+        sql = "SELECT m.* FROM memories AS m WHERE 1=1"
+        params: list[Any] = []
+        if not all_projects:
+            sql += " AND (m.scope='global' OR m.repo_key=?)"
+            params.append(project)
         if state:
             if state not in MEMORY_STATES:
                 raise MemoryError(f"invalid state: {state}")
-            sql += " AND state=?"
+            sql += " AND m.state=?"
             params.append(state)
         else:
-            sql += " AND state IN ('provisional','disputed')"
-        sql += " ORDER BY updated_at DESC"
+            sql += " AND m.state IN ('provisional','disputed')"
+        if scope:
+            if scope not in SCOPES:
+                raise MemoryError(f"invalid scope: {scope}")
+            sql += " AND m.scope=?"
+            params.append(scope)
+        if kind:
+            if kind not in MEMORY_KINDS:
+                raise MemoryError(f"invalid memory kind: {kind}")
+            sql += " AND m.kind=?"
+            params.append(kind)
+        if repo:
+            sql += " AND m.repo_key=?"
+            params.append(repo)
+        if batch:
+            sql += (
+                " AND EXISTS(SELECT 1 FROM evidence AS e WHERE e.memory_id=m.id"
+                " AND e.kind=? AND e.summary=?)"
+            )
+            params.extend([IMPORT_BATCH_EVIDENCE, batch])
+        if source:
+            sql += " AND EXISTS(SELECT 1 FROM evidence AS e WHERE e.memory_id=m.id AND e.kind=?)"
+            params.append(f"{IMPORT_EVIDENCE_PREFIX}{source}")
+        sql += " ORDER BY m.updated_at DESC"
         rows = self.db.conn.execute(sql, params).fetchall()
         return [record_from_row(self.db, row) for row in rows]
+
+    def resolve_batch(
+        self,
+        *,
+        batch: str,
+        decision: str,
+        source: str | None = None,
+        scope: str | None = None,
+        kind: str | None = None,
+        repo: str | None = None,
+    ) -> dict[str, Any]:
+        """Approve or reject one import batch in a single decision.
+
+        The batch is the unit, not the current repository: one adoption spans
+        every repository the source file spoke about, and a reviewer standing in
+        one checkout still has to be able to resolve the whole thing. `repo`
+        narrows it back down when they want to take one project at a time —
+        those are the same groups the import report counted.
+
+        Only `provisional` and `disputed` records are touched. A batch that
+        merged onto memory already active must not be able to re-approve it, and
+        rejecting must not reach past the queue into settled memory.
+
+        Rejection is `forget`, which leaves a tombstone: a rule turned down here
+        stays out for the tombstone's lifetime even if the file it came from is
+        adopted again. That is the point — otherwise every re-run rebuilds the
+        queue the reviewer just emptied.
+        """
+        if decision not in {"approve", "reject"}:
+            raise MemoryError(f"invalid decision: {decision}")
+        if not batch:
+            raise MemoryError("a batch is required to resolve memory in bulk")
+        pending = self.review_list(
+            "",
+            batch=batch,
+            source=source,
+            scope=scope,
+            kind=kind,
+            repo=repo,
+            all_projects=True,
+        )
+        resolved: list[str] = []
+        for record in pending:
+            if decision == "approve":
+                self.approve(record["id"])
+            else:
+                self.reject(record["id"])
+            resolved.append(record["id"])
+        return {"batch": batch, "decision": decision, "resolved": resolved, "count": len(resolved)}
 
     def get_memory(self, memory_id: str) -> dict[str, Any]:
         row = self.db.conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
@@ -1382,6 +1476,10 @@ class MemoryService:
         the worst a bad file can do is queue statements for review. Untrusted
         records land as `inferred`, which `_activation` can only ever turn into
         `provisional` — a stranger's file cannot mint an actionable memory.
+
+        Every record written gets a batch tag so the queue it creates can be
+        resolved as one decision. Reviewing an import one `Enter` at a time is
+        how a review queue turns into a thing nobody ever empties.
         """
 
         if not isinstance(payload, dict) or payload.get("schema") != EXPORT_SCHEMA:
@@ -1392,8 +1490,10 @@ class MemoryService:
         if not isinstance(records, list):
             raise MemoryError("export payload carries no memories list")
 
+        batch = self._batch_token(len(records))
         report: dict[str, Any] = {
             "dry_run": dry_run,
+            "batch": batch,
             "imported": 0,
             "merged": 0,
             "remapped": 0,
@@ -1426,7 +1526,7 @@ class MemoryService:
                     report["remapped"] += 1
 
             try:
-                candidate = self._imported_candidate(item, trust=trust)
+                candidate = self._imported_candidate(item, trust=trust, batch=batch)
             except (MemoryError, ValueError):
                 self._skip(report, item, "malformed")
                 continue
@@ -1466,7 +1566,20 @@ class MemoryService:
 
         return report
 
-    def _imported_candidate(self, item: dict[str, Any], *, trust: bool) -> Candidate:
+    @staticmethod
+    def _batch_token(count: int) -> str:
+        """Name one import so its queue can be resolved as a unit.
+
+        Derived from the clock rather than randomness: the token is written into
+        evidence rows, and a value a caller can reconstruct from the report is
+        easier to carry between commands than one only the database has seen.
+        """
+        stamp = re.sub(r"[^0-9TZ]", "", utc_now())
+        return f"imp_{stamp}_{digest_text(f'{stamp}:{count}')[:6]}"
+
+    def _imported_candidate(
+        self, item: dict[str, Any], *, trust: bool, batch: str | None = None
+    ) -> Candidate:
         """Turn an exported record back into a candidate for the normal write path.
 
         Evidence keeps its summary and exit status but loses `event_id`: those
@@ -1480,6 +1593,8 @@ class MemoryService:
             for entry in item.get("evidence") or []
             if isinstance(entry, dict)
         ]
+        if batch:
+            evidence.append({"kind": IMPORT_BATCH_EVIDENCE, "summary": batch})
         candidate = Candidate(
             kind=str(item.get("kind") or ""),
             scope=str(item.get("scope") or ""),
