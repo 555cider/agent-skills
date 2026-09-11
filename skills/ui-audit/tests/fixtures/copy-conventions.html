@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>요청 관리</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px;font:16px/1.6 system-ui,sans-serif;color:#111827;background:#fff}
+  h1{font-size:22px;margin:0 0 12px}
+  h2{font-size:17px;margin:24px 0 8px}
+  p{margin:0 0 8px}
+  .row{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px}
+  button{font:inherit;min-height:40px;padding:8px 16px;border:1px solid #374151;border-radius:8px;background:#fff;color:#111827;cursor:pointer}
+  button:hover{background:#e5e7eb}
+  .narrow{width:96px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#e0e7ff;color:#1e3a8a;font-size:14px;line-height:1.4}
+  .count{display:inline-block;min-width:24px;padding:0 6px;border-radius:999px;background:#b91c1c;color:#fff;font-size:14px;text-align:center}
+  .chip{display:inline-flex;align-items:center;gap:4px;padding:2px 4px 2px 10px;border-radius:999px;background:#f3f4f6;color:#111827;margin-right:8px}
+  .chip button{min-height:28px;min-width:28px;padding:0;border:0;border-radius:999px;background:transparent}
+  .chip button:hover{background:#d1d5db}
+  .field-label{display:block;margin:0 0 4px;font-size:14px}
+  input{font:inherit;padding:8px 12px;border:1px solid #6b7280;border-radius:8px}
+  table{border-collapse:collapse;width:100%;max-width:900px;margin-bottom:12px}
+  th,td{border:1px solid #d1d5db;padding:8px 12px;text-align:left}
+  th{background:#f3f4f6}
+  .card{border:1px solid #d1d5db;border-radius:12px;padding:16px;max-width:460px;margin-bottom:12px}
+  footer{margin-top:32px;font-size:14px;color:#374151}
+</style></head><body>
+<main>
+  <h1>요청 관리</h1>
+  <p>처리할 요청을 확인하고 바로 승인할 수 있어요.</p>
+  <p>요청은 매일 자정에 정리됩니다.</p>
+
+  <h2>버튼 문구</h2>
+  <!-- 결함: 동사형·동사의 명사형으로 끝나는 버튼 -->
+  <div class="row">
+    <button id="bad-gi">저장하기</button>
+    <button id="bad-polite">신청해요</button>
+    <button id="bad-formal">제출합니다</button>
+    <button id="bad-more">더보기</button>
+    <button id="bad-done">완료됨</button>
+    <button id="bad-goto">공지사항 바로가기</button>
+  </div>
+  <!-- 통과: 명사, "~함" 명사, "~기" 명사, 영어 동사구, 사유가 있는 예외 -->
+  <div class="row">
+    <button id="ok-save">저장</button>
+    <button id="ok-next">다음</button>
+    <button id="ok-first">처음</button>
+    <button id="ok-box">보관함</button>
+    <button id="ok-size">크기</button>
+    <button id="ok-device">내 기기</button>
+    <button id="ok-en">Save draft</button>
+    <button id="ok-exempt" data-ui-audit-copy-exempt="캠페인 확정 문구">지금 시작하기</button>
+  </div>
+  <!-- 통과: 탭은 버튼 문구 규칙 대상이 아니다 -->
+  <div role="tablist" aria-label="보기 방식" class="row">
+    <button role="tab" aria-selected="true" id="tab-browse">둘러보기</button>
+    <button role="tab" aria-selected="false" id="tab-list">목록</button>
+  </div>
+
+  <!-- 결함: 문장부호, 긴 문구, 줄바꿈된 문구 / 통과: 다음 단계를 여는 말줄임표 -->
+  <div class="row">
+    <button id="bad-bang">지금 신청!</button>
+    <button id="bad-dot">변경 적용.</button>
+    <button id="ok-ellipsis">다른 이름으로 저장…</button>
+    <button id="bad-long">이번 달 청구서와 지난 석 달 사용 내역 전체 다운로드</button>
+    <button id="bad-wrap" class="narrow">상세 조건 설정 초기화</button>
+  </div>
+
+  <h2>확인 창</h2>
+  <!-- 결함(Risk): 되돌릴 수 없는 삭제를 "확인"으로 받는다 -->
+  <div class="card" role="alertdialog" aria-labelledby="dlg-delete-t" id="dlg-delete">
+    <p id="dlg-delete-t">선택한 파일 3개를 삭제할까요? 삭제한 파일은 복구할 수 없어요.</p>
+    <div class="row"><button>취소</button><button>확인</button></div>
+  </div>
+  <!-- 결함(Polish): 되돌릴 수 있는 결정도 "예/아니요"보다 결과 이름이 낫다 -->
+  <div class="card" role="alertdialog" aria-labelledby="dlg-apply-t" id="dlg-apply">
+    <p id="dlg-apply-t">바뀐 표시 설정을 이 화면에도 적용할까요?</p>
+    <div class="row"><button>아니요</button><button>예</button></div>
+  </div>
+  <!-- 통과: 결과를 이름으로 쓴 버튼 -->
+  <div class="card" role="alertdialog" aria-labelledby="dlg-outcome-t" id="dlg-outcome">
+    <p id="dlg-outcome-t">선택한 파일 3개를 삭제할까요? 삭제한 파일은 복구할 수 없어요.</p>
+    <div class="row"><button>취소</button><button>파일 삭제</button></div>
+  </div>
+  <!-- 통과: 묻는 것이 없는 알림에는 "확인" 하나로 충분하다 -->
+  <div class="card" role="alertdialog" aria-labelledby="dlg-ack-t" id="dlg-ack">
+    <p id="dlg-ack-t">설정을 저장했어요.</p>
+    <div class="row"><button>확인</button></div>
+  </div>
+
+  <h2>요청 목록</h2>
+  <!-- 상태 열은 한정된 값(통과), 요청자 열은 사람마다 다른 값(결함), 마감 열은 날짜(결함) -->
+  <table id="requests">
+    <thead><tr><th>요청</th><th>상태</th><th>요청자</th><th>마감</th></tr></thead>
+    <tbody>
+      <tr><td>서버 증설</td><td><span class="badge">대기</span></td><td><span class="badge">김민수</span></td><td><span class="badge">2026-09-30</span></td></tr>
+      <tr><td>권한 변경</td><td><span class="badge">진행</span></td><td><span class="badge">이서연</span></td><td><span class="badge">2026-10-02</span></td></tr>
+      <tr><td>도메인 연결</td><td><span class="badge">완료</span></td><td><span class="badge">박지훈</span></td><td><span class="badge">2026-10-05</span></td></tr>
+      <tr><td>백업 복원</td><td><span class="badge">대기</span></td><td><span class="badge">최유진</span></td><td><span class="badge">2026-10-07</span></td></tr>
+      <tr><td>로그 보관</td><td><span class="badge">진행</span></td><td><span class="badge">정다은</span></td><td><span class="badge">2026-10-09</span></td></tr>
+      <tr><td>요금제 변경</td><td><span class="badge">완료</span></td><td><span class="badge">강하늘</span></td><td><span class="badge">2026-10-12</span></td></tr>
+      <tr><td>방화벽 규칙</td><td><span class="badge">대기</span></td><td><span class="badge">윤서준</span></td><td><span class="badge">2026-10-14</span></td></tr>
+      <tr><td>인증서 갱신</td><td><span class="badge">진행</span></td><td><span class="badge">장미래</span></td><td><span class="badge">2026-10-16</span></td></tr>
+      <tr><td>계정 정리</td><td><span class="badge">완료</span></td><td><span class="badge">임도윤</span></td><td><span class="badge">2026-10-19</span></td></tr>
+    </tbody>
+  </table>
+
+  <!-- 통과: 알림 개수, 증감 표시, 지울 수 있는 입력 칩, 채움 없는 폼 라벨 -->
+  <p>새 알림 <span class="count" id="count-badge">12</span> · 이번 주 처리율 <span class="badge" id="delta-badge">+12%</span></p>
+  <div id="recipients">
+    <span class="chip">minsu.kim@example.com <button aria-label="받는 사람에서 제외">×</button></span>
+    <span class="chip">seoyeon.lee@example.com <button aria-label="받는 사람에서 제외">×</button></span>
+  </div>
+  <label class="field-label" for="memo">메모</label>
+  <input id="memo">
+
+  <h2>최근 활동</h2>
+  <!-- 결함: 한 화면에 날짜 형식이 둘 이상 / 통과: 문장 속 긴 날짜 형식 -->
+  <ul id="activity">
+    <li>2026-09-01 결제 완료</li>
+    <li>2026.09.03 환불 요청</li>
+    <li>2026년 9월 5일 정산 예정</li>
+  </ul>
+
+  <h2>사용 내역</h2>
+  <!-- 결함: 빈 값 표기가 섞였다 -->
+  <table id="usage-mixed">
+    <thead><tr><th>항목</th><th>사용량</th><th>비고</th></tr></thead>
+    <tbody>
+      <tr><td>스토리지</td><td>12GB</td><td>-</td></tr>
+      <tr><td>트래픽</td><td>N/A</td><td>없음</td></tr>
+      <tr><td>백업</td><td>3회</td><td>-</td></tr>
+    </tbody>
+  </table>
+  <!-- 통과: 빈 값 표기가 하나다 -->
+  <table id="usage-consistent">
+    <thead><tr><th>항목</th><th>사용량</th><th>비고</th></tr></thead>
+    <tbody>
+      <tr><td>스토리지</td><td>12GB</td><td>—</td></tr>
+      <tr><td>트래픽</td><td>—</td><td>—</td></tr>
+      <tr><td>백업</td><td>3회</td><td>—</td></tr>
+    </tbody>
+  </table>
+</main>
+<!-- 통과: 푸터 법적 고지는 합니다체여도 어미 혼용으로 세지 않는다 -->
+<footer>
+  <p>본 서비스의 이용약관은 관련 법령에 따라 변경될 수 있습니다. 변경 내용은 공지사항을 확인하십시오.</p>
+</footer>
+</body></html>

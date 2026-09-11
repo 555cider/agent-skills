@@ -170,10 +170,22 @@ states are *meaningfully distinct* is judgment.
 
 ## Microcopy & content  *([visual])*
 
-- **[visual]** Label clarity: ambiguous, jargon, or truncated-meaning labels; verbs that
-  don't say what the action does. A button label should be a verb phrase naming the result
-  ("신청서 제출", "Save draft"), not a noun the user has to turn into an action themselves.
-  `Risk` on primary actions, else `Polish`.
+- **[visual]** Label clarity: ambiguous, jargon, or truncated-meaning labels; words that
+  don't say what the action does. The grammar is locale-specific: English buttons are verb
+  phrases ("Save draft"); Korean buttons are action nouns ("저장", "신청서 제출"), never a verb
+  or verbal noun ("저장하기", "저장해요", "저장합니다"). Where Korean has no fitting noun
+  (더보기, 닫기), use a short English label ("More", "Close"); a "~ 바로가기" link takes the
+  destination's name. The Korean ending is measured as
+  `koreanButtonVerbForm`; whether the noun names the *right* action is still yours. `Risk` on
+  primary actions, else `Polish`.
+- **[auto]** Trailing `.`/`!`, over-long, or wrapped button labels → `buttonLabelPunctuation`.
+- **[auto]** 해요체 and 합니다체 mixed on one screen → `mixedSpeechLevel`. Pick the register the
+  product voice uses; footer legal copy is excluded by the rule.
+- **[auto]** Dates in two numeric formats, or a table marking empty values two ways
+  (`-`, `N/A`, `없음`) → `mixedValueFormat`.
+- **[visual]** Double negatives ("~하지 않으면 안 됩니다", "Don't forget to not…") make the reader
+  compute the meaning. State the positive requirement. `Polish`; `Risk` on consent or
+  destructive copy.
 - **[visual]** Casing consistency (Title Case vs sentence case mixed across peers),
   punctuation, terminology drift (same concept named two ways). `Polish`.
 - **[visual]** Placeholder used as the only label (disappears on input). `Risk`.
@@ -249,8 +261,10 @@ predict what happens next. Do not re-eyeball the measured ones.
 - **[visual]** Confirmation fatigue: "Are you sure?" on reversible actions. Users learn to
   dismiss reflexively, and the reflex also dismisses the confirmation that mattered. Prefer
   undo. `Risk` when the same reflex guards a destructive action elsewhere.
-- **[visual]** Outcome labels beat OK/Cancel and Submit. "Delete 3 files" / "Keep files"
-  survives contexts where OK/Cancel collapses; "Place order" beats "Submit". `Risk` on
+- **[hybrid]** Outcome labels beat OK/Cancel and Submit. "Delete 3 files" / "Keep files"
+  survives contexts where OK/Cancel collapses; "Place order" beats "Submit". A dialog pairing
+  확인/예/OK with a dismiss is measured as `genericConfirmLabel` (`Risk` when its copy names a
+  destructive action); "Submit"-style generic labels outside dialogs remain yours. `Risk` on
   destructive or committing actions, else `Polish`.
 - **[visual]** Information scent in links and buttons: "Click here", "Learn more", "더보기"
   predict nothing. Scanning users read roughly the first 11 characters, so front-load the
@@ -283,6 +297,8 @@ predict what happens next. Do not re-eyeball the measured ones.
   or the words. A header that looks like one control but responds in only part of its box costs
   a second attempt every time. `Polish`. (Whether the *panel* scrolls inside itself is measured
   as `accordionPanelScroll`.)
+- **[auto]** A badge holding a value that is not from a small closed set — a date, an amount,
+  a name, a sentence — is `freeformValueBadge`. Show such values as plain text.
 - **[visual]** Badges: a badge is a status marker, not a control — do not make it interactive,
   do not paint it in the service's primary accent (that color belongs to actions), and keep it
   to one per element. Two badges on one item mean neither is the status. `Polish`; `Risk` when
