@@ -577,3 +577,62 @@ Dialog actions the user cannot see when the dialog opens.
 - **Method:** Detects open modals (`[role=dialog]`, `[aria-modal=true]`) that lack a full-screen, semi-transparent z-index backdrop overlay to obscure background content.
 - **Threshold:** presence of open modal without a fixed/absolute full-screen overlay behind it. A backdrop candidate must cover at least 90% of the viewport, have semi-transparent background/opacity, and sit below the modal by z-index (or same z-index but earlier DOM order).
 - **FP guards:** ignores closed or invisible modals.
+
+## freeformValueBadge — `Polish` — auto-measured
+A badge promises a category from a small closed set (status, grade, type).
+- **Method:** candidates are elements whose class token contains `badge`/`chip`/`pill`/`lozenge`
+  or is a separated `tag`/`label` token, or that carry `[data-ui-audit-badge]`; each must also
+  paint a pill (height `≤48px`, radius `≥2px`, and a fill or four-sided border distinct from the
+  parent background). Badges are grouped into slots — table column, or parent signature.
+- **Threshold:** a value shaped like a date/time, an amount, an email, a URL, or text over
+  `badgeMaxChars` (20) / four words; **or** a slot with `≥8` distinct values across `≥8`
+  records and a distinct ratio `≥0.8`.
+- **FP guards:** interactive badges, removable input chips, badges inside buttons/comboboxes,
+  counters and signed deltas (`12`, `99+`, `+12%`), and siblings under one parent (a tag list
+  is one record's multi-valued field) do not count as an open set.
+
+## koreanButtonVerbForm — `Polish` — auto-measured
+Korean button labels name the action with a noun (저장, 신청서 제출), not a verb or a verbal noun.
+- **Method:** the last Hangul word of each `button`/`[role=button]`/button-type `input` label,
+  after trailing digits, punctuation, and emoji are stripped. Controls with another role (tab,
+  menu item, switch) are skipped.
+- **Threshold:** verb endings (`~합니다`, `~해요`, `~하세요`, `~하다`), `~하기`/`~되기`, a native
+  verb stem + `기` (보기, 가기, 열기, 닫기, 내려받기), or `~함`/`~됨`.
+- **FP guards:** `-음` is never matched (다음, 처음); box nouns ending in 함 (보관함, 편지함) and
+  two-syllable 기 nouns (기기, 크기, 주기) pass; English labels are out of scope. Teams can allow
+  specific words with `auditConfig.copy.koButtonAllow`.
+- **Suggested fix:** strip the ending down to its noun (저장하기 → 저장); a native-verb nominal
+  with no Korean noun gets a short English label (더보기 → More, 닫기 → Close), or its Korean
+  noun where one exists (찾기 → 검색); "공지사항 바로가기" becomes "공지사항".
+
+## buttonLabelPunctuation — `Polish` — auto-measured
+- **Method:** every button label with letters. Flags a trailing `.`/`!`, a label longer than
+  `copy.buttonMaxChars` (25), or a label whose text wraps onto a second line box.
+- **FP guards:** a trailing `…`/`...` is the "opens a further step" convention and passes;
+  icon-only controls are skipped.
+
+## genericConfirmLabel — `Polish` / `Risk` — auto-measured
+- **Method:** a visible `dialog`/`alertdialog` offering both a generic affirmative
+  (확인/예/네/OK/Yes) and a dismiss (취소/아니요/닫기/Cancel/No).
+- **Severity:** `Risk` when the dialog copy (outside its buttons) names a destructive or
+  committing action (삭제, 탈퇴, 해지, 결제, 제출, 복구할 수 없, delete, cannot be undone…);
+  otherwise `Polish`.
+- **FP guards:** a lone acknowledgement button asks nothing and passes.
+
+## mixedSpeechLevel — `Polish` — auto-measured
+- **Method:** splits each text block's own inline flow into sentences and classifies the final
+  Hangul word as 합니다체 (`~니다`, `~니까`, `~십시오`) or 해요체 (`~요`, `~죠`).
+- **Threshold:** each register in at least `copy.speechLevelMinEach` (2) sentences.
+- **FP guards:** buttons, form options, code, and `footer`/`[role=contentinfo]` legal copy are
+  excluded; nouns ending in 요 (필요, 중요, 개요) are not endings.
+
+## mixedValueFormat — `Polish` — auto-measured
+- **Dates:** counts valid numeric dates per family (`YYYY-MM-DD`, `YYYY.MM.DD`, `YYYY/MM/DD`,
+  `NN/NN/YYYY`, `DD.MM.YYYY`) across the screen; two or more families is a signal. The Korean
+  long form (`2026년 9월 11일`) is deliberately not a family — pairing it in prose with compact
+  table dates is a design choice.
+- **Empty values:** within one data table, two or more different placeholders from
+  `-`, `–`, `—`, `N/A`, `없음`, `해당 없음`, `null`, `undefined`, … is a signal.
+
+`data-ui-audit-copy-exempt="<reason>"` on an element or ancestor suppresses every rule in this
+copy group; an empty reason does not.

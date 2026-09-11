@@ -96,6 +96,14 @@
       orphanControlMaxWidth: 180,
       orphanControlMaxRatio: 0.25
     },
+    copy: {
+      buttonMaxChars: 25,
+      badgeMaxChars: 20,
+      badgeSlotMinDistinct: 8,
+      badgeSlotDistinctRatio: 0.8,
+      speechLevelMinEach: 2,
+      koButtonAllow: []    // Korean button words a team deliberately accepts
+    },
     // selectors matching authenticated destinations for the auth-mode-conflict rule
     authedNavWords: ['my', 'account', 'profile', 'mypage', '마이', '계정', '프로필', '내정보'],
     isMobile: null,        // null => infer from innerWidth <= 600
@@ -171,7 +179,14 @@
     ruleDef('disabledTab', ruleDisabledTab, 'document', 'widget-contract'),
     ruleDef('nestedTabs', ruleNestedTabs, 'document', 'widget-contract'),
     ruleDef('flagAsLanguageIndicator', ruleFlagAsLanguageIndicator, 'document', 'widget-contract'),
-    ruleDef('accordionPanelScroll', ruleAccordionPanelScroll, 'document', 'widget-contract')
+    ruleDef('accordionPanelScroll', ruleAccordionPanelScroll, 'document', 'widget-contract'),
+    ruleDef('freeformValueBadge', ruleFreeformValueBadge, 'document', 'widget-contract'),
+    // Copy conventions: wording read from rendered text, not geometry.
+    ruleDef('koreanButtonVerbForm', ruleKoreanButtonVerbForm, 'document', 'microcopy'),
+    ruleDef('buttonLabelPunctuation', ruleButtonLabelPunctuation, 'document', 'microcopy'),
+    ruleDef('genericConfirmLabel', ruleGenericConfirmLabel, 'document', 'microcopy'),
+    ruleDef('mixedSpeechLevel', ruleMixedSpeechLevel, 'document', 'microcopy'),
+    ruleDef('mixedValueFormat', ruleMixedValueFormat, 'document', 'microcopy')
   ];
 
   function ruleDef(name, fn, phase, category, standard) {
@@ -2272,7 +2287,383 @@
     });
   }
 
+  // A badge promises a category the eye can learn once. Class names find the candidates, the
+  // painted pill shape confirms them, and the value set decides: a date, an amount, a sentence,
+  // or a field whose every record shows a different value is not a category.
+  var BADGE_CLASS = /(badge|chip|pill|lozenge)|(?:^|[-_])(tag|label)s?(?:[-_]|$)/i;
+  var COUNTER_VALUE = /^[+\-−±▲▼△▽↑↓]?\s*[\d.,]+\s*[%+]?$/;
+  function ruleFreeformValueBadge(ctx) {
+    var copy = ctx.cfg.copy || {};
+    var maxChars = Number(copy.badgeMaxChars || 20);
+    var minDistinct = Number(copy.badgeSlotMinDistinct || 8);
+    var minRatio = Number(copy.badgeSlotDistinctRatio || 0.8);
+    var accepted = [];
+    var slots = {}, order = [];
+    ctx.elements.forEach(function (el) {
+      var kind = badgeKind(el);
+      if (!kind) return;
+      // Controls are not value displays: a removable input chip or a filter toggle holds
+      // whatever the user typed or chose, which is the point of that widget.
+      if (el.matches('a[href],button,input,select,textarea,[role=button],[role=link],[role=option],[role=tab],[role=checkbox],[role=radio],[role=switch]')) return;
+      if (el.closest('button,[role=button],[role=combobox],[role=listbox],[role=textbox],[contenteditable=true]')) return;
+      if (el.querySelector('a[href],button,input,select,[role=button]')) return;
+      if (accepted.some(function (outer) { return outer.contains(el); })) return;
+      if (copyHidden(el) || isExempt(el) || copyExempt(el)) return;
+      var text = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ');
+      if (!/[\p{L}\p{N}]/u.test(text) || COUNTER_VALUE.test(text)) return;   // counters and deltas
+      if (!paintedPill(el)) return;
+      accepted.push(el);
+      var cell = el.closest('td,th');
+      var key = kind + '|' + (cell ? cssPath(cell.closest('table')) + '@' + cell.cellIndex : slotSig(el.parentElement));
+      if (!slots[key]) { slots[key] = []; order.push(key); }
+      slots[key].push({ el: el, text: text, record: cell ? cell.parentElement : el.parentElement, shape: freeformShape(text, maxChars) });
+    });
+    order.forEach(function (key) {
+      var items = slots[key];
+      var shaped = items.filter(function (item) { return item.shape; });
+      var values = {}, records = [];
+      items.forEach(function (item) {
+        values[item.text] = true;
+        if (records.indexOf(item.record) < 0) records.push(item.record);
+      });
+      var distinct = Object.keys(values).length;
+      // Siblings under one parent are one record's multi-valued field (a tag list), not
+      // evidence that the field is open; only variation across records counts.
+      var openSet = distinct >= minDistinct && records.length >= minDistinct && distinct / items.length >= minRatio;
+      if (!shaped.length && !openSet) return;
+      var shown = shaped.length ? shaped : items;
+      var why = shaped.length ? shaped[0].shape : 'open value set';
+      ctx.findings.push(mk('freeformValueBadge', 'Polish', 'auto-measured', cssPath(shown[0].el),
+        'Badge carries a value that is not drawn from a small closed set (' + why + '). A badge promises a category the eye learns once — 대기, 진행, 완료 — so a free-form value in one turns every record into a new token to decode and spends the colour a status needed.',
+        { reason: shaped.length ? 'value shape' : 'open value set', shape: shaped.length ? why : null,
+          instances: items.length, distinct: distinct,
+          samples: shown.slice(0, 4).map(function (item) { return item.text.slice(0, 40); }) },
+        { minDistinct: minDistinct, distinctRatio: minRatio, maxChars: maxChars }, rectOf(shown[0].el),
+        'Show the value as plain text (a table cell, a metadata line) and keep badges for enumerated values such as status, grade, or type.'));
+    });
+  }
+
+  // ---------------------------- copy conventions ----------------------------
+  // These rules read wording, not geometry. A text pattern cannot know the product's voice
+  // guide, so each stays an optional Polish advisory — except a vague "확인" on a destructive
+  // decision, where the button label is the last safeguard the user reads.
+  // `data-ui-audit-copy-exempt="<reason>"` on an element or ancestor opts deliberate copy out.
+
+  var KO_VERB_END = /(니다|니까|십시오|[세해돼되어아게래까워와줘봐져춰네]요|하다|되다|하자)$/;
+  var KO_GI_STRONG = /(하기|되기|시키기)$/;
+  // Verb stems that become a nominal with 기 (보기, 가기, 쓰기 ...). The second set also ends
+  // common nouns (기기, 우기), so it only counts in words of three syllables or more.
+  var KO_GI_STEM = '보가오쓰읽찾받내열닫넣빼담듣끄켜풀붙떼들접펴걸놓쌓씻팔잇';
+  var KO_GI_STEM_LONG = '기이리치우르누꾸추루';
+  var KO_BOX_NOUN = /(보관|편지|수신|발신|사서|우편|모금|투표|제안|건의|알림|쪽지|메일|메시지)함$/;
+  var KO_NOUN_FIX = /^(.+?)(하기|되기|시키기|합니다|됩니다|하십시오|하세요|해요|돼요|되요|하다|되다|하자|할게요|할래요|함|됨)$/;
+  // Native-verb nominals have no noun to strip down to: use the Korean noun where one exists,
+  // otherwise a short English label.
+  var KO_WORD_FIX = { '더보기': 'More', '바로가기': 'Go', '닫기': 'Close', '열기': 'Open', '보기': 'View',
+    '찾기': '검색', '내려받기': '다운로드', '글쓰기': '작성' };
+
+  function koreanVerbForm(word) {
+    var chars = Array.from(word);
+    if (chars.length < 2) return null;
+    if (KO_VERB_END.test(word)) return 'verb';
+    if (KO_GI_STRONG.test(word)) return 'nominal -기';
+    if (chars[chars.length - 1] === '기') {
+      var stem = chars[chars.length - 2];
+      if (KO_GI_STEM.indexOf(stem) >= 0 || (chars.length >= 3 && KO_GI_STEM_LONG.indexOf(stem) >= 0)) return 'nominal -기';
+    }
+    // "-음" is left alone on purpose: 다음 and 처음 are the most common button nouns there are.
+    if (/[함됨]$/.test(word) && !KO_BOX_NOUN.test(word)) return 'nominal -ㅁ';
+    return null;
+  }
+
+  function ruleKoreanButtonVerbForm(ctx) {
+    var allow = (ctx.cfg.copy || {}).koButtonAllow || [];
+    buttonCopyCandidates(ctx).forEach(function (item) {
+      var core = item.text.replace(/[\s\d()[\]{}.,!?…·:;+%~\p{Extended_Pictographic}]+$/u, '');
+      var token = core.split(' ').pop() || '';
+      var word = (token.match(/[가-힣]+$/) || [''])[0];
+      if (allow.indexOf(word) >= 0) return;
+      var form = koreanVerbForm(word);
+      if (!form) return;
+      var stem = word.match(KO_NOUN_FIX);
+      var prefix = core.slice(0, core.length - word.length);
+      var mapped = KO_WORD_FIX[core.replace(/\s+/g, '')];
+      var fix = stem ? prefix + stem[1]
+        : mapped ? mapped
+        // "공지사항 바로가기" is a link to 공지사항: the destination's name is the label.
+        : word === '바로가기' && prefix.trim() ? prefix.trim()
+        : null;
+      ctx.findings.push(mk('koreanButtonVerbForm', 'Polish', 'auto-measured', cssPath(item.el),
+        'Korean button label ends in a verb or verbal-noun form ("' + word + '"). Korean interface convention names the action with a noun — 저장, 신청서 제출 — so the label reads as the action itself, not as a sentence addressed to the user.',
+        { label: item.text, ending: word, form: form, instances: item.count }, { convention: 'action noun' }, rectOf(item.el),
+        fix ? 'Use "' + fix + '".' : 'Name the action with a noun; where Korean has no fitting noun, use a short English label (더보기 → More, 닫기 → Close).'));
+    });
+  }
+
+  function ruleButtonLabelPunctuation(ctx) {
+    var maxChars = Number((ctx.cfg.copy || {}).buttonMaxChars || 25);
+    buttonCopyCandidates(ctx).forEach(function (item) {
+      var reasons = [];
+      // A trailing ellipsis is the "opens a further step" convention, not sentence punctuation.
+      if (/[.!。！]$/.test(item.text) && !/(\.\.\.|…)$/.test(item.text)) reasons.push('trailing punctuation');
+      var chars = Array.from(item.text).length;
+      var lines = item.el.tagName === 'INPUT' ? 1 : textLineCount(item.el);
+      if (chars > maxChars) reasons.push('long label');
+      if (lines > 1) reasons.push('wrapped label');
+      if (!reasons.length) return;
+      ctx.findings.push(mk('buttonLabelPunctuation', 'Polish', 'auto-measured', cssPath(item.el),
+        'Button label has ' + reasons.join(', ') + '. A button names one action in a few words; sentence punctuation turns it into a statement, and a label that runs long or wraps stops scanning as a single target.',
+        { label: item.text, reasons: reasons, chars: chars, lines: lines, instances: item.count }, { maxChars: maxChars, maxLines: 1 }, rectOf(item.el),
+        'Drop the trailing punctuation and cut the label to the action plus its object; move any explanation into helper text beside the button.'));
+    });
+  }
+
+  var GENERIC_CONFIRM = /^(확인|예|네|ok|okay|yes)$/i;
+  var DISMISS_LABEL = /^(취소|아니요|아니오|아니|닫기|나중에|cancel|no|close|dismiss|not now)$/i;
+  var DESTRUCTIVE_COPY = /(삭제|탈퇴|해지|초기화|폐기|취소하|취소할|취소됩|취소돼|결제|송금|이체|제출|복구할 수 없|되돌릴 수 없|\b(delete|remove|erase|discard|reset|pay|payment|transfer|submit|permanently|cannot be undone|can't be undone)\b)/i;
+  var OUTCOME_NOUN = /(삭제|탈퇴|해지|초기화|폐기|결제|송금|이체|제출|취소)/;
+  function ruleGenericConfirmLabel(ctx) {
+    qsa('[role=dialog],[role=alertdialog],dialog[open]').forEach(function (dialog) {
+      if (copyHidden(dialog) || copyExempt(dialog)) return;
+      var controls = qsa('button,[role=button],input[type=submit],input[type=button]', dialog).filter(function (control) {
+        return !copyHidden(control) && control.closest('[role=dialog],[role=alertdialog],dialog') === dialog;
+      });
+      var confirm = controls.filter(function (control) { return GENERIC_CONFIRM.test(copyLabel(control)); })[0];
+      var dismiss = controls.filter(function (control) { return DISMISS_LABEL.test(copyLabel(control)); })[0];
+      // A lone acknowledgement ("저장했어요" + 확인) asks nothing, so a generic word is fine there.
+      if (!confirm || !dismiss) return;
+      var body = '';
+      var walker = document.createTreeWalker(dialog, NodeFilter.SHOW_TEXT);
+      for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.parentElement.closest('button,[role=button]')) body += node.textContent + ' ';
+      }
+      var destructive = DESTRUCTIVE_COPY.test(body);
+      var outcome = (body.match(OUTCOME_NOUN) || [])[1];
+      ctx.findings.push(mk('genericConfirmLabel', destructive ? 'Risk' : 'Polish', 'auto-measured', cssPath(confirm),
+        'Decision dialog answers with a generic "' + copyLabel(confirm) + '" beside "' + copyLabel(dismiss) + '". The pair only makes sense to a reader who has parsed the question, and the reflex that clicks it on harmless dialogs clicks it here too' + (destructive ? ' — on an action that cannot be taken back.' : '.'),
+        { dialog: cssPath(dialog), confirm: copyLabel(confirm), dismiss: copyLabel(dismiss), destructive: destructive }, {}, rectOf(confirm),
+        outcome ? 'Name the outcome on the button — "' + outcome + '" — and keep "' + copyLabel(dismiss) + '" as the way out.'
+          : 'Replace "' + copyLabel(confirm) + '" with the outcome the button commits (적용, 저장, "Delete 3 files"), so the choice survives a reader who skips the question.'));
+    });
+  }
+
+  var KO_FORMAL_END = /(니다|니까|십시오)$/;
+  var KO_POLITE_END = /([가-힣]요|죠)$/;
+  var KO_YO_NOUN = /(필요|중요|주요|개요|수요|강요|동요|요요)$/;
+  function ruleMixedSpeechLevel(ctx) {
+    var minEach = Number((ctx.cfg.copy || {}).speechLevelMinEach || 2);
+    var formal = [], polite = [];
+    var seen = [];
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!/[가-힣]/.test(node.textContent) || !node.parentElement) continue;
+      var block = textBlockOf(node.parentElement);
+      if (seen.indexOf(block) >= 0) continue;
+      seen.push(block);
+      // Button wording belongs to koreanButtonVerbForm, and legal copy in the footer keeps its
+      // own register by convention.
+      if (block.closest('script,style,noscript,pre,code,kbd,samp,textarea,select,option,button,[role=button],footer,[role=contentinfo]')) continue;
+      if (copyHidden(block) || copyExempt(block)) continue;
+      inlineText(block).split(/\n+|(?<=[.!?。？！])\s+/).forEach(function (sentence) {
+        var trimmed = sentence.replace(/[\s.!?。？！…~"'”’」』)\]\p{Extended_Pictographic}]+$/u, '');
+        var word = (trimmed.match(/[가-힣]+$/) || [''])[0];
+        if (Array.from(word).length < 2) return;
+        var entry = { el: block, sentence: trimmed.slice(-40) };
+        if (KO_FORMAL_END.test(word)) formal.push(entry);
+        else if (KO_POLITE_END.test(word) && !KO_YO_NOUN.test(word)) polite.push(entry);
+      });
+    }
+    if (formal.length < minEach || polite.length < minEach) return;
+    var minority = formal.length <= polite.length ? formal : polite;
+    ctx.findings.push(mk('mixedSpeechLevel', 'Polish', 'auto-measured', cssPath(minority[0].el),
+      'Screen mixes 합니다체 (' + formal.length + ' sentences) and 해요체 (' + polite.length + ' sentences). One product speaking in two registers reads as two authors, and the switch lands on the reader at every sentence boundary.',
+      { formal: formal.length, polite: polite.length,
+        formalSamples: formal.slice(0, 3).map(function (e) { return e.sentence; }),
+        politeSamples: polite.slice(0, 3).map(function (e) { return e.sentence; }) },
+      { minEach: minEach }, rectOf(minority[0].el),
+      'Pick the register the product voice uses and rewrite the ' + (minority === formal ? '합니다체' : '해요체') + ' sentences to match. Footer legal copy is already excluded.'));
+  }
+
+  // Numeric date families only: a long form such as "2026년 9월 11일" in prose beside a compact
+  // table date is a deliberate pairing, while 2026-09-11 beside 2026.09.11 is drift.
+  var DATE_FAMILIES = [
+    { name: 'YYYY-MM-DD', re: /(?:^|[^\d./-])(\d{4})-(\d{1,2})-(\d{1,2})(?![\d-])/g, order: 'ymd' },
+    { name: 'YYYY.MM.DD', re: /(?:^|[^\d./-])(\d{4})\. ?(\d{1,2})\. ?(\d{1,2})(?!\d)/g, order: 'ymd' },
+    { name: 'YYYY/MM/DD', re: /(?:^|[^\d./-])(\d{4})\/(\d{1,2})\/(\d{1,2})(?![\d/])/g, order: 'ymd' },
+    { name: 'NN/NN/YYYY', re: /(?:^|[^\d./-])(\d{1,2})\/(\d{1,2})\/(\d{4})(?![\d/])/g, order: 'mdy' },
+    { name: 'DD.MM.YYYY', re: /(?:^|[^\d./-])(\d{1,2})\.(\d{1,2})\.(\d{4})(?!\d)/g, order: 'dmy' }
+  ];
+  var EMPTY_VALUE_TOKENS = ['-', '–', '—', '―', '--', 'N/A', 'n/a', 'NA', '없음', '해당 없음', '해당없음', 'null', 'undefined', 'None'];
+  function ruleMixedValueFormat(ctx) {
+    var families = {};
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+      var text = node.textContent;
+      var parent = node.parentElement;
+      if (!/\d{4}/.test(text) || !parent) continue;
+      if (parent.closest('script,style,noscript,pre,code,kbd,samp,textarea')) continue;
+      if (copyHidden(parent) || copyExempt(parent)) continue;
+      DATE_FAMILIES.forEach(function (family) {
+        family.re.lastIndex = 0;
+        var match;
+        while ((match = family.re.exec(text))) {
+          if (!validDate(match, family.order)) continue;
+          if (!families[family.name]) families[family.name] = { count: 0, el: parent, sample: match[0].trim() };
+          families[family.name].count++;
+        }
+      });
+    }
+    var names = Object.keys(families);
+    if (names.length >= 2) {
+      var rarest = names.slice().sort(function (a, b) { return families[a].count - families[b].count; })[0];
+      var counts = {};
+      names.forEach(function (name) { counts[name] = families[name].count; });
+      ctx.findings.push(mk('mixedValueFormat', 'Polish', 'auto-measured', cssPath(families[rarest].el),
+        'Screen writes dates in ' + names.length + ' numeric formats (' + names.join(', ') + '). The reader has to re-parse every date, and 03/04 style values stop being comparable at a glance.',
+        { kind: 'date', families: counts, samples: names.map(function (name) { return families[name].sample; }) }, { maxFamilies: 1 },
+        rectOf(families[rarest].el), 'Format every date on the screen through one shared formatter; keep a long form only for prose where it is deliberate.'));
+    }
+    dataTables().forEach(function (table) {
+      if (copyExempt(table)) return;
+      var tally = {};
+      bodyRows(table).forEach(function (row) {
+        Array.prototype.forEach.call(row.cells, function (cell) {
+          var value = (cell.innerText || '').trim();
+          if (EMPTY_VALUE_TOKENS.indexOf(value) >= 0) tally[value] = (tally[value] || 0) + 1;
+        });
+      });
+      var tokens = Object.keys(tally);
+      if (tokens.length < 2) return;
+      ctx.findings.push(mk('mixedValueFormat', 'Polish', 'auto-measured', cssPath(table),
+        'Table marks missing values ' + tokens.length + ' different ways (' + tokens.join(', ') + '). Different placeholders read as different meanings — missing, zero, not applicable — even when the data means the same thing.',
+        { kind: 'empty value', tokens: tally }, { maxTokens: 1 }, rectOf(table),
+        'Choose one placeholder for "no value" and render it from one place; use a distinct word only where the meaning is genuinely different (미정 vs 해당 없음).'));
+    });
+  }
+
+  function validDate(match, order) {
+    var y, m, d;
+    if (order === 'ymd') { y = +match[1]; m = +match[2]; d = +match[3]; }
+    else if (order === 'dmy') { d = +match[1]; m = +match[2]; y = +match[3]; }
+    else { y = +match[3]; m = Math.min(+match[1], +match[2]); d = Math.max(+match[1], +match[2]); }
+    return y >= 1900 && y <= 2199 && m >= 1 && m <= 12 && d >= 1 && d <= 31;
+  }
+
   // ------------------------------ helpers ------------------------------
+  function copyExempt(el) {
+    var host = el.closest('[data-ui-audit-copy-exempt]');
+    return !!host && !!(host.getAttribute('data-ui-audit-copy-exempt') || '').trim();
+  }
+  // isVisible() reads the element's own display only; a control inside a closed menu still
+  // reports its own display value, so wording rules also require a painted box.
+  function copyHidden(el) {
+    if (!isVisible(el) || el.closest('[aria-hidden=true],[inert],[hidden]')) return true;
+    var r = el.getBoundingClientRect();
+    return r.width < 1 || r.height < 1;
+  }
+  function copyLabel(el) {
+    var text = el.tagName === 'INPUT' ? (el.value || '') : (el.innerText || el.textContent || '');
+    return text.trim().replace(/\s+/g, ' ').replace(/[.!。！]+$/, '');
+  }
+  function buttonCopyCandidates(ctx) {
+    if (ctx.buttonCopy) return ctx.buttonCopy;
+    var groups = {}, order = [];
+    qsa('button,[role=button],input[type=submit],input[type=button],input[type=reset]').forEach(function (el) {
+      // A <button> playing another widget's role (tab, menu item, option, switch) is named by
+      // that widget's conventions, not by action wording.
+      if ((el.getAttribute('role') || 'button').toLowerCase() !== 'button') return;
+      if (el.parentElement && el.parentElement.closest('button,[role=button]')) return;
+      if (copyHidden(el) || copyExempt(el)) return;
+      var text = (el.tagName === 'INPUT' ? (el.value || '') : (el.innerText || el.textContent || '')).trim().replace(/\s+/g, ' ');
+      if (!/\p{L}/u.test(text)) return;   // icon-only controls are named by aria-label, not copy
+      if (!groups[text]) { groups[text] = { el: el, text: text, count: 0 }; order.push(text); }
+      groups[text].count++;
+    });
+    ctx.buttonCopy = order.map(function (text) { return groups[text]; });
+    return ctx.buttonCopy;
+  }
+  // Line boxes of an element's own text, ignoring icons: a new line starts when a text
+  // fragment's top sits more than half a line below the current line's top.
+  function textLineCount(el) {
+    var rects = [];
+    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (var node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent.trim()) continue;
+      var range = document.createRange();
+      range.selectNodeContents(node);
+      Array.prototype.forEach.call(range.getClientRects(), function (r) { if (r.width >= 1 && r.height >= 1) rects.push(r); });
+      if (range.detach) range.detach();
+    }
+    rects.sort(function (a, b) { return a.top - b.top; });
+    var lines = 0, top = -Infinity, height = 0;
+    rects.forEach(function (r) {
+      if (r.top - top > height / 2) { lines++; top = r.top; height = r.height; }
+    });
+    return lines;
+  }
+  function textBlockOf(el) {
+    var n = el;
+    while (n.parentElement && n !== document.body) {
+      var display = getComputedStyle(n).display;
+      if (display !== 'inline' && display !== 'contents') break;
+      n = n.parentElement;
+    }
+    return n;
+  }
+  // Text of a block's own inline flow; nested blocks become line breaks so their sentences
+  // are counted once, by their own block.
+  function inlineText(block) {
+    var out = '';
+    (function walk(node) {
+      for (var child = node.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType === 3) out += child.textContent;
+        else if (child.nodeType === 1) {
+          if (child.tagName === 'BR') { out += '\n'; continue; }
+          var display = getComputedStyle(child).display;
+          if (display === 'none') continue;
+          if (display === 'inline' || display === 'contents') walk(child);
+          else out += '\n';
+        }
+      }
+    })(block);
+    return out;
+  }
+  function badgeKind(el) {
+    if (el.hasAttribute('data-ui-audit-badge')) return 'data';
+    var cls = typeof el.className === 'string' ? el.className : (el.className && el.className.baseVal) || '';
+    var tokens = cls.split(/\s+/);
+    for (var i = 0; i < tokens.length; i++) {
+      var m = tokens[i].match(BADGE_CLASS);
+      if (m) return (m[1] || m[2]).toLowerCase();
+    }
+    return null;
+  }
+  function paintedPill(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1 || r.height > 48) return false;
+    var cs = getComputedStyle(el);
+    if ((parseFloat(cs.borderTopLeftRadius) || 0) < 2) return false;
+    var parentBg = el.parentElement ? effectiveBg(el.parentElement).rgb : [255, 255, 255];
+    var fill = colorAgainst(cs.backgroundColor, parentBg);
+    if (fill && contrast(fill, parentBg) > 1.05) return true;
+    return ['Top', 'Right', 'Bottom', 'Left'].every(function (side) {
+      var style = cs['border' + side + 'Style'];
+      return (parseFloat(cs['border' + side + 'Width']) || 0) >= 1 && style !== 'none' && style !== 'hidden';
+    });
+  }
+  function freeformShape(text, maxChars) {
+    if (/\d{4}\s?[-./년]\s?\d{1,2}|\d{1,2}[/.]\d{1,2}[/.]\d{2,4}|(^|\D)\d{1,2}:\d{2}(\D|$)/.test(text)) return 'date/time';
+    if (/\p{Sc}\s?\d|\d\s?(원|달러|엔|위안|KRW|USD|EUR|JPY)(?![가-힣A-Za-z])/u.test(text)) return 'amount';
+    if (/[^\s@]+@[^\s@]+\.[^\s@]+/.test(text)) return 'email';
+    if (/(https?:\/\/|www\.)/i.test(text)) return 'url';
+    if (Array.from(text).length > maxChars || text.split(/\s+/).length >= 4) return 'long text';
+    return null;
+  }
+  function slotSig(el) {
+    if (!el) return 'root';
+    var cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/)[0] : '';
+    return el.tagName + (cls ? '.' + cls : '');
+  }
   function qsa(sel, root2) { return Array.prototype.slice.call((root2 || document).querySelectorAll(sel)); }
   function labelText(el) { return ((el && (el.innerText || el.textContent)) || '').trim().replace(/\s+/g, ' ').slice(0, 40); }
   function formKey(el) {

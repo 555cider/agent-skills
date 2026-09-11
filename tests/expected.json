@@ -454,6 +454,62 @@
       "note": "The dialog keeps the backdrop and Escape contracts; only action reachability fails."
     },
     {
+      "file": "copy-conventions.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "auditConfig": { "maxPolish": 80 },
+      "mustHit": [
+        { "rule": "genericConfirmLabel", "matches": "dlg-delete", "severity": "Risk", "confidence": "auto-measured", "note": "generic 확인 on an irreversible delete" }
+      ],
+      "mustAdvise": [
+        { "rule": "koreanButtonVerbForm", "matches": "bad-gi", "review": "optional", "note": "-하기 nominal" },
+        { "rule": "koreanButtonVerbForm", "matches": "bad-polite", "review": "optional", "note": "해요체 verb" },
+        { "rule": "koreanButtonVerbForm", "matches": "bad-formal", "review": "optional", "note": "합니다체 verb" },
+        { "rule": "koreanButtonVerbForm", "matches": "bad-more", "review": "optional", "note": "native verb stem + 기" },
+        { "rule": "koreanButtonVerbForm", "matches": "bad-done", "review": "optional", "note": "-됨 nominal" },
+        { "rule": "koreanButtonVerbForm", "matches": "More", "review": "optional", "note": "더보기 has no Korean noun, so the fix is a short English label" },
+        { "rule": "koreanButtonVerbForm", "matches": "Use \\\"공지사항\\\"", "review": "optional", "note": "a ~바로가기 link takes the destination's name" },
+        { "rule": "buttonLabelPunctuation", "matches": "bad-bang", "review": "optional" },
+        { "rule": "buttonLabelPunctuation", "matches": "bad-dot", "review": "optional" },
+        { "rule": "buttonLabelPunctuation", "matches": "long label", "review": "optional" },
+        { "rule": "buttonLabelPunctuation", "matches": "wrapped label", "review": "optional" },
+        { "rule": "genericConfirmLabel", "matches": "dlg-apply", "severity": "Polish", "review": "optional", "note": "reversible decision still reads better with an outcome label" },
+        { "rule": "freeformValueBadge", "matches": "김민수", "review": "optional", "note": "every record shows a different person" },
+        { "rule": "freeformValueBadge", "matches": "date/time", "review": "optional", "note": "dates are not a category" },
+        { "rule": "mixedValueFormat", "matches": "YYYY.MM.DD", "review": "optional", "note": "ISO and dotted dates on one screen" },
+        { "rule": "mixedValueFormat", "matches": "usage-mixed", "review": "optional", "note": "-, N/A, 없음 in one table" }
+      ],
+      "mustNotHit": [
+        { "rule": "genericConfirmLabel", "matches": "dlg-outcome" },
+        { "rule": "genericConfirmLabel", "matches": "dlg-ack" }
+      ],
+      "mustNotAdvise": [
+        { "rule": "koreanButtonVerbForm", "matches": "ok-" },
+        { "rule": "koreanButtonVerbForm", "matches": "tab-browse" },
+        { "rule": "buttonLabelPunctuation", "matches": "ok-ellipsis" },
+        { "rule": "genericConfirmLabel", "matches": "dlg-outcome" },
+        { "rule": "genericConfirmLabel", "matches": "dlg-ack" },
+        { "rule": "freeformValueBadge", "matches": "\"진행\"", "note": "quoted so it matches a sample value, not the rule message's own example" },
+        { "rule": "freeformValueBadge", "matches": "count-badge" },
+        { "rule": "freeformValueBadge", "matches": "delta-badge" },
+        { "rule": "freeformValueBadge", "matches": "example.com" },
+        { "rule": "freeformValueBadge", "matches": "memo" },
+        { "rule": "mixedValueFormat", "matches": "usage-consistent" },
+        { "rule": "mixedValueFormat", "matches": "년" },
+        "mixedSpeechLevel"
+      ],
+      "note": "Precision: nouns ending in 음/함/기 (다음, 보관함, 크기), tabs, English verb phrases, a reasoned copy exemption, trailing ellipsis, outcome-labelled and acknowledgement dialogs, enum status badges, counters, input chips, a single empty-value token, long-form prose dates, one stray 합니다체 sentence, and footer legal copy all stay quiet."
+    },
+    {
+      "file": "copy-register.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustAdvise": [
+        { "rule": "mixedSpeechLevel", "matches": "즉시 적용됩니다", "review": "optional", "note": "two 해요체 and two 합니다체 sentences" }
+      ],
+      "mustNotAdvise": ["koreanButtonVerbForm"]
+    },
+    {
       "file": "clean.html",
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "dark",

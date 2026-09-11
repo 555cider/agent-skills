@@ -26,6 +26,8 @@ contract checks measured findings and review advisories independently.
 | `newcases.html` | broad polish plus logic-driven UI guidance | non-text contrast, inline-link affordance, long-body alignment/line-height, and their precision guards |
 | `contrast-thresholds.html` | WCAG text/placeholder boundaries and complex paint | determinate normal/large failures, visible-only placeholder checks, computed placeholder opacity, large-placeholder precision, and required pixel review for opacity/filter/blend/mask/inset-shadow chains |
 | `uninspected-surfaces.html` | light-DOM coverage boundaries | open shadow root, iframe, canvas, object, and embed advisories plus reasoned exemption precision |
+| `copy-conventions.html` | Korean button wording, button punctuation/length, generic confirm dialogs, free-form badges, mixed date and empty-value formats | each copy rule plus precision guards (다음/보관함/크기, tabs, ellipsis, outcome labels, enum/counter badges, input chips, footer legal copy) |
+| `copy-register.html` | 해요체 and 합니다체 on one screen | `mixedSpeechLevel` |
 | `clean.html` | a well-built version of the same screens | **nothing** (zero findings) |
 
 `expected.json` uses `mustHit`, `mustNotHit`, `mustAdvise`, and `mustNotAdvise`, plus

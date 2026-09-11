@@ -44,6 +44,7 @@
   "auditConfig": {
     "contrast": { "normal": 4.5, "large": 3.0, "nonText": 3.0, "colorCue": 3.0 },
     "polish": { "bodyTextMinChars": 40, "bodyTextMinLines": 3, "bodyLineHeight": 1.5 },
+    "copy": { "buttonMaxChars": 25, "badgeMaxChars": 20, "badgeSlotMinDistinct": 8, "badgeSlotDistinctRatio": 0.8, "speechLevelMinEach": 2, "koButtonAllow": [] },
     "whitelist": [".third-party"],
     "maxFindingsPerRule": 60,
     "maxPolish": 15
