@@ -73,7 +73,18 @@ gc
 doctor
 integrate --mode shadow|primary|off --harness all|claude|codex|opencode
   [--disable-known-conflicts] [--apply]
+rekey
+  --cwd PATH                 repository whose per-worktree keys are folded; repeatable
+  --map OLD=NEW              fold a key no candidate directory reproduces; repeatable
+  --apply                    back up the DB, then write; dry-run otherwise
 ```
+
+`rekey` reports `mappings` (old key, new key, the evidence as `main`,
+`worktree:<name>`, `removed-worktree:<slug>` or `map`, and per-table row counts),
+`duplicates_retracted`, `contradictions` (at most 50 pairs with the opening of each
+statement), `unmatched_same_hash`, and the `backup` path when applied. It moves
+`memories` (with recomputed content hashes), `events`, `retrieval_queries`,
+`sessions`, `tombstones` and `trust_grants` in one transaction.
 
 Statements/prompts may come from stdin when omitted. `forget --all-projects`
 is intentionally explicit. Query-based forget matches raw statement tokens

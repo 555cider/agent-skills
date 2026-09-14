@@ -26,6 +26,7 @@ from .integration import integrate, integration_status
 from .models import Candidate
 from .providers import NullProvider, ProviderError, UnavailableProvider, provider_from_env
 from .redaction import redact_text
+from .rekey import rekey
 from .retrieval import Retriever
 from .service import MemoryService
 from .sources import (
@@ -586,6 +587,22 @@ def command_repo_key(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_rekey(args: argparse.Namespace) -> int:
+    explicit: dict[str, str] = {}
+    for item in args.map or []:
+        old, separator, new = item.partition("=")
+        if not separator or not old.strip() or not new.strip():
+            raise MemoryError(f"--map expects OLD=NEW: {item}")
+        explicit[old.strip()] = new.strip()
+    roots = [resolve_cwd(item) for item in (args.cwd or [None])]
+    db, service = _open(args, provider=False)
+    try:
+        _emit(rekey(service, roots=roots, explicit=explicit, apply=args.apply), args.format)
+        return 0
+    finally:
+        db.close()
+
+
 def command_reindex(args: argparse.Namespace) -> int:
     db, _ = _open(args, provider=False)
     try:
@@ -785,6 +802,21 @@ def build_parser() -> argparse.ArgumentParser:
     key.add_argument("--cwd")
     _format(key)
     key.set_defaults(func=command_repo_key)
+
+    rekey_parser = sub.add_parser(
+        "rekey", help="Fold keys minted per linked worktree onto the repository's key"
+    )
+    rekey_parser.add_argument(
+        "--cwd", action="append", help="Repository whose worktree keys are folded; repeatable"
+    )
+    rekey_parser.add_argument(
+        "--map", action="append", help="OLD=NEW for a key no candidate directory reproduces"
+    )
+    rekey_parser.add_argument(
+        "--apply", action="store_true", help="Back up the store and write; dry-run otherwise"
+    )
+    _format(rekey_parser)
+    rekey_parser.set_defaults(func=command_rekey)
 
     reindex = sub.add_parser("reindex", help="Rebuild local retrieval indexes")
     _format(reindex)

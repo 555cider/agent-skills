@@ -70,31 +70,66 @@ def resolve_cwd(raw: str | None = None) -> Path:
 
 
 def _git_value(cwd: Path, *args: str) -> str:
+    # Bytes, decoded here as UTF-8: git prints paths as UTF-8, and `text=True` decodes
+    # with the locale codec instead. On a cp949 Windows console a Korean worktree name
+    # failed that decode inside subprocess's reader thread, which swallows the error
+    # and leaves stdout as None -- so every lookup from such a directory crashed, and
+    # hooks, which fail open, silently recorded nothing there.
     try:
         result = subprocess.run(
             ["git", "-C", str(cwd), *args],
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
             timeout=2,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
+    if result.returncode != 0 or not result.stdout:
+        return ""
+    try:
+        return result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return ""
 
 
-def repo_identity(cwd: Path) -> tuple[str, Path]:
+def repo_root(cwd: Path) -> Path:
+    """The directory that names a repository: its main worktree, not the one `cwd` is in.
+
+    `--show-toplevel` answers with the *linked* worktree when `cwd` is inside one, and
+    keying on that gave every worktree its own project: memory written while working in
+    a worktree never surfaced in the main tree or in the next worktree, so the same trap
+    was rediscovered and re-remembered once per worktree. The common git dir is shared
+    by all of them, and for an ordinary repository it is `<main worktree>/.git`.
+
+    Anything else -- a bare repository, a submodule whose common dir sits under
+    `.git/modules/` -- keeps the toplevel, which is what it was keyed on before.
+    """
+
     top = _git_value(cwd, "rev-parse", "--show-toplevel")
-    root = Path(top).resolve() if top else cwd.resolve()
+    if not top:
+        return cwd.resolve()
+    common = _git_value(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common:
+        common_path = Path(common).resolve()
+        if common_path.name == ".git":
+            return common_path.parent
+    return Path(top).resolve()
+
+
+def root_identity(root: Path) -> str:
     origin = _git_value(root, "config", "--get", "remote.origin.url")
     if origin:
         # Strip URL credentials without retaining a reversible local path.
         origin = re.sub(r"(?i)(https?://)[^/@]+@", r"\1", origin)
-        identity = "origin:" + origin.rstrip("/").removesuffix(".git").casefold()
-    else:
-        identity = "path:" + str(root)
-    return identity, root
+        return "origin:" + origin.rstrip("/").removesuffix(".git").casefold()
+    return "path:" + str(root)
+
+
+def repo_identity(cwd: Path) -> tuple[str, Path]:
+    root = repo_root(cwd)
+    return root_identity(root), root
 
 
 def git_root(cwd: Path) -> Path | None:
@@ -109,10 +144,14 @@ def git_root(cwd: Path) -> Path | None:
     return Path(top).resolve() if top else None
 
 
-def repo_key(cwd: Path) -> str:
-    identity, root = repo_identity(cwd)
+def key_for(root: Path, identity: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", root.name.casefold()).strip("-") or "repo"
     return f"{slug}-{digest_text(identity)[:16]}"
+
+
+def repo_key(cwd: Path) -> str:
+    identity, root = repo_identity(cwd)
+    return key_for(root, identity)
 
 
 def normalize_text(value: str) -> str:

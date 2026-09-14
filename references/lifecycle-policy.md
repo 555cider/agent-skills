@@ -49,9 +49,22 @@ past-valid records expired and deletes elapsed short-term data.
 
 ## Trust
 
-Project memory is isolated by a stable repo key derived from normalized git
-origin, falling back to a hash of the git root/cwd. Global memory is denied by
-default. `trust_grants` records explicit repo+kind grants.
+Project memory is isolated by a repo key: a slug of the main worktree's folder
+name plus a hash of the normalized git origin, falling back to a hash of the main
+worktree's path (or of cwd outside git). Every linked worktree resolves to the
+main worktree through the common git dir, so all of them share one key, one set of
+memory, and one set of `trust_grants`. Bare repositories and submodules keep their
+toplevel. Global memory is denied by default. `trust_grants` records explicit
+repo+kind grants.
+
+`.agent-memory.json` is read from the directory the command runs in, so two
+worktrees on different commits can hold different ceilings over the same shared
+grants; each applies its own.
+
+`rekey` moves keys minted by the per-worktree rule onto the shared one. Memory rows
+get their content hash recomputed, because the hash folds in the key. Tombstone
+digests cannot be recomputed — the statement they cover is gone — so a statement
+forgotten in a worktree in the last 7 days can be re-remembered from the main tree.
 
 A repo `.agent-memory.json` is an additional ceiling:
 
@@ -79,10 +92,10 @@ records the source had already retracted or expired are not carried over.
 
 Identity is content, not id: kind, scope, repo key, normalized statement,
 conditions, and path globs. Ids are reissued on the way in. Project records
-keep their original repo key, which is derived from the git origin and is
-therefore the same key the repository will compute once it is cloned on the new
-machine; `--cwd` overrides it to adopt someone else's project memory into a
-local checkout.
+keep their original repo key. With a git origin the hash half of that key is
+portable, but the slug half is the main worktree's folder name, so a clone under a
+different folder name computes a different key; `--cwd` overrides it to adopt the
+records into that checkout, or someone else's project memory into a local one.
 
 ## Adoption
 
