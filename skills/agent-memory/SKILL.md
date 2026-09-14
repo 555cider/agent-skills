@@ -241,6 +241,26 @@ Both report a `batch` token that resolves their queue in one decision.
 managed adapters and keeps the v2 DB. Configure optional providers only through
 environment variables; API keys never belong in memory or config files.
 
+## Worktrees share the repository's memory
+
+A linked git worktree computes its main tree's repo key, so memory written in any
+worktree is recalled in all of them. Stores written before that minted one key per
+worktree folder; fold those onto the repository once, after the updated launcher is
+installed (otherwise hooks keep writing the old keys):
+
+```bash
+agent-memory repo-key --cwd <a linked worktree>          # must print the main tree's key
+agent-memory rekey --cwd <repo> [--cwd <repo>] --format json   # dry run
+agent-memory rekey --cwd <repo> --apply --format json    # backs up the DB first
+```
+
+A key is mapped only when a directory the repository's worktrees could have used
+reproduces it under the old rule. Keys that merely share an origin's hash — a removed
+worktree of a repository with an origin, or a separate clone — are listed as
+`unmatched_same_hash` and left alone until named with `--map OLD=NEW`. Records that
+become identical under one key keep the most actionable copy and retract the rest;
+pairs that will read as contradictory are listed, not resolved.
+
 For complete contracts, read only the reference needed:
 
 - [references/cli.md](references/cli.md) — command and exit contract
