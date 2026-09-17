@@ -592,7 +592,8 @@ A badge promises a category from a small closed set (status, grade, type).
   is one record's multi-valued field) do not count as an open set.
 
 ## koreanButtonVerbForm — `Polish` — auto-measured
-Korean button labels name the action with a noun (저장, 신청서 제출), not a verb or a verbal noun.
+Optional team convention, enabled only by `auditConfig.copy.koButtonNounStyle: true`.
+Korean verbs and verbal nouns are valid labels; this rule checks an explicitly chosen style.
 - **Method:** the last Hangul word of each `button`/`[role=button]`/button-type `input` label,
   after trailing digits, punctuation, and emoji are stripped. Controls with another role (tab,
   menu item, switch) are skipped.
@@ -600,10 +601,11 @@ Korean button labels name the action with a noun (저장, 신청서 제출), not
   verb stem + `기` (보기, 가기, 열기, 닫기, 내려받기), or `~함`/`~됨`.
 - **FP guards:** `-음` is never matched (다음, 처음); box nouns ending in 함 (보관함, 편지함) and
   two-syllable 기 nouns (기기, 크기, 주기) pass; English labels are out of scope. Teams can allow
-  specific words with `auditConfig.copy.koButtonAllow`.
-- **Suggested fix:** strip the ending down to its noun (저장하기 → 저장); a native-verb nominal
-  with no Korean noun gets a short English label (더보기 → More, 닫기 → Close), or its Korean
-  noun where one exists (찾기 → 검색); "공지사항 바로가기" becomes "공지사항".
+  specific words with `auditConfig.copy.koButtonAllow`. Natural standalone actions
+  더보기, 닫기, 열기, 보기, 바로가기 always pass.
+- **Suggested fix:** consider a noun (저장하기 → 저장) only if it preserves the action and
+  product terminology. Keep Korean labels in Korean; a grammatical preference never
+  justifies switching the product language. This is optional Polish, not conformance.
 
 ## buttonLabelPunctuation — `Polish` — auto-measured
 - **Method:** every button label with letters. Flags a trailing `.`/`!`, a label longer than

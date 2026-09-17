@@ -627,11 +627,41 @@ x
     def test_close_force_overrides_with_warning(self) -> None:
         self.create("abandoned", tags=("abandoned",))
         self.create("keeper", tags=("keeper",), requires=("abandoned",))
+        payload, _ = self.run_cli("close", "abandoned", "--force", expect=1)
+        self.assertEqual(payload["diagnostics"][0]["code"], "active_dependents")
+        self.assertEqual(load_store(self.root).plans["abandoned"].status, "active")
+
+    def test_close_force_without_dependents_abandons_with_recovery(self) -> None:
+        self.create("abandoned", tags=("abandoned",))
+        original = self.plan_file("abandoned").read_bytes()
         payload, _ = self.run_cli("close", "abandoned", "--force")
-        codes = [item["code"] for item in payload["diagnostics"]]
-        self.assertIn("forced_close", codes)
-        self.assertIn("tbd_sections", codes)
-        self.assertEqual(load_store(self.root).plans["abandoned"].status, "done")
+        self.assertTrue(payload["data"]["abandoned"])
+        self.assertEqual(payload["data"]["unblocked"], [])
+        self.assertFalse(self.plan_file("abandoned").exists())
+        recovery = Path(payload["data"]["recovery_directory"])
+        self.assertEqual((recovery / "abandoned.md").read_bytes(), original)
+
+    def test_close_preserves_latest_uncommitted_bytes_before_pruning(self) -> None:
+        self.create("scratch", tags=("scratch",))
+        self.fill_sections("scratch")
+        original = self.plan_file("scratch").read_bytes()
+        preview, _ = self.run_cli("close", "scratch", "--dry-run")
+        self.assertFalse((self.root / ".agents" / "plan-recovery").exists())
+        self.assertEqual(self.plan_file("scratch").read_bytes(), original)
+        payload, _ = self.run_cli("close", "scratch")
+        recovery = Path(payload["data"]["recovery_directory"])
+        self.assertEqual((recovery / "scratch.md").read_bytes(), original)
+        self.assertFalse(self.plan_file("scratch").exists())
+
+    def test_recovery_write_failure_preserves_live_plan(self) -> None:
+        self.create("scratch", tags=("scratch",))
+        original = self.plan_file("scratch").read_bytes()
+        before = load_store(self.root).plans
+        with mock.patch("plan_graph.store._atomic_write_bytes", side_effect=OSError("backup unavailable")):
+            with self.assertRaises(PlanGraphError) as raised:
+                apply_plan_set(self.root, before, {})
+        self.assertEqual(raised.exception.code, "recovery_failed")
+        self.assertEqual(self.plan_file("scratch").read_bytes(), original)
 
     def test_close_with_filled_sections_reports_unblocked_dependents(self) -> None:
         self.create("base", tags=("base",))
@@ -764,6 +794,14 @@ x
         payload, _ = self.run_cli("update", "one", "--add-tag", "two", expect=1)
         self.assertEqual(payload["diagnostics"][0]["code"], "store_locked")
         self.assertTrue(lock.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows liveness contract")
+    def test_windows_lock_probe_does_not_signal_owner(self) -> None:
+        from plan_graph.store import FileLock
+        lock = self.root / "probe.lock"
+        lock.write_text(json.dumps({"pid": os.getpid(), "token": "foreign"}), encoding="utf-8")
+        with mock.patch("plan_graph.store.os.kill", side_effect=AssertionError("must not signal on Windows")):
+            self.assertFalse(FileLock(lock)._reclaim_stale())
 
     def test_transaction_rolls_back_partial_write_failure(self) -> None:
         self.create("base", tags=("base",))

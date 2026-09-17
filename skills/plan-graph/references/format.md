@@ -139,4 +139,7 @@ duplicate checks are skipped. Structural validation never depends on them.
 After marking a plan done, compute the keep set as all active plans plus their
 transitive prerequisites. Delete every done plan outside that set. `replaces`
 does not retain a plan. As a result, closing the last active leaf removes its
-entire completed tree, leaving Git as the only archive.
+entire completed tree. Git archives committed history; the mutation also preserves
+the current bytes, including uncommitted changes, outside the live plan store and
+reports the recovery directory. `close --force` means abandonment: active dependents
+block it, and it removes the target rather than marking a prerequisite complete.

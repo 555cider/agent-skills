@@ -119,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     close_cmd.add_argument(
         "--force",
         action="store_true",
-        help="close despite unfilled sections; records a forced_close warning",
+        help="abandon without completing; refuses active dependents and preserves recovery copies",
     )
     _add_dry_run(close_cmd)
 
@@ -199,6 +199,8 @@ def _emit(
                     print("  unblocked: " + ", ".join(unblocked))
                 if (data or {}).get("retained"):
                     print("  retained: still required by active plans")
+                if (data or {}).get("recovery_directory"):
+                    print("  recovery: " + str(data["recovery_directory"]))
         elif not diagnostic_list:
             print(f"ERROR {command} failed", file=sys.stderr)
     return 0 if ok else 1
@@ -363,8 +365,9 @@ def _finish_mutation(
             changes=changes,
             json_mode=json_mode,
         )
+    recovery = None
     if not dry_run:
-        apply_plan_set(root, before, after)
+        recovery = apply_plan_set(root, before, after)
     diagnostics = [
         *extra_diagnostics,
         *(item for item in validate_graph(after) if item.severity == "warning"),
@@ -373,7 +376,8 @@ def _finish_mutation(
         ok=True,
         command=command,
         root=root,
-        data={"dry_run": dry_run, **(data or {})},
+        data={"dry_run": dry_run, **(data or {}),
+              **({"recovery_directory": str(recovery)} if recovery else {})},
         diagnostics=diagnostics,
         changes=changes,
         json_mode=json_mode,
@@ -576,23 +580,34 @@ def _handle_reopen(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
     plan = _require_plan(store, args.id)
+    if args.force:
+        dependents = _active_dependents(store.plans, args.id)
+        if dependents:
+            raise PlanGraphError(
+                f"cannot abandon {args.id}; active dependents: {', '.join(dependents)}."
+                " Revise their prerequisites explicitly before abandoning this work.",
+                code="active_dependents",
+            )
+        after = {key: value for key, value in store.plans.items() if key != args.id}
+        pruned = sorted(prunable_done(after))
+        for key in pruned:
+            after.pop(key)
+        return _finish_mutation(
+            command="close", root=root, before=store.plans, after=after,
+            changes=[{"action": "abandon", "plan": args.id},
+                     *({"action": "prune", "plan": key} for key in pruned)],
+            dry_run=args.dry_run, json_mode=args.json,
+            data={"abandoned": True, "unblocked": [], "retained": False},
+            extra_diagnostics=[Diagnostic("warning", "forced_close", "abandoned without completing", args.id)],
+        )
     extra: list[Diagnostic] = []
     gate_unfilled = unfilled_sections(plan, GATE_SECTIONS)
     if gate_unfilled:
         listed = ", ".join(gate_unfilled)
-        if not args.force:
-            raise PlanGraphError(
-                f"cannot close {args.id}; unfilled sections: {listed}."
-                " Fill them with the real outcome, or use --force to abandon the plan.",
-                code="unverified_completion",
-            )
-        extra.append(
-            Diagnostic(
-                "warning",
-                "forced_close",
-                f"closed with unfilled sections: {listed}",
-                args.id,
-            )
+        raise PlanGraphError(
+            f"cannot close {args.id}; unfilled sections: {listed}."
+            " Fill them with the real outcome, or use --force to abandon the plan.",
+            code="unverified_completion",
         )
     note_unfilled = unfilled_sections(
         plan, [s for s in REQUIRED_SECTIONS if s not in GATE_SECTIONS]

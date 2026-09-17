@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   CAPABILITIES,
@@ -97,11 +99,22 @@ try {
 
   const blockedClaim = claimNextRequest(session.sessionPath, "codex-b");
   assert.deepEqual({ claimed: blockedClaim.claimed, busy: blockedClaim.busy }, { claimed: false, busy: true });
+  const recovery = listQueue(session.sessionPath).recovery;
+  assert.equal(recovery.consumer, 'codex-a');
+  assert.equal(recovery.state, 'claimed');
+  assert.equal(recovery.requestPath, committed[0].requestPath);
+  assert.equal(recovery.repositoryReviewRequired, false);
+  const cli = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/dom-picker.mjs', import.meta.url)),
+    'queue', `--session=${session.sessionPath}`], { encoding: 'utf8' });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).payload.recovery.consumer, 'codex-a', 'CLI must expose recovery, not just the library');
 
   const resultPath = join(committed[0].directory, "fix-result.json");
   writeFileSync(resultPath, "{}\n", { mode: 0o600 });
   recordRequestStatus(committed[0].requestPath, { state: "locating", message: "Locating source" });
   recordRequestStatus(committed[0].requestPath, { state: "editing", message: "Applying the minimal patch" });
+  assert.equal(listQueue(session.sessionPath).recovery.repositoryReviewRequired, true);
+  assert.equal(claimNextRequest(session.sessionPath, recovery.consumer).entry.state, 'editing');
   recordRequestStatus(committed[0].requestPath, { state: "verifying", message: "Checking the rendered target" });
   const completed = recordRequestStatus(committed[0].requestPath, {
     state: "applied_verified",

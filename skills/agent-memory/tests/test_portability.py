@@ -265,3 +265,19 @@ def test_cli_round_trips_global_memory_through_a_file(tmp_path, capsys, monkeypa
     assert main(["export", "--scope", "global", "--format", "json"]) == 0
     restored = json.loads(capsys.readouterr().out)["memories"]
     assert [item["statement"] for item in restored] == ["Never add co-author trailers."]
+
+
+def test_forget_reports_structured_deletion_and_retained_surfaces(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("AGENT_MEMORY_HOME", str(tmp_path / "memory"))
+    assert main(["remember", "Prefer targeted checks", "--scope", "global", "--format", "json"]) == 0
+    capsys.readouterr()
+    assert main(["forget", "Prefer targeted checks", "--format", "json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["total"] == 1
+    assert report["deletion_scope"]["structured_memory"] == "deleted"
+    assert report["deletion_scope"]["events"] == "retained_until_ttl"
+    assert report["deletion_scope"]["managed_backups"] == "not_modified"
+    assert report["deletion_scope"]["external_exports"] == "not_modified"
+    assert report["deletion_scope"]["rehydration_block_days"] == 7
+    assert main(["export", "--scope", "global", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["memories"] == []

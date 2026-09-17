@@ -1,6 +1,6 @@
 ---
 name: ui-audit
-description: Use when building, editing, reviewing, or finishing frontend UI, web pages, components, or screenshots. Run it for visual QA, responsive or zoom/reflow checks, contrast and overflow defects, keyboard focus/focus-ring review, target sizing, modal containment, Escape dismissal and action reachability, async action feedback, hover affordance, image alternative text, skip links and current-page marking, data-table conventions, or standard-widget semantics such as wrapped tab strips, placeholder-only labels, radio/checkbox/toggle choice models, select-all indeterminate state, and hidden desktop navigation, plus microcopy conventions such as Korean button wording, speech-level consistency, generic confirm labels, badge use for enum-only values, and mixed date or empty-value formats — or any claim that a rendered screen is done. It measures the live DOM first and separates confirmed defects from visual-review advisories.
+description: Measure rendered UI defects when asked for visual QA or when completing a component or screen that needs rendered verification. Match the audit matrix to the requested surface. A selected-element-only fix belongs to dom-picker; static source review, content-only review, and backend work do not trigger a browser audit.
 license: MIT
 compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium browser with rendered DOM access.
 ---
@@ -21,6 +21,20 @@ Use the user's language in reports. Group results by failure mode, not discovery
 - Resolve every `required` item in `advisories.json` with a screenshot/pixel check, a corrected implementation, or a deliberate baseline entry. Optional advisories do not block completion.
 - Use the trusted keyboard and pointer probes supplied by the runner. Synthetic DOM events do not prove sequential focus or `:hover` behavior.
 - A review-only request authorizes reporting; a build/edit/finish request authorizes safe fixes to in-scope defects.
+
+## Scope before running
+
+Choose the smallest matrix that proves the requested result. For a selected element
+alone, use dom-picker's target verification; do not expand it into a page audit.
+For a component, audit its real route/story and relevant interaction states and
+viewports. For a whole-screen audit, cover supported viewports, themes, density,
+and error/pending states that can change the result. Explicitly requested matrices
+remain required. Unrelated routes or unsupported themes are not extra gates.
+
+The runner measures the configured page, not an arbitrary CSS subtree. Report the
+actual route and matrix inspected; a component-focused review must not claim the
+whole application passed. Once a cell is in scope, keep the existing completeness
+and evidence gates. Do not remove a failed cell merely to make the report green.
 
 ## Workflow
 
@@ -121,7 +135,7 @@ Leave the pending cell unverified when the mutation cannot be held deterministic
 - Widget-contract rules that depend on screen size — `multiRowTabs` and `desktopHiddenNav` — are skipped on mobile cells and in `reflow-320`. Wrapped tabs and a hamburger are the correct answer on a narrow screen, not a defect.
 - `modalEscapeUnhandled` is proven with trusted `Escape` input and is the only widget-contract `Fail`. The probe closes dialogs, so it runs last in the cell; nothing reads the post-Escape DOM as evidence. Its result lives in `coverage.matrix[].escapeProbe`, and a probe error marks the cell unverified instead of passing. A dialog that genuinely must not be dismissible uses `data-ui-audit-escape-exempt="<reason>"`; an empty reason does not exempt it.
 - Other widget-contract exemptions are `data-ui-audit-toggle-exempt` (a switch that really is deferred by design) and `data-ui-audit-nav-exempt` (an app rail or canvas tool with no top-level navigation to show).
-- Copy-convention rules (`koreanButtonVerbForm`, `buttonLabelPunctuation`, `genericConfirmLabel`, `mixedSpeechLevel`, `mixedValueFormat`, `freeformValueBadge`) read wording, not pixels, and stay optional `Polish` — except `genericConfirmLabel` on a destructive dialog, which is `Risk`. Deliberate copy uses `data-ui-audit-copy-exempt="<reason>"`; a team that accepts specific Korean button words lists them in `auditConfig.copy.koButtonAllow`. Idioms such as 더보기 and 닫기 are still flagged; the suggested fix is a short English label ("More", "Close") when Korean has no fitting noun.
+- Copy-convention rules (`koreanButtonVerbForm`, `buttonLabelPunctuation`, `genericConfirmLabel`, `mixedSpeechLevel`, `mixedValueFormat`, `freeformValueBadge`) read wording, not pixels, and stay optional `Polish` — except `genericConfirmLabel` on a destructive dialog, which is `Risk`. Deliberate copy uses `data-ui-audit-copy-exempt="<reason>"`; a team that accepts specific Korean button words lists them in `auditConfig.copy.koButtonAllow`. Korean action-noun wording is opt-in through `auditConfig.copy.koButtonNounStyle: true`, never a universal requirement. Natural actions such as 더보기 and 닫기 remain accepted. Preserve the product language and terminology; never switch to English to satisfy a wording preference.
 
 Computed colours are read as `rgb()`/`rgba()`, `oklab()`, `oklch()`, and `color(srgb …)`. That list is not cosmetic: Chrome returns modern colour functions verbatim and Tailwind v4 emits `oklab()` for every palette entry, so a parser limited to `rgb()` returns "no colour" for such a build — contrast checks skip silently and a modal backdrop measures as absent while it paints correctly. Silence from the colour rules on a modern stack is a reason to check the parser, not evidence of a clean screen.
 

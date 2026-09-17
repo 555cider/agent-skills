@@ -77,9 +77,10 @@ directories yourself.
   cannot delete the directory — measured to defeat both retry and rename during the
   run. That empty residue exits zero and is reclaimed by the next **start** under the
   same name, so it never retires a worktree name. Isolation extends past the branch:
-  **start** also reserves a block of ten ports per worktree, derived from the repository path
-  and branch name so a recreated worktree gets its ports back while two repositories on one
-  machine never collide, recorded in the worktree's git directory
+  **start** also reserves a block of ten ports per worktree through a per-user registry,
+  guarded by an OS lock and IPv4/IPv6 bind checks. Python 3.10+ is required for allocation.
+  Repository path and branch choose a preferred block; strict server binding still proves
+  runtime ownership. The reservation is recorded in the worktree's git directory
   where it cannot dirty the tree and where git deletes it on removal — because branch
   isolation buys nothing while every worktree's dev server fights for :5173. Never pushes.
 - [`skills/screen-map/`](skills/screen-map/README.md) — an agent-readable map of a web
@@ -116,9 +117,10 @@ directories yourself.
   same failure or check for the third time; one subgoal past 15 tool calls) and
   replaces the free question with an expensive one: not "was this the best?" but
   "what would I do differently on a rewrite?", and not "should I keep going?" but
-  "what am I trying to learn, in one sentence?". A first firing is decided alone and
-  reported in one line; the **same** tripwire firing twice goes to the human, because
-  the earlier decision to continue has already been shown wrong. Prompt only — no
+  "what am I trying to learn, in one sentence?". Each checkpoint distinguishes missing
+  requested work from optional improvements. Repeated firing changes the method when
+  evidence has stopped advancing; only a real missing decision or authority goes to the
+  user, not the count alone. Prompt only — no
   scripts, no hooks — and explicitly not permission to narrow the scope the user
   asked for.
 

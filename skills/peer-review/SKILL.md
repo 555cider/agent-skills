@@ -1,6 +1,6 @@
 ---
 name: peer-review
-description: Use when the user explicitly asks for a peer review, second opinion, reviewer list/help, or choice recommendation for a plan, spec, design choice, or option set, including /peer-review in Claude Code or natural-language requests in Codex. Do not use for ordinary host-agent code review unless the user asks for an external/peer reviewer.
+description: Obtain an external second opinion on a plan, spec, or options when the user asks for peer review or another reviewer; also handle reviewer list/help requests. Do not invoke external reviewers for ordinary recommendations, internal double-checks, or host-agent code review.
 license: MIT
 compatibility: Requires Bash 4 or newer, git, Python 3 for profile config, and at least one supported reviewer CLI.
 ---
@@ -258,7 +258,7 @@ The script's exit codes drive how step 4 reports failure to the user.
 ## Invocation policy
 
 Operator-invoked only. Use this skill when the user explicitly asks for a peer review, second
-opinion, reviewer help/list, or a recommendation between choices. Never self-trigger merely because
+opinion from another reviewer, or reviewer help/list. An ordinary request to recommend between choices does not authorize external review. Once external review is requested, proceed without asking again. Never self-trigger merely because
 you wrote a spec or multi-step plan.
 
 ## Boundaries

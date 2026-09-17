@@ -308,6 +308,17 @@
         "Does not present the empty result as proof of behavior.",
         "Recommends a functional test or an observed interaction as the real evidence."
       ]
+    },
+    {
+      "id": "korean-copy-and-bounded-audit",
+      "prompt": "이 한국어 설정 컴포넌트만 시각 검증해줘. 닫기와 더보기는 기존 제품 용어이고 별도 명사형 규칙은 없다.",
+      "expected_output": "Audits the relevant component route and states, preserves natural Korean labels, and reports the exact verified matrix.",
+      "assertions": [
+        "Does not switch labels to English.",
+        "Does not enable koButtonNounStyle without a team requirement.",
+        "Does not claim whole-application coverage from a component audit."
+      ],
+      "files": []
     }
   ]
 }

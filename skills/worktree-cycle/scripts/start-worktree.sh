@@ -22,9 +22,9 @@
 # same default ports. Each worktree therefore also gets a reserved block of 10 ports, written
 # to <worktree git-dir>/worktree-ports as sourceable KEY=VALUE. Start only the stack you are
 # changing on those ports and leave the shared instances alone. The block is derived from the
-# repository path and the branch name, so the same worktree name always gets the same ports
-# within a repository while two repositories do not collide, and blocks already recorded by
-# other worktrees of the same repository are skipped.
+# repository path and branch name select a preferred block. A per-user registry serializes
+# allocations across repositories, and current listeners are checked before assignment.
+# The sockets are then released, so strict server binding remains mandatory.
 #
 # If the local base trails its remote counterpart, that is reported and the run continues:
 # branching from the local branch is the point. Nothing here touches the network.
@@ -36,11 +36,12 @@
 set -euo pipefail
 
 BASE="dev"; NAME=""; WTPATH=""; BR=""; PORT_BASE=""
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PWD0="$PWD"   # captured before we move to the main worktree; relative args resolve against it
 
 # Port block geometry. 20000-29999 sits below every common ephemeral range (Linux
-# 32768-60999, Windows and macOS 49152-65535), so the OS never hands one of these out from
-# under a dev server, and above the usual application defaults (3000, 5173, 8000, 8080).
+# 32768-60999, Windows and macOS 49152-65535); customized ranges and other processes can
+# still conflict, so the allocator probes bind availability and servers must bind strictly.
 PORT_RANGE_START=20000
 PORT_BLOCK=10
 PORT_BLOCKS=1000
@@ -79,50 +80,6 @@ warn_if_base_behind() {
   [ -n "$n" ] && [ "$n" -gt 0 ] || return 0
   echo "⚠️  local '$b' is $n commit(s) behind $ref (read from refs you already have; no fetch)." >&2
   echo "    Branching from local '$b' anyway, by design. Pull first if this worktree needs those commits." >&2
-}
-
-# reserved_port_bases — print the WORKTREE_PORT_BASE of every worktree that already has one,
-# one per line. A worktree without the file (the main worktree, or one created before this
-# script reserved ports) simply contributes nothing. The record lives in each worktree's git
-# directory, so git removes it together with the worktree and no stale reservation can survive.
-reserved_port_bases() {
-  local list line p gd
-  list="$(git worktree list --porcelain 2>/dev/null)" || return 0
-  printf '%s\n' "$list" | while IFS= read -r line; do
-    case "$line" in worktree\ *) p="${line#worktree }";; *) continue;; esac
-    [ -d "$p" ] || continue
-    gd="$(git -C "$p" rev-parse --absolute-git-dir 2>/dev/null)" || continue
-    [ -f "$gd/worktree-ports" ] || continue
-    awk -F= '$1 == "WORKTREE_PORT_BASE" && $2 ~ /^[0-9]+$/ { print $2 }' "$gd/worktree-ports"
-  done
-}
-
-# allocate_port_block <repo> <branch> — print a free port base, or fail if every block is taken.
-# The starting point is derived rather than drawn at random: a worktree that is removed and
-# recreated under the same name gets the same ports back, so whatever was configured against
-# them (bookmarks, proxy targets, editor launch configs) still points at the right place.
-#
-# The repository path is part of the input, not just the branch name. Without it, two different
-# repositories on the same machine hand out exactly the same block for the same worktree name —
-# and the names that collide are the common ones (worktree-fix, worktree-test), which is the
-# worst possible distribution. Only worktrees of the same repository can see each other's
-# reservations, so nothing else catches that collision. The path also separates two clones of
-# the same repository, which the first commit SHA would not.
-allocate_port_block() {
-  local repo="$1" br="$2" idx i cand reserved
-  reserved="$(reserved_port_bases | tr '\n' ' ')" || reserved=""
-  reserved=" $reserved "
-  idx="$(printf '%s\n%s' "$repo" "$br" | cksum | awk -v n="$PORT_BLOCKS" '{ print $1 % n }')"
-  i=0
-  while [ "$i" -lt "$PORT_BLOCKS" ]; do
-    cand=$(( PORT_RANGE_START + ((idx + i) % PORT_BLOCKS) * PORT_BLOCK ))
-    case "$reserved" in
-      *" $cand "*) ;;
-      *) printf '%s\n' "$cand"; return 0;;
-    esac
-    i=$(( i + 1 ))
-  done
-  return 1
 }
 
 while [ $# -gt 0 ]; do
@@ -210,31 +167,24 @@ NEW_SHA="$(git -C "$WTPATH" rev-parse HEAD)"
 #
 # A failure here is never fatal. The worktree is the point; the ports are a convenience, and
 # refusing to create a worktree because a block could not be reserved would be the wrong trade.
-if [ -z "$PORT_BASE" ]; then
-  PORT_BASE="$(allocate_port_block "$MAIN" "$BR")" || {
-    PORT_BASE=""
-    echo "⚠️  every port block in $PORT_RANGE_START-$PORT_RANGE_END is already reserved — no ports assigned." >&2
-    echo "    Pick ports by hand, or remove worktrees that are no longer in use." >&2
-  }
-fi
-
 PORTS_FILE=""
-if [ -n "$PORT_BASE" ]; then
-  WT_GITDIR="$(git -C "$WTPATH" rev-parse --absolute-git-dir)"
-  if printf '%s\n' \
-      "# worktree-cycle: ports reserved for this worktree. Removed with the worktree." \
-      "# Start only the stack you are changing on these; leave shared instances alone." \
-      "WORKTREE_NAME=$NAME" \
-      "WORKTREE_BRANCH=$BR" \
-      "WORKTREE_PORT_BASE=$PORT_BASE" \
-      "WORKTREE_PORT_COUNT=$PORT_BLOCK" \
-      > "$WT_GITDIR/worktree-ports" 2>/dev/null; then
-    PORTS_FILE="$WT_GITDIR/worktree-ports"
-  else
-    echo "⚠️  could not write the port reservation to $WT_GITDIR/worktree-ports." >&2
-    echo "    The worktree is fine; assign ports by hand." >&2
-    PORT_BASE=""
+WT_GITDIR="$(git -C "$WTPATH" rev-parse --absolute-git-dir)"
+PORT_ARGS=(--repo "$MAIN" --branch "$BR" --git-dir "$WT_GITDIR")
+[ -z "$PORT_BASE" ] || PORT_ARGS+=(--port-base "$PORT_BASE")
+PYTHON=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; assert sys.version_info >= (3, 10)' 2>/dev/null; then
+    PYTHON="$candidate"; break
   fi
+done
+if [ -n "$PYTHON" ] && ASSIGNED="$("$PYTHON" "$SCRIPT_DIR/reserve-ports.py" "${PORT_ARGS[@]}")"; then
+  PORT_BASE="$ASSIGNED"
+  PORTS_FILE="$WT_GITDIR/worktree-ports"
+else
+  echo "⚠️  worktree created at $WTPATH, but no verified port reservation (Python 3.10+ required)." >&2
+  echo "    Retry reserve-ports.py for this git-dir; do not rerun worktree creation." >&2
+  [ -z "$PORT_BASE" ] || exit 1
+  PORT_BASE=""
 fi
 
 echo

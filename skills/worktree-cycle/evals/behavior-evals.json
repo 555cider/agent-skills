@@ -122,6 +122,17 @@
         "Shows the exact push command for the user to run.",
         "Confirms the local merge result before handing off."
       ]
+    },
+    {
+      "id": "explicit-port-collision-partial-start",
+      "prompt": "다른 저장소가 예약한 포트로 워크트리를 시작했더니 생성 후 포트 예약이 실패했다.",
+      "expected_output": "Reports the existing worktree and missing reservation; selects an authorized free block through the allocator, then uses strict binding.",
+      "assertions": [
+        "Does not recreate the worktree or kill the unrelated listener.",
+        "Does not silently claim the requested port was assigned.",
+        "Distinguishes reservation from runtime endpoint verification."
+      ],
+      "files": []
     }
   ]
 }

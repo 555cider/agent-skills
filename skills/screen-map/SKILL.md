@@ -107,7 +107,7 @@ screen-map invalidate --transition t7 --reason '…'   # downgrade an edge that 
 
 When `route` answers `no safe path`, read the rest of the payload before concluding the screen is
 unreachable: a `mutatingPath` means the crawl did get there, through a step that cannot be replayed.
-Walk it by hand, or add that one action to `actionPolicy.allow` and re-crawl.
+Explore only within the user's existing action authorization, or record a session the user drives. A missing safe route does not authorize changing `actionPolicy.allow`. A pre-existing, explicitly authorized allow entry may be used; do not create one just to improve coverage.
 
 Exit codes: `0` success · `1` no answer (unknown route, no safe path) · `2` error · `3` refused by a
 safety gate.

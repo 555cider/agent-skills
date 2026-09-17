@@ -80,6 +80,13 @@ Resolve paths relative to this skill directory.
    `claim` is idempotent for the same consumer and reports `busy` to a different consumer while one
    request is active. Use the claimed `entry.requestPath`; FIFO order comes from `queueSequence`.
 
+   After an agent restart, `queue.recovery` names the existing consumer, phase, and request.
+   Confirm the previous worker has stopped before reusing that consumer ID with `claim`.
+   Inspect existing changes when `repositoryReviewRequired` is true; resume verification or
+   cancellation from the persisted phase. Never delete claim files, reset the phase, or adopt
+   an active consumer merely to bypass `busy`. If the prior worker may still be running, wait
+   or coordinate its stop. Driver `resume` restores the browser connection, not edit ownership.
+
 5. Publish lifecycle progress after each transition. Messages are user-visible, single-line,
    at most 240 characters, and must contain only a coarse reason—never source paths, diffs, secrets,
    or terminal output:

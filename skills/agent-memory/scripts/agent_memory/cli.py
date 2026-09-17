@@ -173,7 +173,16 @@ def command_forget(args: argparse.Namespace) -> int:
             all_projects=args.all_projects,
             allow_bulk=args.all_matches,
         )
-        output = {"removed": removed, "total": len(removed), "tombstone_days": 7}
+        output = {
+            "removed": removed, "total": len(removed), "tombstone_days": 7,
+            "deletion_scope": {
+                "structured_memory": "deleted" if removed else "no_matches",
+                "events": "retained_until_ttl",
+                "managed_backups": "not_modified",
+                "external_exports": "not_modified",
+                "rehydration_block_days": 7,
+            },
+        }
         _emit(output, args.format)
         return 0
     finally:

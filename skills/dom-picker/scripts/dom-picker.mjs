@@ -1287,7 +1287,7 @@ async function main() {
     const sessionPath = option("session", null);
     if (!sessionPath) fail("queue requires --session=<session.json>");
     const queue = listQueue(sessionPath);
-    emit("queue", { session: queue.session, entries: queue.entries, capabilities: [...CAPABILITIES] }, { sessionId: queue.session.sessionId, target: queue.session.target });
+    emit("queue", { session: queue.session, entries: queue.entries, recovery: queue.recovery, capabilities: [...CAPABILITIES] }, { sessionId: queue.session.sessionId, target: queue.session.target });
     return;
   }
   if (command === "claim") {

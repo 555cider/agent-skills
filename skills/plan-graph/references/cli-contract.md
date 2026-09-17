@@ -30,7 +30,7 @@ all diagnostics in one pass.
 | `rename OLD NEW [--title TITLE]` | Rename the file and update every current `requires` reference. Historical `replaces` strings stay unchanged. |
 | `replace OLD NEW --title TITLE ...` | Refuse active dependents, create a fresh plan with `replaces: [OLD]`, delete OLD, and prune orphaned done plans. Metadata and requirements are not inherited. |
 | `reopen ID` | Change a retained done plan back to active. |
-| `close ID [--force]` | Mark done and prune the newly closed tree. Refuses (`unverified_completion`) while Outcome, Decisions, or Completion is still `TBD`; `--force` overrides with a `forced_close` warning. Reports `unblocked` dependents and `retained`. |
+| `close ID [--force]` | Normal close marks done and prunes; refuses (`unverified_completion`) while Outcome, Decisions, or Completion is `TBD`. `--force` abandons instead, refuses active dependents, and removes the plan without satisfying prerequisites. Reports `abandoned: true`, empty `unblocked`, and a `forced_close` warning for abandonment. |
 | `drop ID` | Refuse active dependents, delete the target, and prune orphaned done plans. |
 | `gc` | Delete all done plans outside active prerequisite closures. |
 
@@ -80,6 +80,8 @@ These six top-level keys are stable across commands.
 - `why.data` contains `plan`, `readiness`, `blockers`, `dependents`
   (`active`/`done`), `staleness`, `overlaps`, `lineage`, `prunable`, and
   `unfilled_sections`.
+- Mutations deleting files add `data.recovery_directory` after saving their exact
+  pre-mutation bytes. Text output prints the same location. Dry-run creates no copy.
 - `close.data` adds `unblocked` (dependents whose readiness flipped
   waiting→ready) and `retained` (target kept for active dependents).
 - A `staleness` object is `{"state": "fresh"|"aging"|"stale"|"unknown",
@@ -97,7 +99,7 @@ keys and the exit codes are stable.
 | `possible_duplicate` | warning | Two active plans share a tag and files or near-identical titles. |
 | `tbd_sections` | warning | Sections still hold the `TBD` template (on close, or on a done plan). |
 | `unverified_completion` | error | `close` refused: Outcome, Decisions, or Completion is unfilled. |
-| `forced_close` | warning | `close --force` proceeded past unfilled sections. |
+| `forced_close` | warning | `close --force` abandoned work without completing it. |
 
 Exit codes are `0` for success, `1` for validation/conflict/I/O failure, and
 `2` for CLI usage errors. JSON domain errors still emit the one result object.
@@ -110,3 +112,9 @@ concurrent edits, validate the full proposed graph, and use same-directory
 atomic replacements. A failed multi-file operation restores every touched
 file from its captured bytes. Plan files, `.agents`, and `.agents/plans` may not
 be symlinks, and no write may resolve outside the repository store.
+
+Before deleting any plan, preserve its current bytes under the worktree git dir's
+`plan-graph-recovery/<unique-id>/`, or `.agents/plan-recovery/<unique-id>/` in deliberate
+non-Git use. Backup failure aborts before mutation. Successful deletion does not
+remove these copies; there is no automatic retention cleanup. Copy the named Markdown
+file back only after checking for a conflicting live plan and run `doctor` afterwards.
