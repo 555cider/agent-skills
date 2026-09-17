@@ -36,6 +36,13 @@ normalized content, scope, and repo key. The HMAC expires after seven days and
 prevents background workers from recreating the memory. An explicit user
 remember deletes the matching tombstone and creates a new record.
 
+This deletes structured memory, not every historical copy. Source events expire by
+the TTLs below. Managed `backups/rekey` snapshots are retained until explicit, scoped
+operator cleanup; external exports are outside this command's control. `forget`
+reports these boundaries in `deletion_scope`. Restoring an old database after the
+tombstone window can restore old memories; do not describe the seven-day mechanism
+as permanent erasure or automatic scrubbing of backups.
+
 ## Retention
 
 - prompt/final/tool events: 7 days;

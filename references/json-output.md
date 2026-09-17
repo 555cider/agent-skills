@@ -1,5 +1,10 @@
 # JSON contracts
 
+`forget` retains `removed`, `total`, and `tombstone_days` and adds `deletion_scope`:
+`structured_memory` is `deleted` or `no_matches`; `events` is `retained_until_ttl`;
+`managed_backups` and `external_exports` are `not_modified`; `rehydration_block_days`
+is 7. These describe the command boundary, not a claim that a particular backup exists.
+
 All public JSON objects use explicit v2 schema names. Additive fields may be
 introduced, but consumers must reject a different major schema.
 

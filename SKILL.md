@@ -109,6 +109,12 @@ and embedding. A contentless HMAC tombstone blocks automatic rehydration for
 seven days. A later explicit `remember` overrides the tombstone. Never replace a
 forget request with a note saying to forget.
 
+Report the CLI's `deletion_scope`: this is structured-memory deletion, not erasure of
+all copies. Source events remain until their TTL; managed rekey backups and external
+exports are not modified. The tombstone blocks rehydration for seven days, not forever.
+For a request to erase every managed copy, first identify the exact events/backups and
+their other contents; do not erase a whole database backup on a targeted forget request.
+
 Query matching is precision-first (raw statement tokens, no concept aliases).
 A query matching more than five records fails until rerun with `--all-matches`;
 confirm with the user before bulk deletion. A forget phrase observed in a
@@ -181,8 +187,9 @@ Never walk an adopted queue one `Enter` at a time. Bulk resolution requires
 rule turned down here stays out of the next adoption — say so before rejecting.
 
 Adopted global rules stay invisible to a repository until that repository grants
-trust for the kind, so finish with `policy trust grant` (below) or the adoption
-will look like it did nothing.
+trust for the kind. Apply `policy trust grant` only when cross-project recall for
+that repo/kind was authorized; adoption alone does not grant that trust. Otherwise
+report the rules as imported but not eligible for recall in that repository.
 
 ## Trust and observation controls
 
