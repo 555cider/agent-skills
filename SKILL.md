@@ -78,8 +78,9 @@ never persisted. Each one requires a concrete response, not acknowledgement:
   reopen, or replace — do not act on the plan text unread.
 - `scope_overlap` warning or an `overlapping` pack entry: another active plan
   owns the same files with no declared ordering. Read that plan before editing
-  shared files. Add `requires` only for a genuine ordering; otherwise narrow
-  one plan's scope.
+  shared files. Add `requires` only for a genuine ordering. Independent changes
+  may legitimately share a file: record the coordination decision rather than
+  narrowing truthful scopes just to silence an advisory.
 - `possible_duplicate` warning: two active plans look like one piece of work
   filed twice. Merge them with `update`, or differentiate scope and title.
 - Empty `selected` with non-empty `near_misses`: read the near-miss plans
@@ -128,7 +129,8 @@ when composing commands programmatically or consuming JSON output.
 
 ## Close context instead of archiving it
 
-`done` plans remain only while an active plan requires them. Git is the archive.
+`done` plans remain only while an active plan requires them. Git preserves committed
+history; deletion also saves the exact current bytes in a recovery directory.
 
 Before a command that can delete files, inspect its exact change set:
 
@@ -141,7 +143,8 @@ Apply the same dry-run-first pattern to `drop` and `gc`.
 
 - `close` refuses while Outcome, Decisions, or Completion still hold the `TBD`
   template (`unverified_completion`): fill them with what actually happened
-  first. `--force` exists only for abandoning work — say so in the handoff.
+  first. `--force` abandons and removes the plan; it refuses active dependents
+  and never satisfies their prerequisites. Revise dependencies explicitly first.
   A successful close reports `unblocked` dependents and whether the plan was
   `retained` for active dependents.
 - `close` marks the target done, then removes every done plan outside the
@@ -150,7 +153,9 @@ Apply the same dry-run-first pattern to `drop` and `gc`.
   orphaned done plans.
 - `gc` removes already-prunable done plans.
 
-Report every deleted plan path and note that Git can recover committed files.
+Report every deleted plan path and the returned `recovery_directory`. Its files
+preserve uncommitted edits too. Recovery copies are not live plans; inspect and
+restore only the intended file. Retention is manual, never automatic deletion.
 
 ## Validate after changes
 

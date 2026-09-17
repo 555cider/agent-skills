@@ -530,13 +530,34 @@ class FileLock:
             with contextlib.suppress(OSError):
                 stat = self.path.stat()
         if pid is not None:
-            try:
-                os.kill(pid, 0)
-                return False
-            except PermissionError:
-                return False
-            except ProcessLookupError:
-                pass
+            if os.name == "nt":
+                # os.kill(pid, 0) terminates a Windows process; query a handle instead.
+                import ctypes
+                from ctypes import wintypes
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                kernel.OpenProcess.restype = wintypes.HANDLE
+                kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+                kernel.WaitForSingleObject.restype = wintypes.DWORD
+                kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+                handle = kernel.OpenProcess(0x00100000, False, pid)
+                if not handle:
+                    if ctypes.get_last_error() != 87:  # invalid PID; access denied is not dead
+                        return False
+                else:
+                    try:
+                        if kernel.WaitForSingleObject(handle, 0) != 0:
+                            return False
+                    finally:
+                        kernel.CloseHandle(handle)
+            else:
+                try:
+                    os.kill(pid, 0)
+                    return False
+                except PermissionError:
+                    return False
+                except ProcessLookupError:
+                    pass
         if pid is None and stat is not None and time.time() - stat.st_mtime < 30:
             return False
         with contextlib.suppress(FileNotFoundError):
@@ -582,7 +603,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             temp.unlink()
 
 
-def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) -> None:
+def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) -> Path | None:
     graph_errors = [item for item in validate_graph(after) if item.severity == "error"]
     if graph_errors:
         raise PlanGraphError(graph_errors[0].message, code=graph_errors[0].code)
@@ -616,6 +637,23 @@ def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) 
             if path.is_symlink():
                 raise PlanGraphError(f"refusing to modify symlink plan: {path}", code="symlink_plan")
             snapshots[path] = path.read_bytes() if path.exists() else None
+        recovery = None
+        if deletes:
+            # Persist exact current bytes before any mutation, including untracked plans.
+            # In-memory rollback alone cannot recover a successful prune.
+            git_dir = _run_git(root, ["rev-parse", "--absolute-git-dir"])
+            parent = (Path(git_dir.stdout.strip()) / "plan-graph-recovery"
+                      if git_dir.returncode == 0 else root / ".agents" / "plan-recovery")
+            if parent.is_symlink():
+                raise PlanGraphError("recovery directory may not be a symlink", code="symlink_store")
+            recovery = parent / secrets.token_hex(16)
+            try:
+                recovery.mkdir(parents=True, mode=0o700)
+                for path in sorted(deletes):
+                    if snapshots[path] is not None:
+                        _atomic_write_bytes(recovery / path.name, snapshots[path])
+            except OSError as exc:
+                raise PlanGraphError(f"cannot preserve plans before deletion: {exc}", code="recovery_failed") from exc
         try:
             for path, data in sorted(writes.items(), key=lambda item: item[0].as_posix()):
                 _atomic_write_bytes(path, data)
@@ -635,3 +673,4 @@ def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) 
                     rollback_errors.append(f"{path}: {rollback_exc}")
             detail = f"; rollback failed: {'; '.join(rollback_errors)}" if rollback_errors else ""
             raise PlanGraphError(f"failed to apply plan transaction: {exc}{detail}", code="write_failed") from exc
+        return recovery
