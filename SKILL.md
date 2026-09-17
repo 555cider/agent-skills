@@ -2,7 +2,7 @@
 name: worktree-cycle
 description: Use for the git worktree lifecycle — starting isolated work and folding it back. START creates a worktree branched from the LOCAL integration branch HEAD (default dev), not the remote default, and asserts the base, and reserves a dev-server port block for it so parallel worktrees do not fight over the same ports. FINISH squash-merges the worktree branch into the local integration branch and cleans up the branch and worktree. Triggers include "워크트리 시작/생성", "워크트리 정리", "dev 로 머지", "squash merge 후 브랜치·워크트리 정리", starting or closing out worktree work. Never pushes.
 license: MIT
-compatibility: POSIX shell and git. Works on Windows through Git Bash. No network access, no push.
+compatibility: Bash, git, and Python 3.10+ for coordinated port allocation. Works on Windows through Git Bash. No network access, no push.
 ---
 
 # worktree-cycle
@@ -70,23 +70,28 @@ cat "$(git rev-parse --absolute-git-dir)/worktree-ports"   # run inside the work
 # WORKTREE_PORT_COUNT=10
 ```
 
-- **Range 20000–29999, ten ports per worktree.** Below every common ephemeral range (Linux
-  32768–60999, Windows and macOS 49152–65535), so the OS cannot hand one of these out from
-  under a running server, and above the usual application defaults (3000, 5173, 8000, 8080).
-- **Derived from the repository path and the branch name, not random.** A worktree removed and
-  recreated under the same name gets the same ports back, so anything configured against them
-  still points at the right place. The repository path is in there because only worktrees of
-  the *same* repository can see each other's reservations — without it, two repositories on one
-  machine would hand the same worktree name the same block, and the names that collide are the
-  common ones. Blocks already recorded by sibling worktrees are skipped.
-- **The record lives in the worktree's git directory, not in the worktree.** This is not a
-  detail: `finish` requires `git status --porcelain` in the worktree to be *completely* empty,
-  untracked included, so a file in the tree would block every finish for the life of the
-  worktree. In the git directory it is invisible to status, and `git worktree remove` deletes
-  it — no reservation can go stale.
-- `--port-base <n>` pins the block by hand (multiple of 10, inside the range). A failure to
-  reserve anything is a **warning, not an error**: the worktree is the point, the ports are a
-  convenience.
+- **Range 20000–29999, ten ports per worktree.** The allocator probes IPv4 and
+  IPv6 bind availability and imports legacy sibling reservations.
+- **Cross-repository coordination.** Python's OS file lock serializes the per-user
+  registry at `~/.cache/worktree-cycle/ports.json`. Tests can override its path
+  with `WORKTREE_CYCLE_PORT_REGISTRY`. Dead allocator processes release the OS
+  lock automatically; stale worktree entries are dropped when their git-dir
+  reservation disappears. A corrupt registry fails closed instead of being erased.
+- **Deterministic preference, not ownership.** Repository path and branch select a
+  preferred block. A conflicting reservation or listener makes automatic allocation
+  try another block. Unregistered older allocations in other repositories and other
+  OS users are outside this registry; their running listeners are still checked.
+- **Explicit ports use the same checks.** `--port-base <n>` must be aligned and free.
+  Failure exits non-zero after worktree creation and reports that partial state;
+  it never silently substitutes another block. Retry the allocator with the printed
+  worktree's git-dir, not `start` again:
+  `python <skill-dir>/scripts/reserve-ports.py --repo <main> --branch <branch> --git-dir <git-dir> --port-base <n>`.
+- **Reservation lifetime follows git-dir.** `worktree-ports` lives outside tracked
+  content and is removed with the worktree. A missing Python or failed automatic
+  allocation leaves a usable worktree with an explicit no-reservation warning.
+- Probing releases its sockets; another process can bind afterwards. Always use
+  strict server binding, check listeners before launch, and probe the resulting
+  endpoint. A reservation file is not evidence that the intended code is serving.
 
 ### Dev servers across worktrees
 
@@ -122,7 +127,7 @@ yours:
 
 ### One finish at a time
 
-Every worktree of a repository shares **one index and one main working tree**, so two finishes
+Each worktree has its own index, but these finish operations all target **the main worktree's index and working tree**, so two finishes
 are not independent. `git merge --squash` *stages* its result without committing, so a second
 finish sees that staged work as "local changes", fails, and its recovery would discard it —
 someone else's merge, thrown away. The guard below cannot prevent this on its own: it looks

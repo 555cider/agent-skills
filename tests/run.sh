@@ -23,6 +23,8 @@ EC=0
 export HOME="$WORK/home"
 export USERPROFILE="$HOME"
 export GIT_CONFIG_NOSYSTEM=1
+export WORKTREE_CYCLE_PORT_REGISTRY="$WORK/port-registry.json"
+python "${HERE}/test_ports.py" -q || exit 1
 mkdir -p "$HOME"
 
 PASS=0
@@ -260,13 +262,6 @@ port_base_of() {
   awk -F= '$1 == "WORKTREE_PORT_BASE" { print $2 }' "$gd/worktree-ports"
 }
 
-# hash_base_for <repo> <branch> — the block the script derives before any collision walking.
-# Mirrors allocate_port_block() so a test can occupy that exact block, and so the repository
-# path's presence in the hash input is asserted rather than assumed.
-hash_base_for() {
-  printf '%s\n%s' "$1" "$2" | cksum | awk '{ print 20000 + ($1 % 1000) * 10 }'
-}
-
 repo="$(new_repo ports-basic)"
 run_in "$repo" "$START" feat1
 wt="$repo/.worktrees/feat1"
@@ -305,10 +300,6 @@ run_in "$repo"  "$START" feat1
 run_in "$repo2" "$START" feat1
 a="$(port_base_of "$repo/.worktrees/feat1")"
 b="$(port_base_of "$repo2/.worktrees/feat1")"
-assert_eq "the block is derived from the repository path and the branch name" \
-  "$(hash_base_for "$(main_path_of "$repo")" worktree-feat1)" "$a"
-assert_eq "the same derivation holds in a second repository" \
-  "$(hash_base_for "$(main_path_of "$repo2")" worktree-feat1)" "$b"
 if [ -n "$a" ] && [ "$a" != "$b" ]; then
   pass "the same worktree name in two repositories gets different blocks"
 else
@@ -327,15 +318,14 @@ else
   fail "two worktrees in one repo get different port blocks" "feat1=[$a] feat2=[$b]"
 fi
 
-# Collision: park feat2's derived block on feat1's reservation, so allocation has to walk on.
+# Explicit allocation must use the same collision guard as automatic allocation.
 repo="$(new_repo ports-collision)"
 run_in "$repo" "$START" feat1
-taken="$(hash_base_for "$(main_path_of "$repo")" worktree-feat2)"
-printf 'WORKTREE_PORT_BASE=%s\n' "$taken" > "$repo/.git/worktrees/feat1/worktree-ports"
-run_in "$repo" "$START" feat2
-assert_eq "allocation walks past a block another worktree already reserved" \
-  "$(( 20000 + ((((taken - 20000) / 10) + 1) % 1000) * 10 ))" \
-  "$(port_base_of "$repo/.worktrees/feat2")"
+taken="$(port_base_of "$repo/.worktrees/feat1")"
+run_in "$repo" "$START" feat2 --port-base "$taken"
+assert_exit_nonzero "explicit allocation refuses another worktree's reserved block"
+assert_dir "port failure reports a created worktree, not a failed creation" "$repo/.worktrees/feat2"
+assert_eq "failed port allocation does not write a reservation" "" "$(port_base_of "$repo/.worktrees/feat2")"
 
 # Determinism, and the reservation's lifetime: git owns the file, so finish takes it away.
 repo="$(new_repo ports-determinism)"
