@@ -50,6 +50,12 @@ origin. It fails closed if the target disappeared or its top origin changed. `qu
 snapshot. `claim` assigns the oldest queued item and is idempotent for the same consumer; another
 consumer receives `busy` while any request is active. There is no `serve` command.
 
+`queue.recovery` is null when no request is active. Otherwise it reports `consumer`,
+`requestPath`, `state`, `repositoryReviewRequired`, and `previousConsumerMustBeStopped`.
+This is read-only handoff information, not a takeover grant. Once the prior worker has
+stopped, inspect its edits and cancellation state and reuse the existing consumer with
+`claim`; the phase and FIFO position stay unchanged. Never clear claims to evade `busy`.
+
 `status` accepts only valid transitions and a single-line message of at most 240 characters. The
 message is rendered in the browser, so it must be a coarse user-facing reason without paths, diffs,
 secrets, or logs. `resultPath`, when supplied, must resolve inside that request directory;

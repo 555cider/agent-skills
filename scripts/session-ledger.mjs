@@ -194,7 +194,16 @@ export function listQueue(sessionPath) {
   const session = loadSessionManifest(sessionPath);
   const entries = requestDirectories(session.artifactRoot).map(entryFor).filter(Boolean)
     .sort((a, b) => a.sequence - b.sequence || a.requestId.localeCompare(b.requestId));
-  return { session, entries };
+  const active = entries.find((entry) => ACTIVE_STATES.has(entry.state));
+  const recovery = active ? {
+    consumer: active.claim?.consumer || null,
+    requestPath: active.requestPath,
+    state: active.state,
+    repositoryReviewRequired: ["editing", "verifying", "cancel_requested"].includes(active.state),
+    previousConsumerMustBeStopped: true,
+    instruction: "After confirming the previous worker has stopped, inspect existing edits and cancellation, then claim with the same consumer. Never reset the claim or phase to bypass busy.",
+  } : null;
+  return { session, entries, recovery };
 }
 
 export function claimNextRequest(sessionPath, consumer) {
