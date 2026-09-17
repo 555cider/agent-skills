@@ -4,6 +4,7 @@
 # Run: bash skills/ui-audit/tests/run.sh
 set -u
 export UI_AUDIT_SETTLE_MS=0
+node "$(dirname "$0")/copy-policy.mjs" || exit 1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$HERE/../scripts/audit-chrome.mjs"

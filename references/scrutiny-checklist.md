@@ -172,11 +172,10 @@ states are *meaningfully distinct* is judgment.
 
 - **[visual]** Label clarity: ambiguous, jargon, or truncated-meaning labels; words that
   don't say what the action does. The grammar is locale-specific: English buttons are verb
-  phrases ("Save draft"); Korean buttons are action nouns ("저장", "신청서 제출"), never a verb
-  or verbal noun ("저장하기", "저장해요", "저장합니다"). Where Korean has no fitting noun
-  (더보기, 닫기), use a short English label ("More", "Close"); a "~ 바로가기" link takes the
-  destination's name. The Korean ending is measured as
-  `koreanButtonVerbForm`; whether the noun names the *right* action is still yours. `Risk` on
+  phrases ("Save draft"); Korean labels may be natural nouns or verbs according to the
+  product voice ("저장", "저장하기", "닫기"). Preserve the product language. An explicit
+  team noun convention enables `koreanButtonVerbForm`; otherwise do not apply it.
+  Whether the label names the *right* action is still yours. `Risk` on
   primary actions, else `Polish`.
 - **[auto]** Trailing `.`/`!`, over-long, or wrapped button labels → `buttonLabelPunctuation`.
 - **[auto]** 해요체 and 합니다체 mixed on one screen → `mixedSpeechLevel`. Pick the register the

@@ -102,7 +102,8 @@
       badgeSlotMinDistinct: 8,
       badgeSlotDistinctRatio: 0.8,
       speechLevelMinEach: 2,
-      koButtonAllow: []    // Korean button words a team deliberately accepts
+      koButtonNounStyle: false, // opt-in team convention, not a universal Korean rule
+      koButtonAllow: []    // additional Korean button words a team deliberately accepts
     },
     // selectors matching authenticated destinations for the auth-mode-conflict rule
     authedNavWords: ['my', 'account', 'profile', 'mypage', '마이', '계정', '프로필', '내정보'],
@@ -2357,10 +2358,8 @@
   var KO_GI_STEM_LONG = '기이리치우르누꾸추루';
   var KO_BOX_NOUN = /(보관|편지|수신|발신|사서|우편|모금|투표|제안|건의|알림|쪽지|메일|메시지)함$/;
   var KO_NOUN_FIX = /^(.+?)(하기|되기|시키기|합니다|됩니다|하십시오|하세요|해요|돼요|되요|하다|되다|하자|할게요|할래요|함|됨)$/;
-  // Native-verb nominals have no noun to strip down to: use the Korean noun where one exists,
-  // otherwise a short English label.
-  var KO_WORD_FIX = { '더보기': 'More', '바로가기': 'Go', '닫기': 'Close', '열기': 'Open', '보기': 'View',
-    '찾기': '검색', '내려받기': '다운로드', '글쓰기': '작성' };
+  var KO_WORD_FIX = { '찾기': '검색', '내려받기': '다운로드', '글쓰기': '작성' };
+  var KO_NATURAL_ACTIONS = ['더보기', '닫기', '열기', '보기', '바로가기'];
 
   function koreanVerbForm(word) {
     var chars = Array.from(word);
@@ -2377,12 +2376,14 @@
   }
 
   function ruleKoreanButtonVerbForm(ctx) {
+    if ((ctx.cfg.copy || {}).koButtonNounStyle !== true) return;
     var allow = (ctx.cfg.copy || {}).koButtonAllow || [];
     buttonCopyCandidates(ctx).forEach(function (item) {
       var core = item.text.replace(/[\s\d()[\]{}.,!?…·:;+%~\p{Extended_Pictographic}]+$/u, '');
       var token = core.split(' ').pop() || '';
       var word = (token.match(/[가-힣]+$/) || [''])[0];
       if (allow.indexOf(word) >= 0) return;
+      if (KO_NATURAL_ACTIONS.indexOf(core.replace(/\s+/g, '')) >= 0) return;
       var form = koreanVerbForm(word);
       if (!form) return;
       var stem = word.match(KO_NOUN_FIX);
@@ -2394,9 +2395,9 @@
         : word === '바로가기' && prefix.trim() ? prefix.trim()
         : null;
       ctx.findings.push(mk('koreanButtonVerbForm', 'Polish', 'auto-measured', cssPath(item.el),
-        'Korean button label ends in a verb or verbal-noun form ("' + word + '"). Korean interface convention names the action with a noun — 저장, 신청서 제출 — so the label reads as the action itself, not as a sentence addressed to the user.',
+        'Korean button label ends in a verb or verbal-noun form ("' + word + '"). This project explicitly selected an action-noun convention; check consistency with its terminology.',
         { label: item.text, ending: word, form: form, instances: item.count }, { convention: 'action noun' }, rectOf(item.el),
-        fix ? 'Use "' + fix + '".' : 'Name the action with a noun; where Korean has no fitting noun, use a short English label (더보기 → More, 닫기 → Close).'));
+        fix ? 'Consider "' + fix + '" if it preserves the intended action.' : 'Keep the product language and choose a natural action label consistent with the team glossary; do not translate solely to satisfy this convention.'));
     });
   }
 

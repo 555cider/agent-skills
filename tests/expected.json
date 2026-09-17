@@ -457,7 +457,7 @@
       "file": "copy-conventions.html",
       "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
       "theme": "light",
-      "auditConfig": { "maxPolish": 80 },
+      "auditConfig": { "maxPolish": 80, "copy": { "koButtonNounStyle": true } },
       "mustHit": [
         { "rule": "genericConfirmLabel", "matches": "dlg-delete", "severity": "Risk", "confidence": "auto-measured", "note": "generic 확인 on an irreversible delete" }
       ],
@@ -465,10 +465,8 @@
         { "rule": "koreanButtonVerbForm", "matches": "bad-gi", "review": "optional", "note": "-하기 nominal" },
         { "rule": "koreanButtonVerbForm", "matches": "bad-polite", "review": "optional", "note": "해요체 verb" },
         { "rule": "koreanButtonVerbForm", "matches": "bad-formal", "review": "optional", "note": "합니다체 verb" },
-        { "rule": "koreanButtonVerbForm", "matches": "bad-more", "review": "optional", "note": "native verb stem + 기" },
         { "rule": "koreanButtonVerbForm", "matches": "bad-done", "review": "optional", "note": "-됨 nominal" },
-        { "rule": "koreanButtonVerbForm", "matches": "More", "review": "optional", "note": "더보기 has no Korean noun, so the fix is a short English label" },
-        { "rule": "koreanButtonVerbForm", "matches": "Use \\\"공지사항\\\"", "review": "optional", "note": "a ~바로가기 link takes the destination's name" },
+        { "rule": "koreanButtonVerbForm", "matches": "공지사항", "review": "optional", "note": "opt-in convention preserves Korean terminology" },
         { "rule": "buttonLabelPunctuation", "matches": "bad-bang", "review": "optional" },
         { "rule": "buttonLabelPunctuation", "matches": "bad-dot", "review": "optional" },
         { "rule": "buttonLabelPunctuation", "matches": "long label", "review": "optional" },
@@ -484,6 +482,7 @@
         { "rule": "genericConfirmLabel", "matches": "dlg-ack" }
       ],
       "mustNotAdvise": [
+        { "rule": "koreanButtonVerbForm", "matches": "bad-more" },
         { "rule": "koreanButtonVerbForm", "matches": "ok-" },
         { "rule": "koreanButtonVerbForm", "matches": "tab-browse" },
         { "rule": "buttonLabelPunctuation", "matches": "ok-ellipsis" },
