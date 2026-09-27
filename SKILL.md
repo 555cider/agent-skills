@@ -228,6 +228,7 @@ with the failed assertion and artifacts.
 - `scripts/dom-picker.mjs` is the zero-dependency Chromium driver and verifier.
 - `scripts/session-ledger.mjs` owns durable FIFO, claim, status, and cancellation transitions.
 - `scripts/locate-source.mjs` is the deterministic local source locator.
+- `scripts/locator-report.mjs` reports locator precision from saved fix results.
 
 ## Forward-test substantial revisions
 

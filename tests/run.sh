@@ -10,6 +10,7 @@ PICKER="$SKILL/assets/picker-runtime.js"
 DRIVER="$SKILL/scripts/dom-picker.mjs"
 LOCATOR="$SKILL/scripts/locate-source.mjs"
 LEDGER="$SKILL/scripts/session-ledger.mjs"
+REPORT="$SKILL/scripts/locator-report.mjs"
 UI_FIXTURE="$HERE/ui-audit-fixture.mjs"
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
@@ -42,6 +43,7 @@ assert_status 0 "picker runtime parses" node --check "$PICKER"
 assert_status 0 "Chromium driver parses" node --check "$DRIVER"
 assert_status 0 "source locator parses" node --check "$LOCATOR"
 assert_status 0 "session ledger parses" node --check "$LEDGER"
+assert_status 0 "locator report parses" node --check "$REPORT"
 assert_status 0 "UI audit fixture parses" node --check "$UI_FIXTURE"
 assert_status 0 "driver help succeeds" node "$DRIVER" help
 if grep -qF "start <url>" "$TMP/out" && grep -qF "verify --request" "$TMP/out"; then
@@ -140,6 +142,7 @@ assert_contains "verification policy refuses apply-only completion" "Never repor
 # Durable session and CLI contracts.
 assert_status 0 "durable FIFO session ledger" node "$HERE/ledger.mjs"
 assert_status 0 "lifecycle CLI JSON contracts" node "$HERE/lifecycle-cli.mjs"
+assert_status 0 "locator precision report" node "$HERE/locator-report.mjs"
 
 # Real Chromium integration. Chrome absence is an explicit, successful skip.
 node "$HERE/e2e.mjs" >"$TMP/e2e.out" 2>"$TMP/e2e.err"

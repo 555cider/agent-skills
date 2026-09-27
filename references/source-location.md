@@ -24,3 +24,18 @@ editing even at high confidence. Runtime hints are corroborating evidence, never
 
 For monorepos, search the whole repository first and use route/package signals to break ties. Never
 rank `.git`, `node_modules`, `dist`, `build`, `.next`, `out`, or `coverage` as source.
+
+## Checking the thresholds
+
+The `0.82`/`0.12` gate is hand-set. To see whether it holds up, keep results under a stable
+`--artifacts=DIR` (the default session root is a temporary directory) and run:
+
+```bash
+node scripts/locator-report.mjs <artifact-dir>...
+```
+
+It reads every `fix-result.json` and reports, per score band, how often the top candidate was a file
+the applied edit actually changed, with a 95% Wilson interval. Only applied edits carry an outcome,
+so this is precision of the auto-apply tier, not calibration across all scores. Treat a band with
+fewer than 20 results as an anecdote, and change a threshold only from a reviewed miss list, never
+from the report alone.
