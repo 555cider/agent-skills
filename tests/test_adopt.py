@@ -24,7 +24,7 @@ from agent_memory.db import Database
 from agent_memory.models import Candidate
 from agent_memory.providers import NullProvider
 from agent_memory.service import MemoryService
-from agent_memory.sources import build_payload, discover
+from agent_memory.sources import build_payload, discover, refine_with_provider
 from agent_memory.util import repo_key
 
 CLAUDE_MD = """\
@@ -479,3 +479,61 @@ def test_cli_refuses_a_bare_bulk_approval(tmp_path, capsys):
     assert main(["--memory-home", str(store), "review", "approve", "--format", "json"]) == 1
     assert "ERROR=" in capsys.readouterr().err
 
+
+
+# ------------------------------------------------------------- provider refine
+
+
+def _parsed(index: int) -> dict:
+    return {
+        "kind": "preference",
+        "scope": "project",
+        "repo_key": "repo",
+        "statement": f"Parsed rule number {index} that the model may restate.",
+        "conditions": [],
+        "path_globs": [],
+        "evidence": [{"kind": "import.claude-md", "path": f"/rules/{index}.md", "line": index}],
+    }
+
+
+class _Restater:
+    """Answers with fixed candidates, each claiming the event ids it was given."""
+
+    def __init__(self, *claims: list[str]):
+        self.claims = claims
+
+    def extract(self, events, project):
+        return [
+            Candidate(
+                kind="preference",
+                scope="project",
+                statement=f"Restated from {' + '.join(ids) or 'nothing'} by the model.",
+                source_event_ids=list(ids),
+            )
+            for ids in self.claims
+        ]
+
+
+def _by_path(records) -> dict[str, list[str]]:
+    paths: dict[str, list[str]] = {}
+    for record in records:
+        paths.setdefault(record["evidence"][0]["path"], []).append(record["statement"])
+    return paths
+
+
+def test_a_restated_rule_keeps_the_evidence_of_the_record_it_came_from():
+    records = [_parsed(index) for index in range(4)]
+    refined = refine_with_provider(_Restater(["adopt-2"]), records)
+    paths = _by_path(refined)
+    assert paths["/rules/2.md"] == ["Restated from adopt-2 by the model."]
+    for index in (0, 1, 3):
+        assert paths[f"/rules/{index}.md"] == [records[index]["statement"]]
+
+
+@pytest.mark.parametrize("ids", [[], ["adopt-9"], ["adopt-0", "adopt-1"]])
+def test_an_unattributable_restatement_is_dropped_and_the_parse_kept(ids):
+    records = [_parsed(index) for index in range(2)]
+    refined = refine_with_provider(_Restater(ids), records)
+    assert sorted(item["statement"] for item in refined) == sorted(
+        item["statement"] for item in records
+    )

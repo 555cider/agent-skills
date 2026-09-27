@@ -225,7 +225,8 @@ class OpenAIProvider(Provider):
             "from code or git. Inferred preferences and assistant-only claims must use authority "
             "inferred or assistant. Explicit remember/correction requests use explicit. A procedure or "
             "caveat is verified only with command/test evidence. Keep statements concise and preserve "
-            "the language useful to the user."
+            "the language useful to the user. List in source_event_ids the ids of the events each "
+            "memory came from."
         )
         value = self._structured(system, {"events": events}, CANDIDATE_SCHEMA)
         return candidates_from_value(value)

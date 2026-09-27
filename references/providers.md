@@ -59,7 +59,9 @@ The executable receives one JSON object on stdin:
 Operations:
 
 - `extract`: payload contains only redacted allowlisted events; result is
-  `{"candidates": [...]}`.
+  `{"candidates": [...]}`. Each candidate's `source_event_ids` names the events
+  it came from; `adopt --llm` drops a candidate that does not name exactly one
+  event of its batch.
 - `reconcile`: payload contains one candidate and a bounded list of current
   structured records; result is `{"action":"create|drop","candidate":{...}}`.
 - `embed`: payload contains `texts` and `model`; result is a vector array or
