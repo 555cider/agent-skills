@@ -676,6 +676,11 @@ def refine_with_provider(
     afterwards, so a model that answers `scope: global` cannot move a project's
     rules into every repository on the machine.
 
+    Each restatement must name exactly one record of its batch in
+    `source_event_ids`; that record supplies the evidence. One the model cannot
+    attribute — no id, an unknown id, or several records merged — is dropped, and
+    a record no kept restatement names stays as parsed.
+
     Any failure keeps the deterministic result. A missing or broken provider must
     cost the run nothing, because the parser alone is the supported path.
     """
@@ -691,28 +696,30 @@ def refine_with_provider(
     for (_, scope, project), records in grouped.items():
         for start in range(0, len(records), batch_size):
             chunk = records[start : start + batch_size]
+            keyed = {f"adopt-{index}": item for index, item in enumerate(chunk)}
             events = [
                 {
-                    "id": f"adopt-{index}",
+                    "id": key,
                     "kind": "user_prompt",
                     "harness": "generic",
                     "prompt": " / ".join([*item["conditions"], item["statement"]]),
                 }
-                for index, item in enumerate(chunk)
+                for key, item in keyed.items()
             ]
             try:
                 candidates = provider.extract(events, project)
             except ProviderError:
                 candidates = []
-            if not candidates:
-                refined.extend(chunk)
-                continue
-            template = chunk[0]
+            restated: set[str] = set()
             for candidate in candidates:
+                claimed = set(candidate.source_event_ids)
+                if len(claimed) != 1 or not claimed <= keyed.keys():
+                    continue
+                (key,) = claimed
                 statement = _clean_statement(normalize_home_paths(candidate.statement))
                 if len(statement) < MIN_STATEMENT_CHARS or len(statement) > MAX_STATEMENT_CHARS:
                     continue
-                record = dict(template)
+                record = dict(keyed[key])
                 record["kind"] = candidate.kind
                 record["scope"] = scope
                 record["repo_key"] = project or None
@@ -726,6 +733,8 @@ def refine_with_provider(
                 if _unsafe(record):
                     continue
                 refined.append(record)
+                restated.add(key)
+            refined.extend(item for key, item in keyed.items() if key not in restated)
 
     seen: set[str] = set()
     output: list[dict[str, Any]] = []
