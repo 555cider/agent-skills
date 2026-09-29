@@ -64,7 +64,8 @@ memory, and one set of `trust_grants`. Bare repositories and submodules keep the
 toplevel. Global memory is denied by default. `trust_grants` records explicit
 repo+kind grants.
 
-`.agent-memory.json` is read from the directory the command runs in, so two
+`.agent-memory.json` is read from the checkout's own toplevel (a subdirectory
+does not escape it), so two
 worktrees on different commits can hold different ceilings over the same shared
 grants; each applies its own.
 

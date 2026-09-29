@@ -219,3 +219,13 @@ def test_doctor_points_at_keys_rekey_would_fold(tmp_path, capsys):
     assert output["rekey_pending"] == [
         {"from": before, "to": repo_key(root), "reason": "origin-added:main", "memories": 1}
     ]
+
+
+def test_repo_policy_applies_from_a_subdirectory(tmp_path):
+    from agent_memory.cli import _repo_global_ceiling
+
+    root = _repo(tmp_path / "widget")
+    (root / ".agent-memory.json").write_text('{"global_memory": false}')
+    (root / "pkg" / "deep").mkdir(parents=True)
+    assert _repo_global_ceiling(root / "pkg" / "deep") == set()
+    assert _repo_global_ceiling(tmp_path) is None

@@ -30,7 +30,7 @@ from .providers import NullProvider, ProviderError, UnavailableProvider, provide
 from .redaction import redact_text
 from .retrieval import Retriever
 from .service import MemoryService
-from .util import MemoryError, expand_user_path, memory_home, repo_key, resolve_cwd
+from .util import MemoryError, expand_user_path, git_root, memory_home, repo_key, resolve_cwd
 
 
 def _emit(value: Any, output_format: str = "text") -> None:
@@ -88,7 +88,9 @@ def _evidence(values: Sequence[str] | None) -> list[dict[str, Any]]:
 
 
 def _repo_global_ceiling(cwd: Path) -> set[str] | None:
-    path = cwd / ".agent-memory.json"
+    # The checkout's own toplevel, not the main tree: a worktree on another
+    # commit may carry a different policy file.
+    path = (git_root(cwd) or cwd) / ".agent-memory.json"
     if not path.exists():
         return None
     try:
