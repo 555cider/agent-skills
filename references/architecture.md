@@ -19,7 +19,9 @@ current prompt
      in scope clears the relevance floor
   -> relevance floor (see below)
   -> scope/state/trust/condition filter, minus records this session saw
-     in the last 2 hours
+     in the last 2 hours, minus records restating a rule the host already
+     loads (CLAUDE.md for Claude, AGENTS.md for Codex/OpenCode; home file and
+     every directory up from cwd; instructions.py)
   -> reciprocal-rank fusion and bounded boosts
   -> <=8 record / ~1200 token packet
 
