@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from agent_memory.db import Database
-from agent_memory.integration import INTEGRATION_MARKER, integration_status
+from agent_memory.integration import INTEGRATION_MARKER, integrate, integration_status
 from agent_memory.models import Candidate
 from agent_memory.providers import Provider
 from agent_memory.retrieval import Retriever
@@ -373,3 +373,52 @@ def test_integration_status_flags_stale_managed_commands(tmp_path):
     (home / ".claude" / "settings.json").write_text(_managed_settings(live_command), encoding="utf-8")
     status = integration_status(user_home=home)
     assert status["adapters"]["claude"]["stale"] is False
+
+
+# ------------------------------------------------------ integration conflicts
+
+
+def _claude_home(tmp_path, plugins: dict[str, bool]) -> Path:
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": plugins}))
+    return home
+
+
+def test_disabled_remember_plugin_is_not_a_conflict(tmp_path):
+    home = _claude_home(tmp_path, {"remember@claude-plugins-official": False})
+    result = integrate(
+        memory_home=tmp_path / "memory", mode="primary", harness="claude", apply=True, user_home=home
+    )
+    assert result["conflicts"] == []
+    assert result["applied"] is True
+
+
+def test_disable_known_conflicts_turns_off_the_claude_plugin(tmp_path):
+    home = _claude_home(
+        tmp_path, {"remember@claude-plugins-official": True, "superpowers@claude-plugins-official": True}
+    )
+    result = integrate(
+        memory_home=tmp_path / "memory",
+        mode="primary",
+        harness="claude",
+        apply=True,
+        disable_known_conflicts=True,
+        user_home=home,
+    )
+    plugins = json.loads((home / ".claude" / "settings.json").read_text())["enabledPlugins"]
+    assert plugins == {
+        "remember@claude-plugins-official": False,
+        "superpowers@claude-plugins-official": True,
+    }
+    assert result["conflicts"] == []
+
+
+def test_codex_conflict_does_not_block_a_claude_only_integration(tmp_path):
+    home = _claude_home(tmp_path, {})
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").write_text('[plugins."remember-codex-bridge"]\nenabled = true\n')
+    result = integrate(
+        memory_home=tmp_path / "memory", mode="primary", harness="claude", apply=True, user_home=home
+    )
+    assert result["blocked"] is False and result["conflicts"] == []

@@ -220,18 +220,47 @@ def remove_known_conflicts_from_toml(text: str) -> str:
     return "\n".join(lines).rstrip() + ("\n" if text else "")
 
 
+def enabled_json_plugins(text: str) -> list[str]:
+    """Claude `enabledPlugins` keys naming a known conflict that are switched on.
+
+    A disabled entry (`false`) stays in the file after the plugin is turned off,
+    so a substring search would keep reporting a conflict that no longer exists.
+    """
+
+    try:
+        value = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    plugins = value.get("enabledPlugins") if isinstance(value, dict) else None
+    if not isinstance(plugins, dict):
+        return []
+    return sorted(
+        key
+        for key, enabled in plugins.items()
+        if enabled is True and any(token in key for token in KNOWN_CONFLICT_TOKENS)
+    )
+
+
+def _conflict_tokens(path: Path, text: str) -> set[str]:
+    if path.name == "config.toml":
+        return enabled_toml_conflicts(text)
+    return {
+        token
+        for key in enabled_json_plugins(text)
+        for token in KNOWN_CONFLICT_TOKENS
+        if token in key
+    }
+
+
 def known_conflicts(paths: Sequence[Path]) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     for path in paths:
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
-        tokens = (
-            enabled_toml_conflicts(text)
-            if path.name == "config.toml"
-            else {token for token in KNOWN_CONFLICT_TOKENS if token in text}
+        findings.extend(
+            {"path": str(path), "token": token} for token in sorted(_conflict_tokens(path, text))
         )
-        findings.extend({"path": str(path), "token": token} for token in sorted(tokens))
     return findings
 
 
@@ -283,6 +312,18 @@ def _managed_launcher_path() -> Path | None:
     return path if MANAGED_LAUNCHER_MARKER in text else None
 
 
+def _remaining_conflicts(
+    conflicts: Sequence[dict[str, str]], planned: dict[Path, str | None]
+) -> list[dict[str, str]]:
+    remaining = []
+    for item in conflicts:
+        path = Path(item["path"])
+        text = planned[path] if path in planned else path.read_text(encoding="utf-8", errors="replace")
+        if text is not None and item["token"] in _conflict_tokens(path, text):
+            remaining.append(item)
+    return remaining
+
+
 def integrate(
     *,
     memory_home: Path,
@@ -309,7 +350,13 @@ def integrate(
             "cannot apply Windows Codex hooks: managed agent-memory launcher is not on PATH"
         )
     paths = integration_paths(user_home)
-    conflict_list = known_conflicts(list(paths.values()))
+    # Only the selected harnesses' files: a Codex plugin says nothing about Claude.
+    owned = {
+        "claude": [paths["claude"]],
+        "codex": [paths["codex_hooks"], paths["codex_config"]],
+        "opencode": [paths["opencode"]],
+    }
+    conflict_list = known_conflicts([path for name in selected for path in owned[name]])
     blocked = mode == "primary" and bool(conflict_list) and not disable_known_conflicts
     if apply and blocked:
         raise MemoryError(
@@ -320,6 +367,10 @@ def integrate(
         value = merge_hooks(_read_json(paths["claude"]), "claude", enabled)
         if mode == "primary":
             value["autoMemoryEnabled"] = False
+            plugins = value.get("enabledPlugins")
+            if disable_known_conflicts and isinstance(plugins, dict):
+                for key in enabled_json_plugins(json.dumps(value)):
+                    plugins[key] = False
         planned[paths["claude"]] = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
     if "codex" in selected:
         value = merge_hooks(_read_json(paths["codex_hooks"]), "codex", enabled)
@@ -359,7 +410,9 @@ def integrate(
         "mode": mode,
         "harnesses": selected,
         "changes": changes,
-        "conflicts": conflict_list,
+        # What remains once the planned writes land, so a flag that resolved a
+        # conflict does not report it as still present.
+        "conflicts": _remaining_conflicts(conflict_list, planned),
         "blocked": blocked,
         "applied": apply,
         "backup": str(backup) if backup else "",
