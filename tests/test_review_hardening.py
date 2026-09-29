@@ -491,7 +491,7 @@ def test_recall_does_not_repeat_an_item_within_a_session(memory):
     assert [item["id"] for item in first["items"]] == [stored["id"]]
     assert again["items"] == []
     assert [item["id"] for item in other["items"]] == [stored["id"]]
-    assert "Record actual use" not in first["context"]
+    assert f"agent-memory feedback {first['query_id']}" in first["context"]
     assert f'query-id="{first["query_id"]}"' in first["context"]
 
 
@@ -589,3 +589,16 @@ def test_a_pasted_document_is_not_an_explicit_memory():
     document = "Remember that " + "you consolidate raw memories into folders. " * 60
     assert MemoryService.explicit_candidates(document) == []
     assert len(MemoryService.explicit_candidates("Remember that the lint step uses biome.")) == 1
+
+
+def test_explicitly_unused_memory_needs_a_stronger_match(memory):
+    db, service, project = memory
+    noisy = service.create_memory(candidate("린트 설정 파일은 biome.json 이다."), project=project)
+    retriever = Retriever(db, service.provider)
+    for _ in range(3):
+        packet = retriever.recall(project=project, prompt="린트 돌려줘")
+        assert noisy["id"] in {item["id"] for item in packet["items"]}
+        service.feedback(packet["query_id"], noisy["id"], used=False)
+    assert retriever.recall(project=project, prompt="린트 돌려줘")["items"] == []
+    strong = retriever.recall(project=project, prompt="린트 설정 biome.json 어디 있어?")
+    assert noisy["id"] in {item["id"] for item in strong["items"]}
