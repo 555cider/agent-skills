@@ -119,6 +119,56 @@ def test_prompt_hook_forget_still_deletes_distinctive_target(memory, tmp_path):
     assert statements == ["검증은 pytest -q 로 수행한다."]
 
 
+def test_prompt_hook_task_delete_request_never_forgets(memory, tmp_path):
+    db, service, _ = memory
+    project = repo_key(tmp_path)
+    service.create_memory(
+        candidate("프론트엔드 테스트는 pnpm vitest 로 실행한다."), project=project
+    )
+    result = service.capture_event(
+        harness="claude",
+        kind="user_prompt",
+        data={"session_id": "s", "event_id": "u3", "prompt": "프론트엔드 pnpm vitest 설정 삭제해줘"},
+        cwd=tmp_path,
+    )
+    assert result["forgotten"] == []
+    assert db.conn.execute("SELECT count(*) FROM memories").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "배포는 rsync 스크립트로 한다는 기억 삭제해줘",
+        "메모리에서 배포는 rsync 스크립트로 한다 삭제해",
+    ],
+)
+def test_prompt_hook_memory_delete_request_forgets(memory, tmp_path, prompt):
+    db, service, _ = memory
+    project = repo_key(tmp_path)
+    service.create_memory(candidate("배포는 rsync 스크립트로 한다."), project=project)
+    result = service.capture_event(
+        harness="claude",
+        kind="user_prompt",
+        data={"session_id": "s", "event_id": "u4", "prompt": prompt},
+        cwd=tmp_path,
+    )
+    assert len(result["forgotten"]) == 1
+
+
+def test_prompt_hook_long_pasted_text_never_forgets(memory, tmp_path):
+    db, service, _ = memory
+    project = repo_key(tmp_path)
+    service.create_memory(candidate("배포는 rsync 스크립트로 한다."), project=project)
+    report = "감사 보고서\n" + "근거와 재현 절차를 정리했다. " * 40 + "\n배포는 rsync 스크립트로 한다 잊어버려"
+    result = service.capture_event(
+        harness="claude",
+        kind="user_prompt",
+        data={"session_id": "s", "event_id": "u5", "prompt": report},
+        cwd=tmp_path,
+    )
+    assert result["forgotten"] == []
+
+
 # ------------------------------------------------------- claude event capture
 
 
