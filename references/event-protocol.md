@@ -12,7 +12,7 @@ timestamps, compressed payload, payload digest, and redaction findings.
 | Meaning | Claude | Codex | OpenCode |
 |---|---|---|---|
 | user prompt + recall | `UserPromptSubmit` | `UserPromptSubmit` | `chat.message` |
-| completed tool | `PostToolUse` (matcher `Bash`) | `PostToolUse` | `tool.execute.after` |
+| completed tool | `PostToolUse`, `PostToolUseFailure` (matcher `Bash`) | `PostToolUse` | `tool.execute.after` |
 | assistant final | `Stop` | `Stop` | `message.updated` via `event` hook |
 | session end | `SessionEnd` | stop is terminal signal | `session.idle` via `event` hook |
 
@@ -40,7 +40,10 @@ session and kind; duplicate deliveries use `INSERT OR IGNORE`.
   redacted 8 KiB head/tail of output for local evidence only. The result is
   read from `tool_response`/`tool_output`/`output`/`result` (Claude Code sends
   `tool_output`); exit status accepts `exit_status`/`exit_code`/`exitCode`/
-  `returncode`/`status`.
+  `returncode`/`status`. Claude Code reports no exit code for Bash: a
+  `PostToolUse` delivery is status 0, a `PostToolUseFailure` delivery takes the
+  code from `Exit code N` in its `error` (1 when absent), and an interrupted
+  command has no status.
 - `session_end`: redacted final/handoff summary, at most 32 KiB. When the
   native event carries no text (Claude Code), the final assistant message is
   read from the tail of `transcript_path`.

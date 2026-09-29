@@ -499,3 +499,87 @@ def test_recall_without_items_is_not_logged(memory):
     db, service, project = memory
     Retriever(db, service.provider).recall(project=project, prompt="continue")
     assert db.conn.execute("SELECT count(*) FROM retrieval_queries").fetchone()[0] == 0
+
+
+# ------------------------------------------------------ automatic capture
+
+
+def _bash(service, tmp_path, event_id, command, *, failed=None, session="s"):
+    data = {"session_id": session, "tool_use_id": event_id, "tool_name": "Bash", "tool_input": {"command": command}}
+    if failed is None:
+        data |= {"hook_event_name": "PostToolUse", "tool_response": {"stdout": "ok", "stderr": "", "interrupted": False}}
+    else:
+        data |= {"hook_event_name": "PostToolUseFailure", "error": f"Exit code {failed}\nboom", "is_interrupt": False}
+    service.capture_event(harness="claude", kind=data["hook_event_name"], data=data, cwd=tmp_path)
+
+
+def _stop(service, tmp_path, prompt_id, session="s"):
+    return service.capture_event(
+        harness="claude",
+        kind="assistant_stop",
+        data={"session_id": session, "prompt_id": prompt_id, "last_assistant_message": "done"},
+        cwd=tmp_path,
+    )
+
+
+def _exit_statuses(db):
+    return [
+        db.decode_payload(row["payload_zlib"]).get("exit_status")
+        for row in db.conn.execute("SELECT payload_zlib FROM events WHERE kind='tool_completed' ORDER BY created_at")
+    ]
+
+
+def test_claude_bash_success_and_failure_carry_exit_status(memory, tmp_path):
+    db, service, _ = memory
+    _bash(service, tmp_path, "t1", "pnpm test")
+    _bash(service, tmp_path, "t2", "pnpm build", failed=2)
+    assert _exit_statuses(db) == [0, 2]
+
+
+def test_repeated_success_across_turns_becomes_a_procedure(memory, tmp_path):
+    db, service, _ = memory
+    for turn in ("p1", "p2"):
+        _bash(service, tmp_path, f"t-{turn}", "pnpm test")
+        if _stop(service, tmp_path, turn)["queued"]:
+            service.worker_once()
+    rows = db.conn.execute("SELECT kind,state FROM memories").fetchall()
+    assert [(row["kind"], row["state"]) for row in rows] == [("procedure", "active")]
+
+
+def test_expected_nonzero_commands_are_not_caveats_and_failures_stay_provisional(memory, tmp_path):
+    db, service, _ = memory
+    _bash(service, tmp_path, "g1", "grep -rn TODO src", failed=1)
+    _bash(service, tmp_path, "g2", "grep -rn TODO src", failed=1)
+    _bash(service, tmp_path, "b1", "pnpm build", failed=2)
+    _bash(service, tmp_path, "b2", "pnpm build", failed=2)
+    _stop(service, tmp_path, "p1")
+    service.worker_once()
+    rows = db.conn.execute("SELECT statement,state FROM memories").fetchall()
+    assert len(rows) == 1
+    assert "pnpm build" in rows[0]["statement"] and rows[0]["state"] == "provisional"
+
+
+def test_stop_without_anything_to_learn_queues_no_worker(memory, tmp_path):
+    db, service, _ = memory
+    service.capture_event(
+        harness="claude", kind="user_prompt", data={"session_id": "s", "event_id": "u", "prompt": "fix the header"}, cwd=tmp_path
+    )
+    assert _stop(service, tmp_path, "p1")["queued"] is False
+    assert db.conn.execute("SELECT count(*) FROM jobs").fetchone()[0] == 0
+
+
+def test_implied_directive_is_provisional_but_remember_is_active(memory, tmp_path):
+    db, service, _ = memory
+    for event_id, prompt in (("u1", "앞으로 커밋 메시지는 한국어로 써줘"), ("u2", "기억해줘: 린트는 biome 으로 돌린다")):
+        service.capture_event(
+            harness="claude", kind="user_prompt", data={"session_id": "s", "event_id": event_id, "prompt": prompt}, cwd=tmp_path
+        )
+    states = dict(db.conn.execute("SELECT statement,state FROM memories").fetchall())
+    assert states == {"앞으로 커밋 메시지는 한국어로 써줘": "provisional", "린트는 biome 으로 돌린다": "active"}
+
+
+def test_claude_integration_captures_bash_failures_too():
+    from agent_memory.integration import merge_hooks
+
+    hooks = merge_hooks({}, "claude", True)["hooks"]
+    assert hooks["PostToolUseFailure"][0]["matcher"] == "Bash"

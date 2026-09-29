@@ -869,7 +869,9 @@ def test_harness_event_parity_and_safe_integration(tmp_path, monkeypatch):
     assert result["applied"] is True
     settings = json.loads((user_home / ".claude" / "settings.json").read_text())
     assert settings["unrelated"] is True
-    assert set(settings["hooks"]) == {"UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"}
+    assert set(settings["hooks"]) == {
+        "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd"
+    }
     plugin = user_home / ".config" / "opencode" / "plugins" / "agent-memory.js"
     assert "AGENT_MEMORY_OPENCODE_ADAPTER_V2" in plugin.read_text()
     integrate(

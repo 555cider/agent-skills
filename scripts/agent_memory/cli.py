@@ -583,7 +583,7 @@ def command_hook(args: argparse.Namespace) -> int:
                 print("{}")
         finally:
             db.close()
-        if kind in {"assistant_stop", "session_end"} and capture.get("captured"):
+        if capture.get("queued"):
             _launch_worker(args)
     except Exception:
         print("{}")

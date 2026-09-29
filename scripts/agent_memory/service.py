@@ -178,6 +178,15 @@ def _transcript_last_assistant(path_value: Any) -> str:
         return ""
 
 
+STATED_PREFERENCE_RE = re.compile(
+    r"(?is)(?:\bI\s+(?:strongly\s+)?prefer\b|\bmy preference is\b|나는?\s*.+?선호|선호(?:해|합니다))[\s,:-]*(.+)"
+)
+# Commands whose non-zero exit is an answer, not a failure: no match, files
+# differ, condition false, process absent.
+EXPECTED_NONZERO_RE = re.compile(
+    r"^(?:grep|egrep|fgrep|rg|ag|test|\[|diff|cmp|which|command -v|pgrep|git diff|git grep|git ls-files --error-unmatch)(?:\s|$)"
+)
+
 class MemoryService:
     def __init__(self, db: Database, provider: Provider | None = None) -> None:
         self.db = db
@@ -240,6 +249,7 @@ class MemoryService:
             "userprompt": "user_prompt",
             "chatmessage": "user_prompt",
             "posttooluse": "tool_completed",
+            "posttoolusefailure": "tool_completed",
             "toolcompleted": "tool_completed",
             "toolexecuteafter": "tool_completed",
             "stop": "assistant_stop",
@@ -264,6 +274,48 @@ class MemoryService:
             if isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip()):
                 return int(value)
         return None
+
+    def _worth_integrating(self, session_id: str) -> bool:
+        """Whether this session's pending events can yield anything.
+
+        Without a provider only tool results with an exit status and stated
+        preferences can; spawning a worker for every turn otherwise does nothing.
+        """
+
+        if not isinstance(self.provider, NullProvider):
+            return True
+        rows = self.db.conn.execute(
+            "SELECT kind,payload_zlib FROM events WHERE session_id=? AND integrated_at IS NULL "
+            "AND kind IN ('tool_completed','user_prompt')",
+            (session_id,),
+        ).fetchall()
+        for row in rows:
+            payload = self.db.decode_payload(row["payload_zlib"])
+            if row["kind"] == "tool_completed" and isinstance(payload.get("exit_status"), int):
+                return True
+            if row["kind"] == "user_prompt" and STATED_PREFERENCE_RE.search(str(payload.get("prompt", ""))):
+                return True
+        return False
+
+    @staticmethod
+    def _claude_bash(data: dict[str, Any]) -> bool:
+        return str(data.get("hook_event_name", "")) in {"PostToolUse", "PostToolUseFailure"} and str(
+            data.get("tool_name", "")
+        ) == "Bash"
+
+    @staticmethod
+    def _claude_bash_status(data: dict[str, Any], response: Any) -> int | None:
+        """Claude reports no exit code: PostToolUse fires only on success and
+        PostToolUseFailure carries the code in its error text."""
+
+        if data.get("hook_event_name") == "PostToolUseFailure":
+            if data.get("is_interrupt"):
+                return None
+            match = re.search(r"Exit code (-?\d+)", str(data.get("error") or ""))
+            return int(match.group(1)) if match else 1
+        if isinstance(response, dict) and response.get("interrupted"):
+            return None
+        return 0
 
     def _normalize_payload(self, kind: str, data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         findings: list[str] = []
@@ -312,7 +364,11 @@ class MemoryService:
             payload = {
                 "tool_name": str(data.get("tool_name") or data.get("tool") or data.get("name") or ""),
                 "command": head_tail(command, 4096),
-                "exit_status": self._exit_status(data, response),
+                "exit_status": (
+                    self._claude_bash_status(data, response)
+                    if self._claude_bash(data)
+                    else self._exit_status(data, response)
+                ),
                 "output": head_tail(response_text, TOOL_OUTPUT_LIMIT_BYTES),
             }
             if isinstance(data.get("memory_hint"), dict):
@@ -388,7 +444,8 @@ class MemoryService:
                 (session_id, harness, project, created_at, created_at),
             )
             inserted = cursor.rowcount > 0
-            if kind in {"assistant_stop", "session_end"}:
+            queued = kind in {"assistant_stop", "session_end"} and self._worth_integrating(session_id)
+            if queued:
                 self.db.conn.execute(
                     "INSERT OR IGNORE INTO jobs(kind,session_id,event_id,payload_json,state,available_at,created_at,updated_at) "
                     "VALUES('integrate_session',?,?,?,'pending',?,?,?)",
@@ -418,7 +475,9 @@ class MemoryService:
                 candidate.source_event_ids = [event_id]
                 for item in candidate.evidence:
                     item["event_id"] = event_id
-                memory = self.create_memory(candidate, project=project, explicit_override=True)
+                memory = self.create_memory(
+                    candidate, project=project, explicit_override=candidate.authority == "explicit"
+                )
                 if memory:
                     immediate.append(str(memory["id"]))
         return {
@@ -427,6 +486,7 @@ class MemoryService:
             "id": event_id,
             "session_id": session_id,
             "repo_key": project,
+            "queued": inserted and queued,
             "redactions": sorted(set(findings)),
             "immediate_memories": immediate,
             "forgotten": forgotten,
@@ -459,6 +519,7 @@ class MemoryService:
             r"(?is)^\s*(?:메모리(?:에|로)?\s*)(?:저장|추가)(?:해|해줘)?[\s,:-]+(.+?)\s*$",
         )
         statement = ""
+        implied = False
         for pattern in patterns:
             match = re.match(pattern, prompt)
             if match:
@@ -484,6 +545,7 @@ class MemoryService:
             # question must not become a permanent memory of the whole prompt.
             if durable and directive and not question and len(compact) <= 400:
                 statement = compact.rstrip(".")[:500]
+                implied = True
         if not statement:
             return []
         normalized = normalize_text(statement)
@@ -501,14 +563,21 @@ class MemoryService:
         else:
             kind = "preference"
         return [
+            # A durable-sounding directive without "remember" may be scoped to
+            # the task at hand, so it waits for review instead of being recalled.
             Candidate(
                 kind=kind,
                 scope=scope,
                 statement=statement,
-                authority="explicit",
-                confidence=1.0,
-                evidence=[{"kind": "user-statement", "summary": "Explicit remember request"}],
-                user_approved=True,
+                authority="inferred" if implied else "explicit",
+                confidence=0.7 if implied else 1.0,
+                evidence=[
+                    {
+                        "kind": "user-statement",
+                        "summary": "Implied durable directive" if implied else "Explicit remember request",
+                    }
+                ],
+                user_approved=not implied,
             )
         ]
 
@@ -524,19 +593,32 @@ class MemoryService:
             "created_at": row["created_at"],
         }
 
-    def local_candidates(self, events: list[dict[str, Any]]) -> list[Candidate]:
+    def local_candidates(
+        self, events: list[dict[str, Any]], history: Sequence[dict[str, Any]] = ()
+    ) -> list[Candidate]:
+        """Candidates from this batch of events.
+
+        `history` holds already-integrated tool events of the same repository:
+        a check that passed once per turn is repeated all the same, but only a
+        repetition that includes a new event yields a candidate.
+        """
+
         output: list[Candidate] = []
         commands: dict[tuple[str, int | None], list[dict[str, Any]]] = defaultdict(list)
+        fresh = {event["id"] for event in events}
+        for event in history:
+            payload = event["payload"]
+            command = normalize_text(str(payload.get("command", "")))
+            status = payload.get("exit_status")
+            if command and len(command) <= 500 and isinstance(status, int):
+                commands[(command, status)].append(event)
         for event in events:
             payload = event["payload"]
             if event["kind"] == "user_prompt":
                 prompt = str(payload.get("prompt", ""))
                 if self.explicit_candidates(prompt):
                     continue  # Already activated in the prompt hook.
-                match = re.search(
-                    r"(?is)(?:\bI\s+(?:strongly\s+)?prefer\b|\bmy preference is\b|나는?\s*.+?선호|선호(?:해|합니다))[\s,:-]*(.+)",
-                    prompt,
-                )
+                match = STATED_PREFERENCE_RE.search(prompt)
                 if match:
                     output.append(
                         Candidate(
@@ -581,7 +663,7 @@ class MemoryService:
         # Repetition is a high-precision local signal; a one-off command is not
         # promoted into durable memory.
         for (command, status), matched in commands.items():
-            if len(matched) < 2:
+            if len(matched) < 2 or not any(item["id"] in fresh for item in matched):
                 continue
             raw_command = str(matched[-1]["payload"].get("command", ""))[:500]
             if status == 0 and re.search(r"(?:^|\s)(?:test|pytest|cargo test|go test|check|lint|build)(?:\s|$)|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|check|lint|build)", command):
@@ -603,14 +685,16 @@ class MemoryService:
                         ],
                     )
                 )
-            elif status != 0 and len(matched) >= 2:
+            elif status != 0 and not EXPECTED_NONZERO_RE.match(command):
+                # A repeated failure is worth a look, not a rule: it may be the
+                # bug under repair. It waits in review instead of being recalled.
                 output.append(
                     Candidate(
                         kind="caveat",
                         scope="project",
                         statement=f"`{raw_command}` failed repeatedly in the observed project context; verify its prerequisites before relying on it.",
-                        authority="verified",
-                        confidence=0.85,
+                        authority="inferred",
+                        confidence=0.6,
                         source_event_ids=[item["id"] for item in matched],
                         evidence=[
                             {
@@ -1109,7 +1193,13 @@ class MemoryService:
             return {"events": 0, "created": []}
         events = [self._event_dict(self.db, row) for row in rows]
         project = events[0]["repo_key"]
-        candidates = self.local_candidates(events)
+        history_rows = self.db.conn.execute(
+            "SELECT * FROM events WHERE repo_key=? AND kind='tool_completed' AND integrated_at IS NOT NULL "
+            "ORDER BY created_at DESC LIMIT 500",
+            (project,),
+        ).fetchall()
+        history = [self._event_dict(self.db, row) for row in history_rows]
+        candidates = self.local_candidates(events, history)
         provider_error: ProviderError | None = None
         if not isinstance(self.provider, NullProvider):
             try:
