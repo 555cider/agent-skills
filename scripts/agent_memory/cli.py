@@ -131,6 +131,9 @@ def _open(
     return db, MemoryService(db, selected)
 
 
+LONG_STATEMENT_CHARS = 500
+
+
 def command_remember(args: argparse.Namespace) -> int:
     db, service = _open(args)
     try:
@@ -154,6 +157,14 @@ def command_remember(args: argparse.Namespace) -> int:
         )
         if record is None:
             raise MemoryError("memory was blocked by a recent forget tombstone")
+        if len(candidate.statement) > LONG_STATEMENT_CHARS:
+            # Stored anyway -- the user asked -- but a long record matches many
+            # prompts and spends the recall budget on every one of them.
+            print(
+                f"WARN=statement is {len(candidate.statement)} chars; split it into focused facts "
+                "or keep the document in the repository and remember a pointer",
+                file=sys.stderr,
+            )
         _emit(record, args.format)
         return 0
     finally:

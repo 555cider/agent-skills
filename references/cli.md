@@ -88,6 +88,8 @@ statement), `unmatched_same_hash`, and the `backup` path when applied. It moves
 `memories` (with recomputed content hashes), `events`, `retrieval_queries`,
 `sessions`, `tombstones` and `trust_grants` in one transaction.
 
+`remember` still stores a statement over 500 characters but prints a `WARN=`
+line to stderr suggesting it be split or kept in the repository with a pointer.
 Statements/prompts may come from stdin when omitted. `forget --all-projects`
 is intentionally explicit. Query-based forget matches raw statement tokens
 only (no concept aliases) and exits 1 when more than five records match
