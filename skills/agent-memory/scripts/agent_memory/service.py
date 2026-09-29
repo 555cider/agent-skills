@@ -431,7 +431,11 @@ class MemoryService:
     def explicit_forget_query(prompt: str) -> str:
         patterns = (
             r"(?is)^\s*(?:please\s+)?forget(?:\s+that|\s+about)?\s+(.+?)\s*[.!]?\s*$",
-            r"(?is)^\s*(.+?)\s*(?:은|는|을|를)?\s*(?:기억에서\s*)?(?:잊어(?:버려|줘)?|삭제해(?:줘)?)\s*[.!]?\s*$",
+            # "삭제해" alone is an ordinary task verb ("설정 삭제해줘"); only
+            # a prompt that names memory may hard-delete through it.
+            r"(?is)^\s*(.+?)\s*(?:은|는|을|를)?\s*(?:기억에서\s*)?잊어(?:버려|줘)?\s*[.!]?\s*$",
+            r"(?is)^\s*(.+?)\s*(?:이라는|라는|는|은|을|를)?\s*(?:항목\s*)?(?:기억|메모리)(?:을|를|에서)?\s*삭제해(?:줘)?\s*[.!]?\s*$",
+            r"(?is)^\s*(?:기억|메모리)에서\s*(.+?)\s*(?:을|를)?\s*삭제해(?:줘)?\s*[.!]?\s*$",
         )
         for pattern in patterns:
             match = re.match(pattern, prompt)
