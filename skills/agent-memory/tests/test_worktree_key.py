@@ -229,3 +229,15 @@ def test_repo_policy_applies_from_a_subdirectory(tmp_path):
     (root / "pkg" / "deep").mkdir(parents=True)
     assert _repo_global_ceiling(root / "pkg" / "deep") == set()
     assert _repo_global_ceiling(tmp_path) is None
+
+
+def test_remember_warns_about_a_statement_that_should_be_split(tmp_path, capsys):
+    home = str(tmp_path / "memory")
+    root = _repo(tmp_path / "widget")
+    long_statement = "Run the full pipeline harness with these flags and environment. " * 10
+    assert main(["--memory-home", home, "remember", "--cwd", str(root), "--statement", long_statement, "--format", "json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["state"] == "active"
+    assert "split" in captured.err
+    assert main(["--memory-home", home, "remember", "--cwd", str(root), "--statement", "Lint with biome.", "--format", "json"]) == 0
+    assert capsys.readouterr().err == ""
