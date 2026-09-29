@@ -92,7 +92,10 @@ Statements/prompts may come from stdin when omitted. `forget --all-projects`
 is intentionally explicit. Query-based forget matches raw statement tokens
 only (no concept aliases) and exits 1 when more than five records match
 unless `--all-matches` confirms the bulk deletion. `integrate` is dry-run
-unless `--apply` is present.
+unless `--apply` is present. Primary mode is blocked by an enabled `remember`
+plugin in the selected harnesses' files (Claude `enabledPlugins`, Codex
+`config.toml`); `--disable-known-conflicts` switches those entries off, and the
+reported `conflicts` are the ones left after the planned writes.
 
 `export` without `--scope` keeps its original contract: `--cwd` selects the
 project and `--include-global` adds global memory. `--scope global` and
