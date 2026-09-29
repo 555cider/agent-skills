@@ -6,11 +6,18 @@
 |---|---|---|
 | explicit user remember/correction | active | explicit |
 | user approves review candidate | active | approved |
-| repeated successful test/check command | active | verified |
-| repeated failed command caveat | active | verified |
+| repeated successful test/check command (across turns) | active | verified |
+| repeated failed command caveat | provisional | inferred |
+| durable-sounding directive without "remember" ("앞으로 …", "from now on …") | provisional | inferred |
 | inferred user preference | provisional | inferred |
 | assistant-only claim | provisional | assistant |
 | incompatible non-explicit claims | disputed | original authority |
+
+Repetition counts the repository's already-integrated tool events too, and
+needs at least one new event. A failure of a command whose non-zero exit is an
+answer (`grep`, `rg`, `test`, `diff`, `which`, `git diff`, …) is never a caveat.
+Without a provider, a turn whose pending events hold no tool exit status and
+no stated preference queues no worker.
 
 Provider labels are never proof. `explicit` must point to a local user event
 that contains an explicit remember request. `verified` procedure/caveat evidence

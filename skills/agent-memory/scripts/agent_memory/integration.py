@@ -23,6 +23,7 @@ HOOK_EVENTS: dict[str, tuple[tuple[str, str, int], ...]] = {
     "claude": (
         ("UserPromptSubmit", "user_prompt", 5),
         ("PostToolUse", "tool_completed", 5),
+        ("PostToolUseFailure", "tool_completed", 5),
         ("Stop", "assistant_stop", 15),
         ("SessionEnd", "session_end", 15),
     ),
