@@ -116,8 +116,9 @@ packet's `query-id`:
 agent-memory feedback <query-id> <memory-id> --used --outcome helpful
 ```
 
-Use `--unused` when an exposed record was irrelevant. Never fabricate feedback
-for a record that was not in that query packet.
+Use `--unused` when an exposed record was irrelevant: a record marked unused in
+most of its votes must match twice as strongly to be shown again. Never
+fabricate feedback for a record that was not in that query packet.
 
 ## References
 

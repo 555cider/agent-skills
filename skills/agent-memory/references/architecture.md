@@ -115,6 +115,8 @@ candidates scoring at least 0.6 are shown. In prompts with more than four
 content words, words with idf under 0.5 count zero, so common words cannot sum
 past the floor. Tokens include Korean stems (`배포가` -> `배포`) and the parts
 of compound identifiers (`gemini-3.1-flash-lite` -> `flash`, `lite`, ...), and
-concept aliases match whole tokens only. `tests/golden_retrieval.json` holds
+concept aliases match whole tokens only. A record with at least three explicit
+feedback votes in the last 60 days, fewer than a third of them `--used`, must
+score twice the floor. `tests/golden_retrieval.json` holds
 the positive and noise cases the floor is tuned against.
 

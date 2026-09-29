@@ -76,6 +76,13 @@ COMMON_TERM_IDF = 0.5
 SHORT_PROMPT_TERMS = 4
 CONCEPT_WEIGHT = 0.3
 TRANSLATION_WEIGHT = 0.6
+# Only explicit `feedback --unused` counts: exposure without feedback says
+# nothing. A record with enough votes that is rarely used must match twice as
+# strongly to be shown.
+FEEDBACK_WINDOW_DAYS = 60
+UNUSED_MIN_VOTES = 3
+UNUSED_MAX_USED_SHARE = 1 / 3
+UNUSED_FLOOR_FACTOR = 2.0
 FUZZY_WEIGHT = 0.4
 
 
@@ -295,11 +302,37 @@ class Retriever:
             return set()
         return {str(row[0]) for row in rows}
 
+    def _mostly_unused(self, ids: Sequence[str]) -> set[str]:
+        """Records agents have explicitly marked unused far more than used."""
+
+        cutoff = (datetime.now(UTC) - timedelta(days=FEEDBACK_WINDOW_DAYS)).isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
+        found: set[str] = set()
+        for chunk in _chunks(list(ids)):
+            rows = self.db.conn.execute(
+                "SELECT memory_id,sum(used=1) AS used,sum(used=0) AS unused FROM retrieval_feedback "
+                f"WHERE used IS NOT NULL AND updated_at>? AND memory_id IN ({','.join('?' for _ in chunk)}) "
+                "GROUP BY memory_id",
+                (cutoff, *chunk),
+            ).fetchall()
+            for row in rows:
+                votes = int(row["used"]) + int(row["unused"])
+                if votes >= UNUSED_MIN_VOTES and int(row["used"]) / votes < UNUSED_MAX_USED_SHARE:
+                    found.add(str(row["memory_id"]))
+        return found
+
     def _clearing_floor(
         self, prompt: str, records: dict[str, dict[str, Any]], semantic: set[str]
     ) -> set[str]:
         scores = self._relevance(prompt, {key: value for key, value in records.items() if key not in semantic})
-        return {key for key in records if key in semantic or scores.get(key, 0.0) >= RELEVANCE_FLOOR}
+        demoted = self._mostly_unused(list(scores))
+        return {
+            key
+            for key in records
+            if key in semantic
+            or scores.get(key, 0.0) >= RELEVANCE_FLOOR * (UNUSED_FLOOR_FACTOR if key in demoted else 1)
+        }
 
     def _records(self, ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         output: dict[str, dict[str, Any]] = {}
@@ -626,5 +659,8 @@ class Retriever:
                 f"- [NON-ACTIONABLE {item['id']} | {item['state']}] {item['statement']} ({item['reason']})"
             )
         lines.append("Mention memory only if it materially changes your action or decision.")
+        if query_id and items:
+            # Explicit --unused raises the bar a record must clear next time.
+            lines.append(f"Feedback: agent-memory feedback {query_id} <memory-id> --used|--unused")
         lines.append("</agent-memory>")
         return "\n".join(lines)
