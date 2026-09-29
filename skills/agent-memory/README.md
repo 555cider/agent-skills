@@ -172,7 +172,14 @@ does not delete `~/.agents/memory/agent-memory.sqlite3`.
 ```bash
 bash skills/agent-memory/tests/run.sh
 python3 skills/agent-memory/tests/benchmark.py
+python3 skills/agent-memory/tests/replay_prompts.py   # retrieval changes only
 ```
+
+`replay_prompts.py` replays the prompts your store captured in the last seven
+days against a copy of it (the store itself is never written) and reports how
+many received memory and at what token cost. Run it before and after a
+retrieval change; `tests/golden_retrieval.json` covers correctness, the replay
+covers how much a change injects on real work.
 
 The suite covers lifecycle, hard forget, redaction, trust, hook parity,
 provider failure, bilingual/paraphrase retrieval, and adapter safety. The full
