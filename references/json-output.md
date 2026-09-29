@@ -90,7 +90,8 @@ Exposure does not set `used`; only `feedback --used` does.
 - `worker --once`: `acquired`, per-job `processed` results, and `embedded`
   (records backfilled with embeddings when a provider is configured).
 - `doctor`: DB integrity/version/WAL, retrieval backends, provider, queue,
-  memory states, trust, integrations, conflicts, and v1 artifact detection.
+  memory states, trust, integrations, conflicts, v1 artifact detection, and
+  `rekey_pending` (keys this checkout used to compute that still hold memory).
 - `export`: `agent-memory.export.v2` with `scope`, `repo_key`, `repo_keys`,
   `exported_at`, and `memories`; raw event payloads are excluded.
 - `import`: `batch`, `imported`, `merged`, `remapped`, `review_queued`,

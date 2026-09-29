@@ -68,7 +68,9 @@ repo+kind grants.
 worktrees on different commits can hold different ceilings over the same shared
 grants; each applies its own.
 
-`rekey` moves keys minted by the per-worktree rule onto the shared one. Memory rows
+`rekey` moves keys the checkout no longer computes onto the current one: keys
+minted by the per-worktree rule, and the path key a checkout had before its
+origin was added. Memory rows
 get their content hash recomputed, because the hash folds in the key. Tombstone
 digests cannot be recomputed — the statement they cover is gone — so a statement
 forgotten in a worktree in the last 7 days can be re-remembered from the main tree.

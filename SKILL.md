@@ -253,7 +253,9 @@ environment variables; API keys never belong in memory or config files.
 A linked git worktree computes its main tree's repo key, so memory written in any
 worktree is recalled in all of them. Stores written before that minted one key per
 worktree folder; fold those onto the repository once, after the updated launcher is
-installed (otherwise hooks keep writing the old keys):
+installed (otherwise hooks keep writing the old keys). Adding an origin to a checkout
+that was keyed on its path orphans its key the same way; `doctor --cwd <repo>` lists
+every such key as `rekey_pending`:
 
 ```bash
 agent-memory repo-key --cwd <a linked worktree>          # must print the main tree's key
