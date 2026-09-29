@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -207,6 +208,17 @@ class Database:
         self.vector = self._load_vector() if not readonly else False
 
     def _initialize(self) -> None:
+        # Every hook opens the store; re-running the DDL takes the shared write
+        # lock several times per call. Skip it once this schema text is applied.
+        digest = hashlib.sha256(SCHEMA.encode("utf-8")).hexdigest()[:16]
+        try:
+            applied = self.conn.execute(
+                "SELECT value FROM metadata WHERE key='schema_digest'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            applied = None
+        if applied and applied[0] == digest:
+            return
         self.conn.executescript(SCHEMA)
         row = self.conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         if row and int(row[0]) != SCHEMA_VERSION:
@@ -237,6 +249,9 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_digest',?)", (digest,)
+        )
 
     def _table_exists(self, name: str) -> bool:
         row = self.conn.execute(

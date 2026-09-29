@@ -346,7 +346,7 @@ class MemoryService:
         project = repo_key(cwd)
         session_id = self._session_id(data, harness, project)
         if self._session_paused(session_id, harness, project):
-            return {"captured": False, "paused": True, "session_id": session_id}
+            return {"captured": False, "paused": True, "session_id": session_id, "repo_key": project}
         payload, findings = self._normalize_payload(kind, data)
         event_id = self._event_id(data, session_id, kind, payload)
         created_at = utc_now()
@@ -355,9 +355,11 @@ class MemoryService:
         digest = hashlib.sha256(blob).hexdigest()
         with self.db.transaction(immediate=True):
             # Opportunistic TTL enforcement keeps retention bounded without a
-            # resident daemon. Explicit `gc` remains available for idle stores.
-            self.db.conn.execute("DELETE FROM events WHERE expires_at<=?", (created_at,))
-            self.db.conn.execute("DELETE FROM tombstones WHERE expires_at<=?", (created_at,))
+            # resident daemon; once per turn is enough, so prompt and tool hooks
+            # skip it. Explicit `gc` remains available for idle stores.
+            if kind in {"assistant_stop", "session_end"}:
+                self.db.conn.execute("DELETE FROM events WHERE expires_at<=?", (created_at,))
+                self.db.conn.execute("DELETE FROM tombstones WHERE expires_at<=?", (created_at,))
             cursor = self.db.conn.execute(
                 "INSERT OR IGNORE INTO events("
                 "id,schema_name,session_id,harness,kind,repo_key,payload_zlib,payload_sha256,"
@@ -420,6 +422,7 @@ class MemoryService:
             "paused": False,
             "id": event_id,
             "session_id": session_id,
+            "repo_key": project,
             "redactions": sorted(set(findings)),
             "immediate_memories": immediate,
             "forgotten": forgotten,
