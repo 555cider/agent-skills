@@ -22,6 +22,7 @@ from .constants import (
     SCOPES,
 )
 from .db import Database
+from .instructions import loaded_rules
 
 # Commands the hook never runs import their modules lazily: every prompt and
 # shell command pays this module's import time.
@@ -560,6 +561,7 @@ def command_hook(args: argparse.Namespace) -> int:
                     global_kind_ceiling=_repo_global_ceiling(cwd),
                     exclude_ids=set(capture.get("immediate_memories") or []),
                     session_id=capture.get("session_id"),
+                    loaded_rules=loaded_rules(args.harness, cwd),
                 )
                 context = packet["context"]
                 if context:

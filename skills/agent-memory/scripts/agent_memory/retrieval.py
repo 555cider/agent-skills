@@ -13,6 +13,7 @@ from typing import Any, Iterable, Sequence
 
 from .constants import DEFAULT_LIMIT, DEFAULT_TOKEN_BUDGET, PACKET_SCHEMA, REEXPOSE_AFTER_MINUTES
 from .db import Database
+from .instructions import mirrored
 from .providers import NullProvider, Provider, ProviderError
 from .redaction import redact_text
 from .service import record_from_row
@@ -370,6 +371,7 @@ class Retriever:
         global_kind_ceiling: set[str] | None = None,
         exclude_ids: set[str] | None = None,
         session_id: str | None = None,
+        loaded_rules: Sequence[str] = (),
     ) -> dict[str, Any]:
         started = datetime.now(UTC)
         mode = "maintenance" if is_maintenance_prompt(prompt) and not is_harness_message(prompt) else "recall"
@@ -431,6 +433,9 @@ class Retriever:
             if not self._is_valid(record, now):
                 continue
             if not self._condition_matches(record, prompt, harness, path_context):
+                continue
+            if loaded_rules and mirrored(record["statement"], loaded_rules):
+                # The host already has this rule in its instruction files.
                 continue
             score = combined[memory_id]
             if record["scope"] == "project":
