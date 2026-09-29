@@ -13,6 +13,7 @@
 | assistant-only claim | provisional | assistant |
 | incompatible non-explicit claims | disputed | original authority |
 
+Tool events exist only when hooks were installed with `--capture-tools`.
 Repetition counts the repository's already-integrated tool events too, and
 needs at least one new event. A failure of a command whose non-zero exit is an
 answer (`grep`, `rg`, `test`, `diff`, `which`, `git diff`, …) is never a caveat.

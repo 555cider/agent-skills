@@ -16,8 +16,11 @@ timestamps, compressed payload, payload digest, and redaction findings.
 | assistant final | `Stop` | `Stop` | `message.updated` via `event` hook |
 | session end | `SessionEnd` | stop is terminal signal | `session.idle` via `event` hook |
 
-Tool capture only learns from shell commands, so the Claude tool hook matches
-`Bash` alone; every other tool call would start a Python process for nothing.
+Tool hooks are installed only with `integrate --capture-tools`. They start a
+process on every shell command (~150 ms on a real store), and without a provider
+they can only learn that a check passed repeatedly, which the repository
+already shows; one real week was ~2,400 Bash calls for no memory. When enabled,
+the Claude tool hooks match `Bash` alone.
 
 OpenCode exposes `message.updated` and `session.idle` only as event-bus types
 on the generic `event` hook, not as top-level plugin hooks.
