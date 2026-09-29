@@ -1,4 +1,7 @@
-"""Fold repository keys minted by the pre-worktree-aware `repo_key` onto the current one.
+"""Fold repository keys the current `repo_key` no longer computes onto the current one.
+
+Two changes orphan a key: the pre-worktree-aware rule, and adding an origin to a
+checkout that was keyed on its path.
 
 Before `repo_root` learned about the common git dir, a linked worktree was keyed on its
 own directory. Both halves of the key could differ from the main tree's: the slug is the
@@ -119,6 +122,12 @@ def plan_mappings(
             old = legacy_key(directory, identity)
             if old != target and old in stored:
                 proposals.setdefault(old, set()).add((target, reason))
+            # `git remote add` switches the identity from the path to the origin. The path
+            # hash is still reproduced exactly, so it is evidence, not a suffix guess.
+            if identity.startswith("origin:") and not reason.startswith("removed-"):
+                before = key_for(directory, "path:" + str(directory))
+                if before != target and before in stored:
+                    proposals.setdefault(before, set()).add((target, f"origin-added:{reason}"))
 
     mappings: list[dict[str, str]] = []
     for old, new in sorted(explicit.items()):

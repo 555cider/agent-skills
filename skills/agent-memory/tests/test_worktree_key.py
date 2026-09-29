@@ -9,6 +9,7 @@ the same trap: on one real store a single caveat existed in seven copies across 
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -133,6 +134,25 @@ def test_rekey_reproduces_a_removed_worktree_from_its_path(tmp_path, memory):
     ]
 
 
+def test_rekey_folds_the_path_key_a_checkout_had_before_its_origin_was_added(tmp_path, memory):
+    # Adding a remote switches the identity from the path to the origin, so every record
+    # written before `git remote add` sat under a key the checkout no longer computes.
+    db, service, _ = memory
+    root = _repo(tmp_path / "widget")
+    before = repo_key(root)
+    stored = service.create_memory(_note("Seed the fixtures before running extraction"), project=before)
+    _git(root, "remote", "add", "origin", "https://example.invalid/team/widget.git")
+    after = repo_key(root)
+    assert after != before
+
+    report = rekey(service, roots=[root], explicit={}, apply=True)
+
+    assert [(item["from"], item["to"], item["reason"]) for item in report["mappings"]] == [
+        (before, after, "origin-added:main")
+    ]
+    assert db.conn.execute("SELECT repo_key FROM memories WHERE id=?", (stored["id"],)).fetchone()[0] == after
+
+
 def test_rekey_does_not_merge_a_same_origin_key_on_hash_alone(tmp_path, memory):
     _, service, _ = memory
     origin = "https://example.invalid/team/widget.git"
@@ -183,3 +203,19 @@ def test_rekey_cli_rejects_a_malformed_map(tmp_path, capsys):
     code = main(["--memory-home", str(tmp_path / "memory"), "rekey", "--map", "no-separator"])
     assert code != 0
     assert "OLD=NEW" in capsys.readouterr().err
+
+
+def test_doctor_points_at_keys_rekey_would_fold(tmp_path, capsys):
+    home = tmp_path / "memory"
+    root = _repo(tmp_path / "widget")
+    before = repo_key(root)
+    assert main(["--memory-home", str(home), "remember", "--cwd", str(root), "--kind", "caveat",
+                 "--statement", "Seed the fixtures before running extraction"]) == 0
+    _git(root, "remote", "add", "origin", "https://example.invalid/team/widget.git")
+    capsys.readouterr()
+
+    assert main(["--memory-home", str(home), "doctor", "--cwd", str(root), "--format", "json"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["rekey_pending"] == [
+        {"from": before, "to": repo_key(root), "reason": "origin-added:main", "memories": 1}
+    ]

@@ -26,7 +26,7 @@ from .integration import integrate, integration_status
 from .models import Candidate
 from .providers import NullProvider, ProviderError, UnavailableProvider, provider_from_env
 from .redaction import redact_text
-from .rekey import rekey
+from .rekey import plan_mappings, rekey
 from .retrieval import Retriever
 from .service import MemoryService
 from .sources import (
@@ -419,6 +419,23 @@ def _provider_status() -> dict[str, Any]:
         return {"name": os.environ.get("AGENT_MEMORY_PROVIDER", "off"), "configured": False, "error": str(exc)}
 
 
+def _rekey_pending(db: Database, cwd: Path) -> list[dict[str, Any]] | str:
+    """Keys this checkout used to compute that still hold memory recall cannot reach."""
+
+    try:
+        mappings, _ = plan_mappings(db, [cwd], {})
+    except MemoryError as exc:
+        return str(exc)
+    pending = []
+    for item in mappings:
+        count = db.conn.execute(
+            "SELECT count(*) FROM memories WHERE repo_key=? AND state!='retracted'", (item["from"],)
+        ).fetchone()[0]
+        if count:
+            pending.append({**item, "memories": count})
+    return pending
+
+
 def command_doctor(args: argparse.Namespace) -> int:
     db, service = _open(args, provider=False)
     try:
@@ -473,6 +490,7 @@ def command_doctor(args: argparse.Namespace) -> int:
             "trust": service.trust_list(),
             "integrations": integration_status(),
             "v1_artifacts": [str(path) for path in v1_paths if path.exists()],
+            "rekey_pending": _rekey_pending(db, _cwd(args)),
         }
         _emit(output, args.format)
         return 0 if output["healthy"] else 1
@@ -783,6 +801,7 @@ def build_parser() -> argparse.ArgumentParser:
     gc.set_defaults(func=command_gc)
 
     doctor = sub.add_parser("doctor", help="Check DB, provider, retrieval, queue, hooks, and trust")
+    doctor.add_argument("--cwd")
     _format(doctor)
     doctor.set_defaults(func=command_doctor)
 
