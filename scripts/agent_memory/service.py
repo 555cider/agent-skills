@@ -178,6 +178,7 @@ def _transcript_last_assistant(path_value: Any) -> str:
         return ""
 
 
+MAX_EXPLICIT_STATEMENT_CHARS = 1000
 STATED_PREFERENCE_RE = re.compile(
     r"(?is)(?:\bI\s+(?:strongly\s+)?prefer\b|\bmy preference is\b|나는?\s*.+?선호|선호(?:해|합니다))[\s,:-]*(.+)"
 )
@@ -525,6 +526,10 @@ class MemoryService:
             if match:
                 statement = match.group(1).strip().rstrip(".")
                 break
+        if len(statement) > MAX_EXPLICIT_STATEMENT_CHARS:
+            # A pasted document or prompt that happens to open with "remember"
+            # is not one fact to keep; a real request is a sentence or two.
+            return []
         if not statement:
             compact = prompt.strip()
             durable = re.search(
