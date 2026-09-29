@@ -430,10 +430,10 @@ def test_codex_conflict_does_not_block_a_claude_only_integration(tmp_path):
 def test_claude_tool_hook_only_fires_for_shell_commands():
     from agent_memory.integration import merge_hooks
 
-    claude = merge_hooks({}, "claude", True)["hooks"]
+    claude = merge_hooks({}, "claude", True, capture_tools=True)["hooks"]
     assert claude["PostToolUse"][0]["matcher"] == "Bash"
     assert claude["UserPromptSubmit"][0]["matcher"] == ""
-    assert merge_hooks({}, "codex", True)["hooks"]["PostToolUse"][0]["matcher"] == ""
+    assert merge_hooks({}, "codex", True, capture_tools=True)["hooks"]["PostToolUse"][0]["matcher"] == ""
 
 
 def test_hook_argv_is_recognized_with_or_without_memory_home():
@@ -581,8 +581,17 @@ def test_implied_directive_is_provisional_but_remember_is_active(memory, tmp_pat
 def test_claude_integration_captures_bash_failures_too():
     from agent_memory.integration import merge_hooks
 
-    hooks = merge_hooks({}, "claude", True)["hooks"]
+    hooks = merge_hooks({}, "claude", True, capture_tools=True)["hooks"]
     assert hooks["PostToolUseFailure"][0]["matcher"] == "Bash"
+
+
+def test_tool_capture_is_opt_in_and_turning_it_off_removes_the_hooks():
+    from agent_memory.integration import merge_hooks
+
+    captured = merge_hooks({}, "claude", True, capture_tools=True)
+    assert {"PostToolUse", "PostToolUseFailure"} <= set(captured["hooks"])
+    default = merge_hooks(captured, "claude", True)
+    assert set(default["hooks"]) == {"UserPromptSubmit", "Stop", "SessionEnd"}
 
 
 def test_a_pasted_document_is_not_an_explicit_memory():

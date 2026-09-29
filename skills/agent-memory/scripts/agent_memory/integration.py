@@ -111,7 +111,17 @@ def _is_agent_memory_hook_command(command: str) -> bool:
     )
 
 
-def merge_hooks(config: dict[str, Any], harness: str, enabled: bool) -> dict[str, Any]:
+def merge_hooks(
+    config: dict[str, Any], harness: str, enabled: bool, *, capture_tools: bool = False
+) -> dict[str, Any]:
+    """Install or remove the managed hooks.
+
+    Tool hooks are opt-in: they start a process on every shell command, and
+    without a provider all they can learn is that a check passed repeatedly,
+    which the repository already says. Measured on a real week: ~2,400 Bash
+    calls, ~6 minutes of added latency, no memory produced.
+    """
+
     updated = json.loads(json.dumps(config))
     hooks = updated.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -121,7 +131,7 @@ def merge_hooks(config: dict[str, Any], harness: str, enabled: bool) -> dict[str
         if not isinstance(current, list):
             raise MemoryError(f"hooks.{hook_name} must be a list")
         kept = [entry for entry in current if not _is_managed_entry(entry)]
-        if enabled:
+        if enabled and (capture_tools or event != "tool_completed"):
             kept.append(_managed_entry(harness, event, timeout))
         if kept:
             hooks[hook_name] = kept
@@ -337,6 +347,7 @@ def integrate(
     harness: str,
     apply: bool,
     disable_known_conflicts: bool = False,
+    capture_tools: bool = False,
     user_home: Path | None = None,
 ) -> dict[str, Any]:
     if mode not in {"shadow", "primary", "off"}:
@@ -370,7 +381,7 @@ def integrate(
         )
     planned: dict[Path, str | None] = {}
     if "claude" in selected:
-        value = merge_hooks(_read_json(paths["claude"]), "claude", enabled)
+        value = merge_hooks(_read_json(paths["claude"]), "claude", enabled, capture_tools=capture_tools)
         if mode == "primary":
             value["autoMemoryEnabled"] = False
             plugins = value.get("enabledPlugins")
@@ -379,7 +390,7 @@ def integrate(
                     plugins[key] = False
         planned[paths["claude"]] = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
     if "codex" in selected:
-        value = merge_hooks(_read_json(paths["codex_hooks"]), "codex", enabled)
+        value = merge_hooks(_read_json(paths["codex_hooks"]), "codex", enabled, capture_tools=capture_tools)
         planned[paths["codex_hooks"]] = (
             json.dumps(value, indent=2, ensure_ascii=False) + "\n" if value else None
         )

@@ -73,7 +73,7 @@ gc
 doctor
   --cwd PATH                 checkout whose orphaned keys are listed as rekey_pending
 integrate --mode shadow|primary|off --harness all|claude|codex|opencode
-  [--disable-known-conflicts] [--apply]
+  [--disable-known-conflicts] [--capture-tools] [--apply]
 rekey
   --cwd PATH                 repository whose orphaned keys are folded; repeatable
   --map OLD=NEW              fold a key no candidate directory reproduces; repeatable

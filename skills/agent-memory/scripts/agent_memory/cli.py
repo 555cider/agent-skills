@@ -622,6 +622,7 @@ def command_integrate(args: argparse.Namespace) -> int:
         harness=args.harness,
         apply=args.apply,
         disable_known_conflicts=args.disable_known_conflicts,
+        capture_tools=args.capture_tools,
     )
     _emit(result, args.format)
     return 0
@@ -864,6 +865,11 @@ def build_parser(*, hook_only: bool = False) -> argparse.ArgumentParser:
     integration.add_argument("--mode", choices=("shadow", "primary", "off"), required=True)
     integration.add_argument("--harness", choices=("all", "claude", "codex", "opencode"), default="all")
     integration.add_argument("--disable-known-conflicts", action="store_true")
+    integration.add_argument(
+        "--capture-tools",
+        action="store_true",
+        help="Also hook shell commands (off by default: a process per command, little to learn without a provider)",
+    )
     integration.add_argument("--apply", action="store_true")
     _format(integration)
     integration.set_defaults(func=command_integrate)
