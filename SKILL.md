@@ -9,15 +9,8 @@ compatibility: Requires Python 3.11+, SQLite FTS5, and local filesystem access. 
 
 Use Agent Memory as evidence-aware durable work memory, not as project search or
 a transcript archive. SQLite at `~/.agents/memory/agent-memory.sqlite3` is the
-only source of truth. Harness adapters observe redacted semantic events and
-share the same store.
-
-Run the installed launcher:
-
-```bash
-agent-memory --help
-```
-
+only source of truth; Claude, Codex, and OpenCode hooks share it. Run the
+installed `agent-memory` launcher (`agent-memory <command> --help` for flags).
 Set `AGENT_MEMORY_HOME` only when an isolated store is required.
 
 ## Decide whether memory matters
@@ -40,14 +33,13 @@ contents, or raw tool output. Do not convert a repository into memory records.
 
 When the harness hook already injected an `<agent-memory …>` packet for the
 current prompt, use that packet directly — do not run `recall` again for the
-same prompt. Its `query-id` attribute is the feedback key. Otherwise use the
-exact current request as the prompt:
+same prompt. Otherwise use the exact current request as the prompt:
 
 ```bash
 agent-memory recall --cwd "$PWD" --prompt "<current request>" --format json
 ```
 
-The result is `agent-memory.packet.v2`:
+The packet (`agent-memory.packet.v2`):
 
 - `items` contains bounded active records that may be acted on.
 - `conflicts` is non-actionable. Never follow a disputed, retracted, expired,
@@ -61,227 +53,80 @@ Treat memory as a lead, not proof. Verify drift-prone commands and facts when
 verification is cheap. Mention memory only when it materially changes the
 action, decision, or warning given to the user.
 
-Global memory is blocked by default. It is eligible only when the current repo
-has a user grant for that memory kind. A repo `.agent-memory.json` may tighten,
-never widen, those grants.
+Global memory reaches a repo only for kinds the user granted there
+(`agent-memory policy trust grant --cwd "$PWD" --kind preference`); grant only
+when cross-project recall for that repo and kind was authorized.
 
-## Apply explicit memory requests immediately
+## Remember explicit requests immediately
 
 For an unambiguous, durable, non-sensitive request:
 
 ```bash
-agent-memory remember \
-  --cwd "$PWD" \
-  --scope project \
-  --kind preference \
-  --statement "Prefer targeted verification for small changes" \
-  --format json
+agent-memory remember --cwd "$PWD" --scope project --kind preference \
+  --statement "Prefer targeted verification for small changes" --format json
 ```
 
 Kinds are `preference`, `constraint`, `decision`, `procedure`, `caveat`, and
 `handoff`. Use `global` only when the user clearly intends cross-project reuse.
 Add `--condition harness=codex` or `--path-glob 'frontend/**'` when applicability
-is conditional. Use `--replaces <id>` for an explicit correction with known
-lineage.
+is conditional. Use `--replaces <id>` for an explicit correction.
 
-Keep each statement one focused fact, well under ~500 tokens. Split a playbook
-into separate targeted records: recall injects at most ~1,200 tokens, and an
-oversized record only ever appears truncated with a `review show` pointer.
-Long documents belong in the repository; remember a pointer to them instead.
+Keep each statement one focused fact, well under ~500 tokens; recall injects at
+most ~1,200 tokens. Split a playbook into separate records, and keep long
+documents in the repository with a pointer in memory.
 
-Explicit remember requests become active. Inferred preferences and
-assistant-only claims remain provisional. A procedure or caveat becomes active
-automatically only when local command/test evidence proves it. Conflicting
-inferences become disputed and are never injected.
+Explicit requests become active. Inferred preferences and assistant-only claims
+stay provisional; a procedure or caveat activates automatically only when local
+command evidence proves it.
 
 ## Forget means hard delete
 
-Honor a targeted forget request immediately:
+Honor a targeted forget request immediately, never with a note saying to forget:
 
 ```bash
 agent-memory forget --cwd "$PWD" --id <memory-id> --format json
-# or, when the id is unknown:
 agent-memory forget --cwd "$PWD" "distinctive remembered statement" --format json
 ```
 
-Forget deletes the current record, immutable revisions, evidence, relations,
-and embedding. A contentless HMAC tombstone blocks automatic rehydration for
-seven days. A later explicit `remember` overrides the tombstone. Never replace a
-forget request with a note saying to forget.
+A query matching more than five records fails until `--all-matches`; confirm
+with the user before any bulk deletion. Report the CLI's `deletion_scope`: it
+deletes structured memory and blocks rehydration for seven days, but source
+events stay until their TTL and backups or exports are not modified.
 
-Report the CLI's `deletion_scope`: this is structured-memory deletion, not erasure of
-all copies. Source events remain until their TTL; managed rekey backups and external
-exports are not modified. The tombstone blocks rehydration for seven days, not forever.
-For a request to erase every managed copy, first identify the exact events/backups and
-their other contents; do not erase a whole database backup on a targeted forget request.
-
-Query matching is precision-first (raw statement tokens, no concept aliases).
-A query matching more than five records fails until rerun with `--all-matches`;
-confirm with the user before bulk deletion. A forget phrase observed in a
-prompt hook is honored only when at most two records match — broader matches
-surface as non-actionable maintenance context for a targeted forget by id.
-
-## Review uncertain memory
+## Review and adopt
 
 ```bash
-agent-memory review list --cwd "$PWD" --format json
-agent-memory review show <id> --format json
-agent-memory review approve <id> --format json
-agent-memory review reject <id> --format json
+agent-memory review list --cwd "$PWD" --format json   # uncertain records
+agent-memory review approve|reject <id> --format json
 ```
 
-Approval creates a new immutable revision and activates the record. Rejection
-uses the same hard-delete and tombstone semantics as forget.
+Rejection hard-deletes like forget. To bring in memory Claude Code, Codex, or a
+`.remember` directory already hold, follow references/adopt.md: preview, show
+the grouped table, and resolve accepted groups by `--batch`, never one by one.
 
-Filter a long queue with `--state`, `--scope`, `--kind`, `--source`, `--repo-key`,
-`--batch`, and `--all-projects`. An import spanning several repositories is invisible from
-inside any one of them without `--all-projects`.
-
-## Adopt memory another agent already has
-
-`adopt` reads the memory files Claude Code and Codex keep as plain markdown and
-puts them through the same trust boundary as `import`: everything arrives
-`inferred`/`provisional` for review, tombstones still block rehydration, and
-replaying an adoption merges instead of duplicating.
-
-```bash
-agent-memory adopt list --cwd "$PWD" --format json          # what this machine has
-agent-memory adopt --cwd "$PWD" --dry-run --format json     # what would be adopted
-agent-memory adopt --cwd "$PWD" --format json               # adopt into the queue
-```
-
-Sources are `claude-md` (`~/.claude/CLAUDE.md`, `<repo>/CLAUDE.md`,
-`<repo>/CLAUDE.local.md`), `codex-agents` (`AGENTS.md`), `codex-memory`
-(`~/.codex/memories/MEMORY.md`, `memory_summary.md`), and `remember`
-(`.remember/core-memories.md`). Pass `--source` to narrow, `--scan <repo>` to
-read another checkout's project files, and `--llm` to let the configured
-provider classify and restate what the parser delimited.
-
-**Scope is decided per record, never in bulk.** Home files are global; repo
-files are keyed to that repository; a Codex `Task Group` is routed by its
-`applies_to: cwd=` line to the repository it names. A `cwd` that is not a git
-repository on this machine is skipped as `unknown-project` — it is never widened
-to global. Do not pass `--cwd` expecting it to re-home someone else's records;
-it selects which repository's own files are read.
-
-**The durability line.** Memory is a rule store read into a ~1,200-token recall
-budget, so `adopt` carries statements about how work should be done and leaves
-records of what was done once. Session transcripts, `rollout_summaries/`,
-`raw_memories.md`, `.remember/now.md`/`today-*.md`/`recent.md`/`archive.md`, and
-the `Task Group`/`Task N`/`keywords` scaffolding inside `MEMORY.md` are all
-excluded; `--include-episodic` opens the narrative files when the user asks.
-
-**Review the whole adoption as one decision.** The report carries a `batch`
-token and a `groups` table counting records by source, scope, repository, and
-kind. Render that table, ask the user once which groups to accept, then resolve
-each accepted group with a single command:
-
-```bash
-agent-memory review approve --batch <token> --scope global --format json
-agent-memory review approve --batch <token> --repo-key <key> --format json
-agent-memory review reject  --batch <token> --scope project --format json
-```
-
-Never walk an adopted queue one `Enter` at a time. Bulk resolution requires
-`--batch`; there is no bare `--all`. Rejection tombstones the statement, so a
-rule turned down here stays out of the next adoption — say so before rejecting.
-
-Adopted global rules stay invisible to a repository until that repository grants
-trust for the kind. Apply `policy trust grant` only when cross-project recall for
-that repo/kind was authorized; adoption alone does not grant that trust. Otherwise
-report the rules as imported but not eligible for recall in that repository.
-
-## Trust and observation controls
-
-Grant global recall narrowly by repo and kind:
-
-```bash
-agent-memory policy trust grant --cwd "$PWD" --kind preference
-agent-memory policy trust list --cwd "$PWD" --format json
-agent-memory policy trust revoke --cwd "$PWD" --kind preference
-```
-
-Pause automatic observation without deleting memory:
-
-```bash
-agent-memory session pause --cwd "$PWD" --harness codex
-agent-memory session resume --cwd "$PWD" --harness codex
-agent-memory session status --cwd "$PWD" --harness codex --format json
-```
-
-Prompt, tool, stop, and session hooks capture events automatically. Do not dump
-transcripts into `remember`. Stop hooks enqueue a leased one-shot worker;
-provider or vector failures must fail open and leave local lexical recall usable.
+To stop automatic observation without deleting memory, use
+`agent-memory session pause --cwd "$PWD" --harness <harness>`.
 
 ## Record actual use
 
-Exposure is not assumed to be useful. When a recalled item materially affected
-the work, record it:
+When a recalled item materially affected the work, record it against the
+packet's `query-id`:
 
 ```bash
 agent-memory feedback <query-id> <memory-id> --used --outcome helpful
 ```
 
-The query id is the `query-id` attribute of the injected `<agent-memory …>`
-packet (also `query_id` in JSON output). Use `--unused` when the exposed record
-was irrelevant. Never fabricate feedback for a record that was not in that
-query packet.
+Use `--unused` when an exposed record was irrelevant. Never fabricate feedback
+for a record that was not in that query packet.
 
-## Operations
+## References
 
-```bash
-agent-memory doctor --format json
-agent-memory gc --format json
-agent-memory export --scope global --format json > global-memory.json
-agent-memory import global-memory.json --dry-run --format json
-agent-memory adopt --cwd "$PWD" --dry-run --format json
-agent-memory integrate --mode off --harness all --apply
-```
+Read only the one you need:
 
-`export` excludes raw events; `--scope global|project|all` picks what to carry,
-and without it the original `--cwd`/`--include-global` contract still holds.
-`import` replays an export into this store, adding and merging only — records
-land in the review queue unless `--trust` says the file is your own backup.
-`adopt` does the same for another agent's markdown memory and never trusts.
-Both report a `batch` token that resolves their queue in one decision.
-`gc` enforces TTLs. `integrate off` removes only
-managed adapters and keeps the v2 DB. Configure optional providers only through
-environment variables; API keys never belong in memory or config files.
-
-## Worktrees share the repository's memory
-
-A linked git worktree computes its main tree's repo key, so memory written in any
-worktree is recalled in all of them. Stores written before that minted one key per
-worktree folder; fold those onto the repository once, after the updated launcher is
-installed (otherwise hooks keep writing the old keys). Adding an origin to a checkout
-that was keyed on its path orphans its key the same way; `doctor --cwd <repo>` lists
-every such key as `rekey_pending`:
-
-```bash
-agent-memory repo-key --cwd <a linked worktree>          # must print the main tree's key
-agent-memory rekey --cwd <repo> [--cwd <repo>] --format json   # dry run
-agent-memory rekey --cwd <repo> --apply --format json    # backs up the DB first
-```
-
-A key is mapped only when a directory the repository's worktrees could have used
-reproduces it under the old rule. Keys that merely share an origin's hash — a removed
-worktree of a repository with an origin, or a separate clone — are listed as
-`unmatched_same_hash` and left alone until named with `--map OLD=NEW`. Records that
-become identical under one key keep the most actionable copy and retract the rest;
-pairs that will read as contradictory are listed, not resolved.
-
-For complete contracts, read only the reference needed:
-
-- [references/cli.md](references/cli.md) — command and exit contract
-- [references/event-protocol.md](references/event-protocol.md) — normalized events and adapters
-- [references/lifecycle-policy.md](references/lifecycle-policy.md) — activation, revisions, TTL, trust
-- [references/providers.md](references/providers.md) — OpenAI and command provider boundary
-- [references/json-output.md](references/json-output.md) — v2 record and packet schemas
-- [references/architecture.md](references/architecture.md) — DB, worker, retrieval, failure model
-
-Verify the implementation with:
-
-```bash
-bash skills/agent-memory/tests/run.sh
-python3 skills/agent-memory/tests/benchmark.py
-```
+- references/cli.md — every command, flag, and exit contract
+- references/adopt.md — adopting Claude/Codex/.remember memory in reviewed batches
+- references/lifecycle-policy.md — activation, forget, TTL, trust, import, worktrees and `rekey`
+- references/json-output.md — record, packet, and command output schemas
+- references/event-protocol.md — hook events and harness adapters
+- references/providers.md — optional OpenAI/command provider and its payload boundary
+- references/architecture.md — DB, worker, retrieval, failure model

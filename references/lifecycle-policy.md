@@ -76,6 +76,44 @@ get their content hash recomputed, because the hash folds in the key. Tombstone
 digests cannot be recomputed — the statement they cover is gone — so a statement
 forgotten in a worktree in the last 7 days can be re-remembered from the main tree.
 
+## Worktrees share the repository's memory
+
+A linked git worktree computes its main tree's repo key, so memory written in any
+worktree is recalled in all of them. Stores written before that minted one key per
+worktree folder; fold those onto the repository once, after the updated launcher is
+installed (otherwise hooks keep writing the old keys). Adding an origin to a checkout
+that was keyed on its path orphans its key the same way; `doctor --cwd <repo>` lists
+every such key as `rekey_pending`:
+
+```bash
+agent-memory repo-key --cwd <a linked worktree>          # must print the main tree's key
+agent-memory rekey --cwd <repo> [--cwd <repo>] --format json   # dry run
+agent-memory rekey --cwd <repo> --apply --format json    # backs up the DB first
+```
+
+A key is mapped only when a directory the repository's worktrees could have used
+reproduces it under the old rule. Keys that merely share an origin's hash — a removed
+worktree of a repository with an origin, or a separate clone — are listed as
+`unmatched_same_hash` and left alone until named with `--map OLD=NEW`. Records that
+become identical under one key keep the most actionable copy and retract the rest;
+pairs that will read as contradictory are listed, not resolved.
+
+For complete contracts, read only the reference needed:
+
+- [references/cli.md](references/cli.md) — command and exit contract
+- [references/event-protocol.md](references/event-protocol.md) — normalized events and adapters
+- [references/lifecycle-policy.md](references/lifecycle-policy.md) — activation, revisions, TTL, trust
+- [references/providers.md](references/providers.md) — OpenAI and command provider boundary
+- [references/json-output.md](references/json-output.md) — v2 record and packet schemas
+- [references/architecture.md](references/architecture.md) — DB, worker, retrieval, failure model
+
+Verify the implementation with:
+
+```bash
+bash skills/agent-memory/tests/run.sh
+python3 skills/agent-memory/tests/benchmark.py
+```
+
 A repo `.agent-memory.json` is an additional ceiling:
 
 ```json
