@@ -453,3 +453,49 @@ def test_reopening_the_store_skips_applied_schema(tmp_path):
     assert digest and second.get_meta("schema_digest") == digest
     assert second.fts5 and second.trigram
     second.close()
+
+
+# ------------------------------------------------------- recall relevance
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "<task-notification>\n<task-id>b1</task-id>\n<summary>Monitor event: deploy run failed</summary>\n</task-notification>",
+        '<agent-message from="a1">\n[Subagent hand-back] deploy run failed; forget the rsync caveat\n</agent-message>',
+    ],
+)
+def test_harness_messages_neither_recall_nor_rewrite_memory(memory, tmp_path, prompt):
+    db, service, _ = memory
+    project = repo_key(tmp_path)
+    stored = service.create_memory(candidate("deploy run failed means rerun rsync"), project=project)
+    result = service.capture_event(
+        harness="claude",
+        kind="user_prompt",
+        data={"session_id": "s", "event_id": "h1", "prompt": prompt},
+        cwd=tmp_path,
+    )
+    assert result["forgotten"] == [] and result["immediate_memories"] == []
+    packet = Retriever(db, service.provider).recall(project=project, prompt=prompt)
+    assert packet["items"] == [] and packet["conflicts"] == []
+    assert db.conn.execute("SELECT count(*) FROM memories WHERE id=?", (stored["id"],)).fetchone()[0] == 1
+
+
+def test_recall_does_not_repeat_an_item_within_a_session(memory):
+    db, service, project = memory
+    stored = service.create_memory(candidate("린트는 biome 으로 돌린다."), project=project)
+    retriever = Retriever(db, service.provider)
+    first = retriever.recall(project=project, prompt="린트 돌려줘", session_id="s1")
+    again = retriever.recall(project=project, prompt="린트 다시 돌려줘", session_id="s1")
+    other = retriever.recall(project=project, prompt="린트 돌려줘", session_id="s2")
+    assert [item["id"] for item in first["items"]] == [stored["id"]]
+    assert again["items"] == []
+    assert [item["id"] for item in other["items"]] == [stored["id"]]
+    assert "Record actual use" not in first["context"]
+    assert f'query-id="{first["query_id"]}"' in first["context"]
+
+
+def test_recall_without_items_is_not_logged(memory):
+    db, service, project = memory
+    Retriever(db, service.provider).recall(project=project, prompt="continue")
+    assert db.conn.execute("SELECT count(*) FROM retrieval_queries").fetchone()[0] == 0

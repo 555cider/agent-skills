@@ -559,6 +559,7 @@ def command_hook(args: argparse.Namespace) -> int:
                     harness=args.harness,
                     global_kind_ceiling=_repo_global_ceiling(cwd),
                     exclude_ids=set(capture.get("immediate_memories") or []),
+                    session_id=capture.get("session_id"),
                 )
                 context = packet["context"]
                 if context:

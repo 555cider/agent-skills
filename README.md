@@ -36,8 +36,15 @@ validation, make v2 primary:
 ```
 
 Primary mode disables recognized Claude/Codex native memory and known competing
-Codex memory plugins while preserving unrelated config. Every changed config
+Claude/Codex memory plugins while preserving unrelated config. Every changed config
 is backed up. OpenCode loads its global plugin after restart.
+
+After upgrading an existing store, rebuild the indexes once so records written
+by an older version gain the current tokens (Korean stems, identifier parts):
+
+```bash
+agent-memory reindex --format json
+```
 
 The installer creates a private Python 3.11+ venv in the installed skill and
 pins `openai` and `sqlite-vec`. If optional dependency installation fails, the

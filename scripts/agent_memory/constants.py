@@ -45,6 +45,9 @@ IMPORT_BATCH_EVIDENCE = "import.batch"
 RAW_CHAT_TTL_DAYS = 7
 HANDOFF_TTL_DAYS = 14
 TOMBSTONE_TTL_DAYS = 7
+# A record shown in a session is not shown again until this long has passed;
+# by then the host may have compacted the earlier injection away.
+REEXPOSE_AFTER_MINUTES = 120
 PROCEDURE_STALE_DAYS = 90
 TOOL_OUTPUT_LIMIT_BYTES = 8 * 1024
 MAX_EVENT_TEXT = 32 * 1024

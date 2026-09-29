@@ -13,9 +13,13 @@ harness semantic event
   -> current record + immutable revision + evidence + indexes
 
 current prompt
+  -> harness messages (<task-notification>, <agent-message>) stop here: no recall
   -> maintenance detection
-  -> scope/state/trust/condition filter
-  -> FTS5 + trigram + optional sqlite-vec candidates
+  -> FTS5 + optional sqlite-vec candidates; trigram only when no lexical hit
+     in scope clears the relevance floor
+  -> relevance floor (see below)
+  -> scope/state/trust/condition filter, minus records this session saw
+     in the last 2 hours
   -> reciprocal-rank fusion and bounded boosts
   -> <=8 record / ~1200 token packet
 
@@ -57,7 +61,10 @@ and vector tables are indexes, not alternate stores.
   `import.<source>` rows that make one import addressable for bulk review.
 - `relations`: `supersedes` and `conflicts_with` graph edges.
 - `jobs`: pending/leased/done/dead work with retry metadata.
-- `retrieval_queries` and `retrieval_feedback`: exposure and actual-use signals.
+- `retrieval_queries` and `retrieval_feedback`: exposure and actual-use signals,
+  written only for a recall that showed something.
+- `session_exposures`: what each session was shown, so a long conversation is
+  not re-sent the same records on every prompt.
 - `trust_grants`: repo+kind global-memory grants.
 - `sessions`: exact or repo/harness wildcard pause state.
 - `tombstones`: contentless HMAC digests for forgotten statements.
@@ -94,3 +101,18 @@ but retained for possible verification.
 
 The worker never mutates harness configuration. Integration changes are a
 separate dry-run/apply operation with backups.
+
+## Relevance floor
+
+A lexical or trigram hit is a candidate, not a result. Each candidate is scored
+by the prompt words its text contains, weighted by rarity (idf over the FTS
+vocabulary, normalized so a word unique to one record counts 1.0), plus 0.3 per
+shared broad concept (`verify`, `commit`, ...), 0.6 per cross-language
+translation pair (`빌드`/`build`), and 0.4 per near-miss spelling. Only
+candidates scoring at least 0.6 are shown. In prompts with more than four
+content words, words with idf under 0.5 count zero, so common words cannot sum
+past the floor. Tokens include Korean stems (`배포가` -> `배포`) and the parts
+of compound identifiers (`gemini-3.1-flash-lite` -> `flash`, `lite`, ...), and
+concept aliases match whole tokens only. `tests/golden_retrieval.json` holds
+the positive and noise cases the floor is tuned against.
+

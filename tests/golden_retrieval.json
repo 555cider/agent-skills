@@ -58,5 +58,65 @@
     "memory": "Dialog 컴포넌트의 DialogContent 는 max-w-[calc(100%-2rem)] 과 sm:max-w-lg 로 최대 너비가 제한되므로 넓은 콘텐츠는 별도 클래스로 확장한다.",
     "query": "Dialog max-width 어디서 제한되는지 확인해줘",
     "expected": true
+  },
+  {
+    "memory": "린트는 biome 으로 돌린다.",
+    "query": "린트 돌려줘",
+    "expected": true
+  },
+  {
+    "memory": "배포 전에 스테이징에서 스모크 테스트를 돌린다.",
+    "query": "배포가 또 실패했어",
+    "expected": true
+  },
+  {
+    "memory": "커밋 메시지는 한국어로 짧게 쓴다.",
+    "query": "이거 커밋해줘",
+    "expected": true
+  },
+  {
+    "memory": "빌드 캐시는 .turbo 디렉터리에 쌓이므로 느려지면 먼저 비운다.",
+    "query": "빌드가 너무 느려",
+    "expected": true
+  },
+  {
+    "memory": "시뮬레이션 주 모델은 gemini-3.1-flash-lite 로 고정한다.",
+    "query": "3.1 flash lite 기준으로 얘기해",
+    "expected": true
+  },
+  {
+    "memory": "Use pnpm instead of npm for package installs.",
+    "query": "README 번역해줘",
+    "expected": false
+  },
+  {
+    "memory": "Squash-merge feature branches and delete them afterwards.",
+    "query": "prompt 문구를 다듬어줘",
+    "expected": false
+  },
+  {
+    "memory": "Run vitest for the frontend package before pushing.",
+    "query": "이 함수가 왜 None 을 반환하는지 원인 찾아줘",
+    "expected": false
+  },
+  {
+    "memory": null,
+    "query": "all done?",
+    "expected": false
+  },
+  {
+    "memory": null,
+    "query": "/step-back",
+    "expected": false
+  },
+  {
+    "memory": null,
+    "query": "continue",
+    "expected": false
+  },
+  {
+    "memory": null,
+    "query": "ㄱㄱ 진행해",
+    "expected": false
   }
 ]

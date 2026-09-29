@@ -121,6 +121,16 @@ CREATE TABLE IF NOT EXISTS retrieval_queries (
   harness TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+-- What each session was already shown, so a long conversation is not handed
+-- the same records on every prompt.
+CREATE TABLE IF NOT EXISTS session_exposures (
+  session_id TEXT NOT NULL,
+  memory_id TEXT NOT NULL,
+  exposed_at TEXT NOT NULL,
+  PRIMARY KEY(session_id, memory_id),
+  FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS retrieval_feedback (
   query_id TEXT NOT NULL,
   memory_id TEXT NOT NULL,
@@ -173,6 +183,10 @@ CREATE TABLE IF NOT EXISTS memory_vector_map (
 """
 
 
+# Bump when _initialize creates something outside SCHEMA, so stores re-run it.
+SCHEMA_EXTRAS = "fts:memory_fts,memory_trigram,memory_fts_vocab"
+
+
 class Database:
     def __init__(
         self, home: Path, *, readonly: bool = False, busy_timeout_ms: int = BUSY_TIMEOUT_MS
@@ -210,7 +224,7 @@ class Database:
     def _initialize(self) -> None:
         # Every hook opens the store; re-running the DDL takes the shared write
         # lock several times per call. Skip it once this schema text is applied.
-        digest = hashlib.sha256(SCHEMA.encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256((SCHEMA + SCHEMA_EXTRAS).encode("utf-8")).hexdigest()[:16]
         try:
             applied = self.conn.execute(
                 "SELECT value FROM metadata WHERE key='schema_digest'"
@@ -246,6 +260,13 @@ class Database:
             self.conn.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS memory_trigram USING fts5("
                 "memory_id UNINDEXED, text, tokenize='trigram')"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            # Document frequencies for the recall relevance floor.
+            self.conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts_vocab USING fts5vocab(memory_fts, 'row')"
             )
         except sqlite3.OperationalError:
             pass
