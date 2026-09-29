@@ -63,9 +63,14 @@ def _hook_command(harness: str, event: str) -> str:
     return shlex.join(args)
 
 
+# Tool capture only learns from shell commands, and every matched call starts a
+# Python process. Codex matchers name different tools, so it keeps matching all.
+HOOK_MATCHERS: dict[tuple[str, str], str] = {("claude", "tool_completed"): "Bash"}
+
+
 def _managed_entry(harness: str, event: str, timeout: int) -> dict[str, Any]:
     return {
-        "matcher": "",
+        "matcher": HOOK_MATCHERS.get((harness, event), ""),
         "hooks": [
             {
                 "type": "command",

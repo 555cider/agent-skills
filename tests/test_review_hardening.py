@@ -422,3 +422,34 @@ def test_codex_conflict_does_not_block_a_claude_only_integration(tmp_path):
         memory_home=tmp_path / "memory", mode="primary", harness="claude", apply=True, user_home=home
     )
     assert result["blocked"] is False and result["conflicts"] == []
+
+
+# ----------------------------------------------------------------- hook cost
+
+
+def test_claude_tool_hook_only_fires_for_shell_commands():
+    from agent_memory.integration import merge_hooks
+
+    claude = merge_hooks({}, "claude", True)["hooks"]
+    assert claude["PostToolUse"][0]["matcher"] == "Bash"
+    assert claude["UserPromptSubmit"][0]["matcher"] == ""
+    assert merge_hooks({}, "codex", True)["hooks"]["PostToolUse"][0]["matcher"] == ""
+
+
+def test_hook_argv_is_recognized_with_or_without_memory_home():
+    from agent_memory.cli import _is_hook
+
+    assert _is_hook(["hook", "--harness", "claude"])
+    assert _is_hook(["--memory-home", "/x", "hook", "--harness", "claude"])
+    assert _is_hook(["--memory-home=/x", "hook"])
+    assert not _is_hook(["recall", "--prompt", "hook"])
+
+
+def test_reopening_the_store_skips_applied_schema(tmp_path):
+    first = Database(tmp_path)
+    digest = first.get_meta("schema_digest")
+    first.close()
+    second = Database(tmp_path)
+    assert digest and second.get_meta("schema_digest") == digest
+    assert second.fts5 and second.trigram
+    second.close()

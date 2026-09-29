@@ -12,9 +12,12 @@ timestamps, compressed payload, payload digest, and redaction findings.
 | Meaning | Claude | Codex | OpenCode |
 |---|---|---|---|
 | user prompt + recall | `UserPromptSubmit` | `UserPromptSubmit` | `chat.message` |
-| completed tool | `PostToolUse` | `PostToolUse` | `tool.execute.after` |
+| completed tool | `PostToolUse` (matcher `Bash`) | `PostToolUse` | `tool.execute.after` |
 | assistant final | `Stop` | `Stop` | `message.updated` via `event` hook |
 | session end | `SessionEnd` | stop is terminal signal | `session.idle` via `event` hook |
+
+Tool capture only learns from shell commands, so the Claude tool hook matches
+`Bash` alone; every other tool call would start a Python process for nothing.
 
 OpenCode exposes `message.updated` and `session.idle` only as event-bus types
 on the generic `event` hook, not as top-level plugin hooks.

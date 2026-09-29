@@ -22,20 +22,14 @@ from .constants import (
     SCOPES,
 )
 from .db import Database
-from .integration import integrate, integration_status
+
+# Commands the hook never runs import their modules lazily: every prompt and
+# shell command pays this module's import time.
 from .models import Candidate
 from .providers import NullProvider, ProviderError, UnavailableProvider, provider_from_env
 from .redaction import redact_text
-from .rekey import plan_mappings, rekey
 from .retrieval import Retriever
 from .service import MemoryService
-from .sources import (
-    build_payload,
-    discover,
-    group_counts,
-    refine_with_provider,
-    select,
-)
 from .util import MemoryError, expand_user_path, memory_home, repo_key, resolve_cwd
 
 
@@ -273,6 +267,8 @@ def _one_id(args: argparse.Namespace) -> str:
 
 
 def command_adopt(args: argparse.Namespace) -> int:
+    from .sources import build_payload, discover, group_counts, refine_with_provider, select
+
     home = expand_user_path(args.home).resolve() if args.home else None
     sources = discover(home=home, cwd=_cwd(args), scan_roots=[Path(item) for item in args.scan or []])
     selected = select(sources, args.source or [])
@@ -422,6 +418,8 @@ def _provider_status() -> dict[str, Any]:
 def _rekey_pending(db: Database, cwd: Path) -> list[dict[str, Any]] | str:
     """Keys this checkout used to compute that still hold memory recall cannot reach."""
 
+    from .rekey import plan_mappings
+
     try:
         mappings, _ = plan_mappings(db, [cwd], {})
     except MemoryError as exc:
@@ -437,6 +435,8 @@ def _rekey_pending(db: Database, cwd: Path) -> list[dict[str, Any]] | str:
 
 
 def command_doctor(args: argparse.Namespace) -> int:
+    from .integration import integration_status
+
     db, service = _open(args, provider=False)
     try:
         counts = {
@@ -552,7 +552,7 @@ def command_hook(args: argparse.Namespace) -> int:
                 if isinstance(data.get("message"), dict):
                     prompt = str(data["message"].get("content") or data["message"].get("text") or prompt)
                 packet = Retriever(db, service.provider).recall(
-                    project=repo_key(cwd),
+                    project=capture["repo_key"],
                     prompt=prompt,
                     harness=args.harness,
                     global_kind_ceiling=_repo_global_ceiling(cwd),
@@ -598,6 +598,8 @@ def command_worker(args: argparse.Namespace) -> int:
 
 
 def command_integrate(args: argparse.Namespace) -> int:
+    from .integration import integrate
+
     result = integrate(
         memory_home=memory_home(args.memory_home),
         mode=args.mode,
@@ -615,6 +617,8 @@ def command_repo_key(args: argparse.Namespace) -> int:
 
 
 def command_rekey(args: argparse.Namespace) -> int:
+    from .rekey import rekey
+
     explicit: dict[str, str] = {}
     for item in args.map or []:
         old, separator, new = item.partition("=")
@@ -640,13 +644,40 @@ def command_reindex(args: argparse.Namespace) -> int:
         db.close()
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _add_hook_parser(sub: Any) -> None:
+    hook = sub.add_parser("hook", help="Process a fail-open host hook event")
+    hook.add_argument("--harness", choices=sorted(HARNESSES), required=True)
+    hook.add_argument("--event")
+    hook.add_argument("--cwd")
+    hook.add_argument("--input")
+    hook.set_defaults(func=command_hook)
+
+
+def _root_parser() -> tuple[argparse.ArgumentParser, Any]:
     parser = argparse.ArgumentParser(
         description="Evidence-aware local memory shared by coding agents"
     )
     parser.add_argument("--memory-home", help="Override AGENT_MEMORY_HOME")
     parser.add_argument("--version", action="version", version=__version__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    return parser, parser.add_subparsers(dest="command", required=True)
+
+
+def _is_hook(argv: Sequence[str]) -> bool:
+    items = list(argv)
+    if items[:1] == ["--memory-home"]:
+        items = items[2:]
+    elif items[:1] and items[0].startswith("--memory-home="):
+        items = items[1:]
+    return items[:1] == ["hook"]
+
+
+def build_parser(*, hook_only: bool = False) -> argparse.ArgumentParser:
+    parser, sub = _root_parser()
+    if hook_only:
+        # Hooks run on every prompt and tool call; building the ~30 other
+        # subcommands costs more than the hook's own database work.
+        _add_hook_parser(sub)
+        return parser
 
     remember = sub.add_parser("remember", help="Store an explicit durable memory immediately")
     remember.add_argument("statement", nargs="?")
@@ -805,12 +836,7 @@ def build_parser() -> argparse.ArgumentParser:
     _format(doctor)
     doctor.set_defaults(func=command_doctor)
 
-    hook = sub.add_parser("hook", help="Process a fail-open host hook event")
-    hook.add_argument("--harness", choices=sorted(HARNESSES), required=True)
-    hook.add_argument("--event")
-    hook.add_argument("--cwd")
-    hook.add_argument("--input")
-    hook.set_defaults(func=command_hook)
+    _add_hook_parser(sub)
 
     worker = sub.add_parser("worker", help="Process queued extraction and reconciliation jobs")
     worker.add_argument("--once", action="store_true", required=True)
@@ -874,7 +900,8 @@ def _force_utf8_streams() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_streams()
-    parser = build_parser()
+    argv = sys.argv[1:] if argv is None else argv
+    parser = build_parser(hook_only=_is_hook(argv))
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
