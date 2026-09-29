@@ -583,3 +583,9 @@ def test_claude_integration_captures_bash_failures_too():
 
     hooks = merge_hooks({}, "claude", True)["hooks"]
     assert hooks["PostToolUseFailure"][0]["matcher"] == "Bash"
+
+
+def test_a_pasted_document_is_not_an_explicit_memory():
+    document = "Remember that " + "you consolidate raw memories into folders. " * 60
+    assert MemoryService.explicit_candidates(document) == []
+    assert len(MemoryService.explicit_candidates("Remember that the lint step uses biome.")) == 1
