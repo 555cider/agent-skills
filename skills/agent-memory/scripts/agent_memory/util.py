@@ -154,6 +154,18 @@ def repo_key(cwd: Path) -> str:
     return key_for(root, identity)
 
 
+# Hosts deliver some non-user turns through the prompt hook: background task
+# notifications and subagent reports. They are not requests, so they neither
+# recall memory nor count as a remember/forget instruction.
+HARNESS_MESSAGE_RE = re.compile(
+    r"^\s*(?:<task-notification>|<agent-message\b|<system-reminder>|<local-command-|\[SYSTEM NOTIFICATION)"
+)
+
+
+def is_harness_message(prompt: str) -> bool:
+    return HARNESS_MESSAGE_RE.match(prompt) is not None
+
+
 def normalize_text(value: str) -> str:
     value = unicodedata.normalize("NFKC", value).casefold()
     value = re.sub(r"[`*_#>|]", " ", value)
@@ -174,8 +186,14 @@ def word_tokens(text: str) -> list[str]:
 
 
 CONCEPTS: dict[str, tuple[str, ...]] = {
-    "verify": ("verify", "verification", "validate", "check", "test", "검증", "테스트", "확인"),
-    "targeted": ("targeted", "narrow", "focused", "minimal", "선별", "좁은", "최소", "필요한"),
+    "verify": (
+        "verify", "verification", "validate", "check", "test", "inspect", "review",
+        "검증", "테스트", "확인", "검사", "점검",
+    ),
+    "targeted": (
+        "targeted", "narrow", "focused", "minimal", "small", "minor",
+        "선별", "좁은", "최소", "필요한", "작은",
+    ),
     "docs": ("docs", "documentation", "document", "readme", "문서", "도큐먼트"),
     "visual": ("visual", "rendered", "screen", "ui", "browser", "화면", "렌더", "시각"),
     "direct": ("direct", "execute", "action", "implement", "직접", "실행", "구현"),
@@ -190,22 +208,114 @@ CONCEPTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def semantic_tokens(text: str) -> list[str]:
+# Korean attaches particles and endings to the word ("배포가", "린트를",
+# "커밋해줘"), so an exact-token index never matches the bare word. Longest
+# first; a stem must keep two syllables so short nouns are not eaten.
+HANGUL_SUFFIXES = tuple(
+    sorted(
+        (
+            "에서는", "으로는", "이라고", "했는데", "합니다", "해주세요",
+            "에서", "으로", "까지", "부터", "처럼", "하고", "이랑", "에게", "한테", "보다",
+            "라고", "해줘", "했어", "할게", "하자", "해요", "해서", "하면", "하는", "된다",
+            "한다", "는데", "지만", "였다", "이다", "하게", "해야", "하려면", "하지",
+            "은", "는", "이", "가", "을", "를", "에", "의", "도", "만", "로", "와", "과",
+            "랑", "줘", "다", "고", "면", "해", "한",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+HANGUL_END_RE = re.compile(r"[가-힣]$")
+
+
+# One word in each language for the same specific thing. Unlike the broad
+# CONCEPTS above, sharing one of these is real evidence on its own.
+TRANSLATIONS: dict[str, tuple[str, ...]] = {
+    "build": ("build", "builds", "빌드"),
+    "deploy": ("deploy", "deployment", "release", "배포", "릴리스"),
+    "lint": ("lint", "linter", "린트"),
+    "layout": ("layout", "레이아웃"),
+    "python": ("python", "파이썬"),
+    "decision": ("decision", "decisions", "결정"),
+    "state": ("state", "status", "상태"),
+    "summary": ("summary", "summaries", "report", "요약", "보고"),
+    "clear": ("clear", "obvious", "straightforward", "명확"),
+    "local": ("local", "로컬"),
+    "remote": ("remote", "external", "원격", "외부"),
+    "cache": ("cache", "캐시"),
+    "migration": ("migration", "migrations", "마이그레이션"),
+    "database": ("database", "db", "데이터베이스", "디비"),
+    "worktree": ("worktree", "worktrees", "워크트리"),
+    "component": ("component", "components", "컴포넌트"),
+    "screenshot": ("screenshot", "screenshots", "스크린샷", "캡처"),
+}
+
+
+def hangul_stem(token: str) -> str:
+    """The token without one trailing Korean particle or ending, or "" if none."""
+
+    if not HANGUL_END_RE.search(token):
+        return ""
+    for suffix in HANGUL_SUFFIXES:
+        if token.endswith(suffix) and len(token) - len(suffix) >= 2:
+            return token[: -len(suffix)]
+    return ""
+
+
+def base_tokens(text: str, *, parts: bool = True) -> list[str]:
+    """Word tokens plus their Korean stems, without concept expansion."""
+
+    ordered: list[str] = []
+    for token in WORD_TOKEN_RE.findall(normalize_text(text)):
+        # Sentence punctuation sticks to the last word ("돌린다.", "check-token-7.").
+        token = token.rstrip(".:/+-")
+        # A compound identifier also matches its parts: "3.1 flash lite"
+        # should find "gemini-3.1-flash-lite".
+        pieces = (
+            [piece for piece in re.split(r"[-/:+]|(?<![0-9])\.|\.(?![0-9])", token) if len(piece) >= 2]
+            if parts
+            else []
+        )
+        for value in (token, hangul_stem(token), *(pieces if len(pieces) > 1 else ())):
+            if value and value not in ordered:
+                ordered.append(value)
+    return ordered
+
+
+def _alias_present(alias: str, tokens: set[str], normalized: str) -> bool:
+    # Whole tokens only: a substring test let "pr" fire on "prompt" and "ui" on
+    # "build", dragging a whole alias bundle into unrelated prompts.
+    if " " in alias:
+        return re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", normalized) is not None
+    return alias in tokens
+
+
+def concepts_in(text: str, table: dict[str, tuple[str, ...]] | None = None) -> list[str]:
     normalized = normalize_text(text)
-    raw_tokens = WORD_TOKEN_RE.findall(normalized)
+    tokens = set(base_tokens(text))
+    return [
+        concept
+        for concept, aliases in (CONCEPTS if table is None else table).items()
+        if any(_alias_present(alias, tokens, normalized) for alias in aliases)
+    ]
+
+
+def semantic_tokens(text: str) -> list[str]:
     ordered: list[str] = []
 
     def add(value: str) -> None:
         if value and value not in ordered:
             ordered.append(value)
 
-    for token in raw_tokens:
+    for token in base_tokens(text):
         add(token)
-    for concept, aliases in CONCEPTS.items():
-        if any(alias in normalized for alias in aliases):
-            add(f"concept_{concept}")
-            for alias in aliases:
-                add(alias)
+    for concept in concepts_in(text):
+        add(f"concept_{concept}")
+        for alias in CONCEPTS[concept]:
+            add(alias)
+    for concept in concepts_in(text, TRANSLATIONS):
+        for alias in TRANSLATIONS[concept]:
+            add(alias)
     # Cheap English stemming gives local paraphrase recall without a model.
     for token in list(ordered):
         if len(token) > 5:

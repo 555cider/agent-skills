@@ -41,6 +41,7 @@ from .util import (
     MemoryError,
     digest_text,
     head_tail,
+    is_harness_message,
     jsonable_row,
     normalize_text,
     repo_key,
@@ -360,6 +361,9 @@ class MemoryService:
             if kind in {"assistant_stop", "session_end"}:
                 self.db.conn.execute("DELETE FROM events WHERE expires_at<=?", (created_at,))
                 self.db.conn.execute("DELETE FROM tombstones WHERE expires_at<=?", (created_at,))
+                self.db.conn.execute(
+                    "DELETE FROM session_exposures WHERE exposed_at<=?", (utc_after(days=-1),)
+                )
             cursor = self.db.conn.execute(
                 "INSERT OR IGNORE INTO events("
                 "id,schema_name,session_id,harness,kind,repo_key,payload_zlib,payload_sha256,"
@@ -394,7 +398,7 @@ class MemoryService:
         immediate: list[str] = []
         forgotten: list[str] = []
         forget_skipped = 0
-        if inserted and kind == "user_prompt":
+        if inserted and kind == "user_prompt" and not is_harness_message(str(payload.get("prompt", ""))):
             prompt = str(payload.get("prompt", ""))
             forget_query = self.explicit_forget_query(prompt)
             if forget_query:
@@ -1639,6 +1643,7 @@ class MemoryService:
             tombstones = self.db.conn.execute(
                 "DELETE FROM tombstones WHERE expires_at<=?", (now,)
             ).rowcount
+            self.db.conn.execute("DELETE FROM session_exposures WHERE exposed_at<=?", (utc_after(days=-1),))
             expiring = self.db.conn.execute(
                 "SELECT id FROM memories WHERE valid_until IS NOT NULL AND valid_until<=? "
                 "AND state NOT IN ('expired','retracted')",

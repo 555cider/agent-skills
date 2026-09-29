@@ -928,16 +928,26 @@ def test_golden_bilingual_paraphrase_hit_at_five(memory):
     cases = json.loads(
         (Path(__file__).with_name("golden_retrieval.json")).read_text(encoding="utf-8")
     )
-    ids = []
-    for case in cases:
-        ids.append(service.create_memory(candidate(case["memory"]), project=project)["id"])
-    hits = 0
-    for case, expected_id in zip(cases, ids, strict=True):
+    ids = [
+        service.create_memory(candidate(case["memory"]), project=project)["id"]
+        if case["memory"]
+        else None
+        for case in cases
+    ]
+    hits = positives = 0
+    noise: list[str] = []
+    for case, memory_id in zip(cases, ids, strict=True):
         packet = Retriever(db, service.provider).recall(
             project=project, prompt=case["query"], limit=5
         )
-        hits += expected_id in {item["id"] for item in packet["items"]}
-    assert hits / len(cases) >= 0.9
+        returned = {item["id"] for item in packet["items"]}
+        if case["expected"]:
+            positives += 1
+            hits += memory_id in returned
+        elif memory_id in returned or (memory_id is None and returned):
+            noise.append(case["query"])
+    assert hits / positives >= 0.9
+    assert noise == []
 
 
 def test_worker_lock_is_exclusive_between_holders(tmp_path):

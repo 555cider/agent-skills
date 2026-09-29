@@ -77,7 +77,8 @@ statement alone exceeds the budget is injected as a truncated head with
 `truncated=true` and a `review show` pointer instead of being dropped.
 
 Every exposed item creates a feedback target keyed by `query_id` and memory id.
-Exposure does not set `used`; only `feedback --used` does.
+Exposure does not set `used`; only `feedback --used` does. A recall that shows
+nothing is not logged, so its `query_id` has no feedback targets.
 
 ## Other command results
 
