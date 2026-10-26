@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  openSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -278,29 +280,66 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const appPort = server.address().port;
 const appUrl = `http://127.0.0.1:${appPort}/settings`;
 
-const chromeProcess = spawn(chrome, [
-  "--headless=new",
-  "--disable-gpu",
-  "--disable-extensions",
-  "--no-first-run",
-  "--no-default-browser-check",
-  "--no-sandbox",
-  "--remote-debugging-port=0",
-  `--user-data-dir=${profile}`,
-  appUrl,
-], { stdio: ["ignore", "ignore", "ignore"] });
+// Hosted CI runners occasionally start Chrome without it ever publishing a debug port.
+// Each attempt gets a fresh profile and its own stderr log, so a retry is clean and a final
+// failure says why Chrome stopped instead of only that the port never appeared.
+const CHROME_ATTEMPTS = 3;
+let chromeProcess = null;
+let chromeExited = Promise.resolve();
+
+function stopChrome() {
+  if (!chromeProcess || chromeProcess.exitCode !== null || chromeProcess.signalCode !== null) return chromeExited;
+  try { chromeProcess.kill("SIGKILL"); } catch { /* already stopped */ }
+  return chromeExited;
+}
+
+async function launchChrome() {
+  const failures = [];
+  for (let attempt = 1; attempt <= CHROME_ATTEMPTS; attempt += 1) {
+    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    mkdirSync(profile, { recursive: true, mode: 0o700 });
+    const logPath = join(temporaryRoot, `chrome-${attempt}.log`);
+    const log = openSync(logPath, "w");
+    chromeProcess = spawn(chrome, [
+      "--headless=new",
+      "--disable-gpu",
+      "--disable-dev-shm-usage",
+      "--disable-extensions",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--no-sandbox",
+      "--remote-debugging-port=0",
+      `--user-data-dir=${profile}`,
+      appUrl,
+    ], { stdio: ["ignore", "ignore", log] });
+    closeSync(log);
+    const child = chromeProcess;
+    chromeExited = new Promise((resolve) => child.once("exit", resolve));
+    try {
+      return await waitUntil(() => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          throw new Error(`Chrome exited (${child.exitCode ?? child.signalCode})`);
+        }
+        const path = join(profile, "DevToolsActivePort");
+        if (!existsSync(path)) return null;
+        const value = Number(readFileSync(path, "utf8").split(/\r?\n/)[0]);
+        return Number.isInteger(value) && value > 0 ? value : null;
+      }, "Chrome did not publish DevToolsActivePort", 30_000);
+    } catch (error) {
+      await stopChrome();
+      const stderr = existsSync(logPath) ? readFileSync(logPath, "utf8").trim().slice(-600) : "";
+      failures.push(`attempt ${attempt}: ${error.message}${stderr ? `\n${stderr}` : ""}`);
+    }
+  }
+  throw new Error(`Chrome did not start after ${CHROME_ATTEMPTS} attempts\n${failures.join("\n")}`);
+}
 
 let browserConnection = null;
 let pageConnection = null;
 let driverProcess = null;
 
 try {
-  const debugPort = await waitUntil(() => {
-    const path = join(profile, "DevToolsActivePort");
-    if (!existsSync(path)) return null;
-    const value = Number(readFileSync(path, "utf8").split(/\r?\n/)[0]);
-    return Number.isInteger(value) && value > 0 ? value : null;
-  }, "Chrome did not publish DevToolsActivePort", 20_000);
+  const debugPort = await launchChrome();
   const debugBase = `http://127.0.0.1:${debugPort}`;
   const version = await waitUntil(() => json(`${debugBase}/json/version`).catch(() => null), "Chrome debug endpoint was unavailable");
   browserConnection = new CdpConnection(version.webSocketDebuggerUrl);
@@ -909,7 +948,9 @@ try {
   try { driverProcess?.kill("SIGKILL"); } catch { /* already stopped */ }
   pageConnection?.close();
   browserConnection?.close();
-  try { chromeProcess.kill("SIGKILL"); } catch { /* already stopped */ }
+  // Chrome keeps writing into its profile until it has really exited; removing the tree
+  // first raced it and failed with ENOTEMPTY on CI.
+  await stopChrome();
   await new Promise((resolve) => server.close(resolve));
-  rmSync(temporaryRoot, { recursive: true, force: true });
+  rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
