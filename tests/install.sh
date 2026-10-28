@@ -233,6 +233,8 @@ test_uninstall_removes_local_fallback_install() {
     fail "expected managed agent-memory launcher to be removed"
   grep -F "removed  $home/.agents/skills/agent-memory" "$out" >/dev/null ||
     fail "expected uninstall output to report removing agent-memory install root"
+  [ ! -e "$home/.claude/settings.json" ] ||
+    fail "expected uninstall not to create Claude settings while removing integrations"
 }
 
 test_uninstall_all_removes_agent_memory_local_fallback_install() {
@@ -468,6 +470,42 @@ JSON
     fail "expected the local install to be removed regardless"
 }
 
+# --shadow/--primary wire hooks into every harness that call into the skill.
+# Removing the skill without removing them leaves each session running hooks
+# that point at nothing, so uninstall has to undo the integration first.
+test_uninstall_removes_agent_memory_integration_hooks() {
+  local home="$WORK/uninstall-integration-home"
+  local out="$WORK/uninstall-integration.out"
+  local err="$WORK/uninstall-integration.err"
+
+  mkdir -p "$home/.claude" "$home/.codex"
+  printf '%s\n' '{"theme":"dark"}' >"$home/.claude/settings.json"
+
+  HOME="$home" PATH="$home/.local/bin:$PATH" "$INSTALL" --local agent-memory --shadow \
+    >"$WORK/uninstall-integration-install.out" 2>"$WORK/uninstall-integration-install.err" ||
+    fail "expected shadow setup to succeed before uninstall"
+  grep -qF "agent-memory-v2-managed" "$home/.claude/settings.json" ||
+    fail "expected shadow setup to add Claude hooks"
+  [ -f "$home/.config/opencode/plugins/agent-memory.js" ] ||
+    fail "expected shadow setup to add the OpenCode plugin"
+
+  HOME="$home" PATH="$home/.local/bin:$PATH" "$UNINSTALL" agent-memory >"$out" 2>"$err" ||
+    fail "expected uninstall to succeed: $(cat "$err")"
+
+  ! grep -qF "agent-memory" "$home/.claude/settings.json" ||
+    fail "expected uninstall to remove the agent-memory hooks from Claude settings"
+  grep -qF '"theme": "dark"' "$home/.claude/settings.json" ||
+    fail "expected uninstall to keep unrelated Claude settings"
+  ! grep -qsF "agent-memory" "$home/.codex/hooks.json" ||
+    fail "expected uninstall to remove the agent-memory hooks from Codex"
+  [ ! -e "$home/.config/opencode/plugins/agent-memory.js" ] ||
+    fail "expected uninstall to remove the OpenCode plugin"
+  [ ! -e "$home/.agents/skills/agent-memory" ] ||
+    fail "expected the skill itself to be removed after its hooks"
+  grep -F "agent-memory claude integration" "$out" >/dev/null ||
+    fail "expected uninstall to report the removed integration"
+}
+
 # HOME with no ~/.claude or ~/.codex leaves HARNESSES empty, and duplicate
 # names start the de-duplication from an empty list. Both are empty-array
 # expansions that macOS /bin/bash 3.2 rejects under `set -u`.
@@ -498,6 +536,7 @@ test_agent_memory_shadow_one_command_setup
 test_agent_memory_shadow_requires_windows_launcher_on_path
 test_install_warns_when_the_skill_is_also_a_claude_code_plugin
 test_uninstall_reports_the_claude_code_plugin_copy_it_cannot_remove
+test_uninstall_removes_agent_memory_integration_hooks
 test_install_with_no_harness_dirs_and_duplicate_names
 
 echo "install tests passed"

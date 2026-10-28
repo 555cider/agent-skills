@@ -12,6 +12,8 @@
 #   ~/.codex/skills/<name>         (harness link/junction only)
 #   ~/.agents/skills/<name>/       (the installed skill directory)
 #   ~/.local/bin/agent-memory       (managed launcher, for agent-memory only)
+#   agent-memory harness hooks      (Claude/Codex hooks and the OpenCode plugin that
+#                                   --shadow/--primary wrote; agent-memory only)
 #
 # Safety:
 #  - Harness paths are removed only when they are a symlink or a junction that
@@ -207,6 +209,65 @@ remove_agent_memory_launcher() {
   return "$status"
 }
 
+# agent_memory_python: print an interpreter that can run the installed
+# agent-memory CLI — its private venv first, then a system Python 3.11+ (the
+# same floor install.sh enforces). A bare `command -v` is not enough on
+# Windows, where python3 can be the Microsoft Store stub.
+agent_memory_python() {
+  local skill="$AGENTS_ROOT/agent-memory" candidate
+  for candidate in "$skill/.venv/bin/python" "$skill/.venv/Scripts/python.exe"; do
+    [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+  done
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+       && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# remove_agent_memory_integration: undo `install.sh --shadow/--primary` before
+# the skill directory goes. Those modes write hooks into ~/.claude/settings.json
+# and ~/.codex/hooks.json and an OpenCode plugin, all calling into this skill;
+# deleting the skill alone would leave every harness session running hooks that
+# point at nothing. The skill's own `integrate --mode off` knows exactly which
+# entries it owns, so it does the removal.
+#
+# It runs per harness, and only where that harness's file carries an
+# agent-memory marker: off mode with `--harness all` would create
+# ~/.claude/settings.json on a machine that never had one, and rewrite a
+# settings file that holds none of our entries. Returns non-zero when an
+# integration is present but could not be removed; the caller then keeps the
+# skill so the hooks still resolve.
+remove_agent_memory_integration() {
+  local cli="$AGENTS_ROOT/agent-memory/scripts/memory.py" py="" harness file
+  [ -f "$cli" ] || return 0
+  for harness in claude codex opencode; do
+    case "$harness" in
+      claude)   file="$HOME/.claude/settings.json" ;;
+      codex)    file="$HOME/.codex/hooks.json" ;;
+      opencode) file="$HOME/.config/opencode/plugins/agent-memory.js" ;;
+    esac
+    [ -f "$file" ] || continue
+    grep -qE 'agent-memory-(v2-)?managed|AGENT_MEMORY_OPENCODE_ADAPTER' "$file" 2>/dev/null || continue
+    if [ -z "$py" ]; then
+      py="$(agent_memory_python)" || {
+        printf '  SKIP agent-memory (no Python 3.11+ to remove its %s integration; run: agent-memory integrate --mode off --harness all --apply)\n' "$harness" >&2
+        return 1
+      }
+    fi
+    if "$py" "$cli" integrate --mode off --harness "$harness" --apply --format json >/dev/null; then
+      printf '  removed  agent-memory %s integration (%s)\n' "$harness" "$file"
+    else
+      printf '  SKIP agent-memory (could not remove its %s integration from %s)\n' "$harness" "$file" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 # plugin_conflict_ids <name>: print every Claude Code plugin id that already
 # ships this skill, one per line; print nothing when there is no conflict.
 #
@@ -254,6 +315,10 @@ for name in ${SELECTED[@]+"${SELECTED[@]}"}; do
     continue
   fi
   if [ "$name" = "agent-memory" ]; then
+    if ! remove_agent_memory_integration; then
+      errors=$((errors + 1))
+      continue
+    fi
     remove_agent_memory_launcher || errors=$((errors + 1))
   fi
   for root in ${ROOTS[@]+"${ROOTS[@]}"}; do

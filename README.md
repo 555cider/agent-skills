@@ -257,10 +257,10 @@ clear error rather than silently degrading to a copy.
 ## Uninstall
 
 ```bash
-./uninstall.sh <name>              # remove one skill
+./uninstall.sh <name>                  # remove one skill
 ./uninstall.sh peer-review step-back   # remove several
-./uninstall.sh --all               # remove every skill declared by this repo
-./uninstall.sh --list              # print this monorepo's skill names
+./uninstall.sh --all                   # remove every skill declared by this repo
+./uninstall.sh --list                  # print this monorepo's skill names
 ```
 
 For each skill, this removes:
@@ -268,6 +268,14 @@ For each skill, this removes:
 - `~/.claude/skills/<name>` (harness link, if present)
 - `~/.codex/skills/<name>` (harness link, if present)
 - `~/.agents/skills/<name>/` (the installed skill directory, if present)
+- for `agent-memory` only: the hooks `--shadow`/`--primary` wrote into
+  `~/.claude/settings.json` and `~/.codex/hooks.json` and the OpenCode plugin,
+  removed first by the skill's own `integrate --mode off`, one harness at a time
+  and only where its file carries an agent-memory entry; then the managed
+  `~/.local/bin/agent-memory` launcher. If the hooks cannot be removed the skill
+  is kept, so the hooks never point at a deleted skill. The memory store
+  (`~/.agents/memory/`) and any setting `--primary` turned off, such as
+  Claude's `autoMemoryEnabled`, are left as they are.
 
 It does not touch `~/.claude/plugins/`. A skill installed through the plugin
 channel is removed with `claude plugin uninstall <name>@555cider-agent-skills`;
@@ -275,10 +283,13 @@ channel is removed with `claude plugin uninstall <name>@555cider-agent-skills`;
 half the skill installed.
 
 Idempotent — re-running is safe; already-absent paths are reported and
-skipped. Works on POSIX symlinks, NTFS junctions, and plain
-directories alike. Re-installing later just re-runs `./install.sh
-<name>`; the install will clone `split/<name>` when available or sync the
-local checkout while the split branch is still unpublished.
+skipped. Harness links are removed whether they are POSIX symlinks or NTFS
+junctions; a real directory at a harness path is not this tool's and is
+skipped with a warning. A `~/.agents/skills/<name>/` git clone with local
+changes, unpushed commits, or no upstream is refused rather than deleted.
+Re-installing later just re-runs `./install.sh <name>`; the install will clone
+`split/<name>` when available or sync the local checkout while the split branch
+is still unpublished.
 
 ## Adding a new skill (maintainers)
 
