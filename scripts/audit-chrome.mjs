@@ -279,7 +279,8 @@ async function launchChrome() {
     proc.on('exit', c => { clearTimeout(to); reject(new Error('Chrome exited (' + c + ') before listening')); });
   }); } catch (error) {
     killChromeTree(proc);
-    rmSync(profile, { recursive: true, force: true });
+    // A profile Chrome still holds open must not replace the launch error with EBUSY.
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {}
     throw error;
   }
   return { proc, wsUrl, profile };
@@ -1040,9 +1041,11 @@ interrupted (${signal}): closing Chrome`);
     process.exit(code);
   });
 }
-const cdp = await CDP.connect(wsUrl);
+let cdp;
 let results;
 try {
+  // Inside the try: a socket that never opens must still take Chrome and its profile down.
+  cdp = await CDP.connect(wsUrl);
   results = await mapLimit(specs, workers, async spec => {
     const { route, vp, theme, state, adaptation } = spec;
     const url = baseUrl + route;
@@ -1264,7 +1267,7 @@ try {
     }
   });
 } finally {
-  try { cdp.ws.close(); } catch {}
+  try { if (cdp) cdp.ws.close(); } catch {}
   killChromeTree(proc);
   await new Promise(resolve => {
     if (proc.exitCode !== null) return resolve();
