@@ -1,4 +1,4 @@
 interface:
   display_name: "UI Audit"
   short_description: "Measure rendered UI defects, focus, target size, zoom/reflow, and state coverage before completion."
-  default_prompt: "Use $ui-audit before calling frontend work complete: run the canonical Node/CDP audit across routes, viewports, themes, forced states, and desktop adaptations; resolve measured findings and required advisories; then judge the subjective residue. Build/edit/finish requests authorize in-scope fixes, while review-only requests authorize reporting only."
+  default_prompt: "Use $ui-audit before calling frontend work complete: run the canonical Node/CDP audit on the smallest matrix that proves the requested surface (only the routes, viewports, themes, states, and adaptations that can change its result); resolve measured findings and required advisories; then judge the subjective residue. Build/edit/finish requests authorize in-scope fixes, while review-only requests authorize reporting only."
