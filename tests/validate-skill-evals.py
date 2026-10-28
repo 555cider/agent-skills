@@ -110,7 +110,10 @@ def validate_line_endings(skill: str, skill_dir: Path, expected: list[str]) -> N
 
 
 def main() -> int:
-    skill_dirs = sorted(path for path in SKILLS.iterdir() if path.is_dir())
+    # A skill is a directory that declares one in SKILL.md, the same rule install.sh, uninstall.sh
+    # and the CI loops apply. A directory left behind by a rename or an aborted checkout (often
+    # nothing but __pycache__) is not a skill and must not fail the build.
+    skill_dirs = sorted(path for path in SKILLS.iterdir() if (path / "SKILL.md").is_file())
     require(skill_dirs, "no skills found")
 
     root_attributes = ROOT / ".gitattributes"
@@ -120,7 +123,6 @@ def main() -> int:
 
     for skill_dir in skill_dirs:
         skill = skill_dir.name
-        require((skill_dir / "SKILL.md").is_file(), f"{skill}/SKILL.md is missing")
         eval_dir = skill_dir / "evals"
         require(eval_dir.is_dir(), f"{skill}/evals is missing")
         validate_trigger_evals(skill, eval_dir / "trigger-evals.json")
