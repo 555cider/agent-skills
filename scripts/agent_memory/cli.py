@@ -20,6 +20,7 @@ from .constants import (
     MEMORY_KINDS,
     MEMORY_STATES,
     SCOPES,
+    TOMBSTONE_TTL_DAYS,
 )
 from .db import Database
 from .instructions import loaded_rules
@@ -182,13 +183,13 @@ def command_forget(args: argparse.Namespace) -> int:
             allow_bulk=args.all_matches,
         )
         output = {
-            "removed": removed, "total": len(removed), "tombstone_days": 7,
+            "removed": removed, "total": len(removed), "tombstone_days": TOMBSTONE_TTL_DAYS,
             "deletion_scope": {
                 "structured_memory": "deleted" if removed else "no_matches",
                 "events": "retained_until_ttl",
                 "managed_backups": "not_modified",
                 "external_exports": "not_modified",
-                "rehydration_block_days": 7,
+                "rehydration_block_days": TOMBSTONE_TTL_DAYS,
             },
         }
         _emit(output, args.format)
