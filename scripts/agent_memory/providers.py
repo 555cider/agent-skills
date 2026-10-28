@@ -250,11 +250,42 @@ class OpenAIProvider(Provider):
         }
 
 
+def split_provider_command(command: str, windows: bool | None = None) -> list[str]:
+    r"""Split AGENT_MEMORY_PROVIDER_COMMAND into argv.
+
+    A value starting with `[` is a JSON array of strings, used verbatim. Otherwise
+    the string is split shell-style: POSIX rules elsewhere, and on Windows a
+    non-POSIX split that keeps backslashes (POSIX `shlex` turns an unquoted
+    `C:\tools\p.exe` into `C:toolsp.exe`) and drops the quotes around a token.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    text = command.strip()
+    if text.startswith("["):
+        try:
+            argv = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ProviderError(f"AGENT_MEMORY_PROVIDER_COMMAND is not a JSON array: {exc}") from exc
+        if not isinstance(argv, list) or not all(isinstance(part, str) and part for part in argv):
+            raise ProviderError("AGENT_MEMORY_PROVIDER_COMMAND JSON form must be an array of non-empty strings")
+        return argv
+    try:
+        if not windows:
+            return shlex.split(text)
+        parts = shlex.split(text, posix=False)
+    except ValueError as exc:
+        raise ProviderError(f"AGENT_MEMORY_PROVIDER_COMMAND cannot be parsed: {exc}") from exc
+    return [
+        part[1:-1] if len(part) >= 2 and part[0] == part[-1] and part[0] in "\"'" else part
+        for part in parts
+    ]
+
+
 class CommandProvider(Provider):
     name = "command"
 
     def __init__(self, command: str) -> None:
-        self.argv = shlex.split(command)
+        self.argv = split_provider_command(command)
         if not self.argv:
             raise ProviderError("AGENT_MEMORY_PROVIDER_COMMAND is empty")
         self.timeout = float(os.environ.get("AGENT_MEMORY_PROVIDER_TIMEOUT", "30"))

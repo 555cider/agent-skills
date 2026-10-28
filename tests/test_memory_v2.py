@@ -24,6 +24,7 @@ from agent_memory.providers import (
     Provider,
     ProviderError,
     UnavailableProvider,
+    split_provider_command,
 )
 from agent_memory.retrieval import Retriever
 from agent_memory.service import MemoryService, remote_event
@@ -820,8 +821,36 @@ def test_auto_activation_precision_gate(tmp_path):
 
 
 def _python_command(program: Path) -> str:
-    # shlex.split is POSIX: unquoted Windows paths lose their backslashes.
-    return f"{shlex.quote(sys.executable)} {shlex.quote(str(program))}"
+    # The JSON argv form is exact on every platform.
+    return json.dumps([sys.executable, str(program)])
+
+
+def test_provider_command_split_keeps_windows_backslashes():
+    command = r'C:\tools\p.exe --flag "C:\Program Files\cfg\p.json" plain'
+    assert split_provider_command(command, windows=True) == [
+        r"C:\tools\p.exe",
+        "--flag",
+        r"C:\Program Files\cfg\p.json",
+        "plain",
+    ]
+    assert split_provider_command("/opt/p --name 'a b'", windows=False) == ["/opt/p", "--name", "a b"]
+    assert split_provider_command(' ["C:\\\\a b\\\\p.exe", "--x"] ', windows=False) == [r"C:\a b\p.exe", "--x"]
+    with pytest.raises(ProviderError, match="array of non-empty strings"):
+        split_provider_command('["p", 1]')
+    with pytest.raises(ProviderError, match="cannot be parsed"):
+        split_provider_command("p 'unterminated", windows=False)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="unquoted backslash paths are a Windows form")
+def test_command_provider_runs_unquoted_windows_path(tmp_path):
+    if " " in sys.executable or " " in str(tmp_path):
+        pytest.skip("path contains a space and needs quoting")
+    program = tmp_path / "provider.py"
+    program.write_text("print('not json')\n", encoding="utf-8")
+    provider = CommandProvider(f"{sys.executable} {program}")
+    assert provider.argv == [sys.executable, str(program)]
+    with pytest.raises(ProviderError, match="malformed JSON"):
+        provider.extract([], "repo")
 
 
 def test_command_provider_rejects_malformed_protocol(tmp_path, monkeypatch):
