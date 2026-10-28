@@ -9,7 +9,9 @@ probe='import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
 
 run_with() {
   if "$@" -c "$probe" >/dev/null 2>&1; then
-    exec "$@" "$script" "${cli_args[@]}"
+    # The guarded expansion: bash before 4.4 (macOS /bin/bash 3.2) treats an empty
+    # array as unbound under `set -u`.
+    exec "$@" "$script" ${cli_args[@]+"${cli_args[@]}"}
   fi
 }
 
