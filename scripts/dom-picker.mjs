@@ -35,6 +35,16 @@ import { CDP, closeChrome, launchChrome, requireWebSocket } from "./chrome-cdp.m
    so the page runtime and an owned Chrome with its profile were left behind. */
 const stopRequestPath = (sessionPath) => join(dirname(sessionPath), "stop-request");
 const stoppedMarkerPath = (sessionPath) => join(dirname(sessionPath), "driver-stopped.json");
+// The driver renames the request to this as it starts shutting down, so a slow shutdown
+// reads as "stopping", never as "not running".
+const stoppingPath = (sessionPath) => join(dirname(sessionPath), "stopping");
+
+function writeStoppedMarker(sessionPath, signal) {
+  const marker = stoppedMarkerPath(sessionPath);
+  const temporary = `${marker}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify({ signal, at: new Date().toISOString() }));
+  renameSync(temporary, marker);
+}
 
 requireWebSocket("dom-picker");
 
@@ -311,8 +321,16 @@ function urlOrigin(url) {
 
 async function cleanupOwnedChrome(owned) {
   if (!owned) return;
-  // SIGTERM first so a caller-supplied --user-data-dir is closed cleanly, then the whole
-  // process tree (taskkill /T on Windows) and a confirmed removal of a temporary profile.
+  // Browser.close first so a caller-supplied --user-data-dir is closed cleanly on every OS
+  // (SIGTERM, the grace period's own request, exists only on POSIX), then the whole process
+  // tree (taskkill /T on Windows) and a confirmed removal of a temporary profile.
+  if (owned.wsUrl) {
+    try {
+      const browser = await CDP.connect(owned.wsUrl);
+      await Promise.race([browser.send("Browser.close"), new Promise((done) => setTimeout(done, 1000))]).catch(() => {});
+      browser.close();
+    } catch { /* already gone; the tree kill below covers it */ }
+  }
   await closeChrome(owned, { graceMs: 2500 });
 }
 
@@ -544,9 +562,11 @@ class PickerSession {
     }
     this.persistUiState();
     rmSync(stopRequestPath(this.sessionPath), { force: true });
+    rmSync(stoppingPath(this.sessionPath), { force: true });
     rmSync(stoppedMarkerPath(this.sessionPath), { force: true });
     await this.attach();
     this.heartbeatTimer = setInterval(() => { void this.tickHeartbeat(); }, 1500);
+    this.stopRequestTimer = setInterval(() => { this.checkStopRequest(); }, 500);
     this.line("ready", {
       artifactRoot: this.artifactRoot,
       sessionPath: this.sessionPath,
@@ -559,19 +579,21 @@ class PickerSession {
       if (this.stopping) return;
       this.stopping = true;
       clearInterval(this.heartbeatTimer);
+      clearInterval(this.stopRequestTimer);
       try { await this.destroyRuntime(); } catch { /* page may already be closed */ }
       this.connection?.close();
       await cleanupOwnedChrome(this.owned);
       if (this.sessionPath) {
         rmSync(stopRequestPath(this.sessionPath), { force: true });
-        writeFileSync(stoppedMarkerPath(this.sessionPath), JSON.stringify({ signal, at: new Date().toISOString() }));
+        rmSync(stoppingPath(this.sessionPath), { force: true });
+        writeStoppedMarker(this.sessionPath, signal);
       }
       this.line("stopped", { signal });
       process.exit(0);
     };
     this.stop = stop;
-    process.once("SIGINT", () => { void stop("SIGINT"); });
-    process.once("SIGTERM", () => { void stop("SIGTERM"); });
+    process.on("SIGINT", () => { void stop("SIGINT"); });
+    process.on("SIGTERM", () => { void stop("SIGTERM"); });
     await new Promise(() => {});
   }
 
@@ -692,12 +714,15 @@ class PickerSession {
     } catch { /* top context may be navigating */ }
   }
 
+  checkStopRequest() {
+    if (this.stopping || !this.sessionPath || !this.stop) return;
+    try { renameSync(stopRequestPath(this.sessionPath), stoppingPath(this.sessionPath)); }
+    catch { return; }
+    void this.stop("stop-command");
+  }
+
   async tickHeartbeat() {
     if (this.heartbeatRunning || this.stopping) return;
-    if (this.sessionPath && this.stop && existsSync(stopRequestPath(this.sessionPath))) {
-      void this.stop("stop-command");
-      return;
-    }
     this.heartbeatRunning = true;
     try { await this.heartbeat(); }
     finally { this.heartbeatRunning = false; }
@@ -1169,14 +1194,18 @@ async function main() {
     if (!sessionPath) fail("stop requires --session=<session.json>");
     loadSessionManifest(sessionPath);
     const timeoutMs = Number(option("timeout-ms", "20000"));
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) fail("stop --timeout-ms must be a positive integer");
     const marker = stoppedMarkerPath(sessionPath);
     rmSync(marker, { force: true });
     writeFileSync(stopRequestPath(sessionPath), new Date().toISOString());
     const deadline = Date.now() + timeoutMs;
     while (!existsSync(marker)) {
       if (Date.now() >= deadline) {
+        if (existsSync(stoppingPath(sessionPath))) {
+          fail(`driver acknowledged the stop but has not finished after ${timeoutMs}ms; it is still cleaning up, run stop again to keep waiting`);
+        }
         rmSync(stopRequestPath(sessionPath), { force: true });
-        fail(`driver did not stop within ${timeoutMs}ms; is it still running for this session?`);
+        fail(`driver did not pick up the stop within ${timeoutMs}ms; is it still running for this session?`);
       }
       await new Promise((done) => setTimeout(done, 200));
     }

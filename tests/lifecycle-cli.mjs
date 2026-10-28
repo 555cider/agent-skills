@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -86,7 +86,18 @@ try {
   );
   assert.equal(cancelled.status, 0, cancelled.stderr);
 
+  // `stop` with no driver behind the session: a bad timeout is refused, and a real one
+  // reports that nothing picked the request up instead of hanging or claiming a stop.
+  const badTimeout = run(["stop", `--session=${session.sessionPath}`, "--timeout-ms=abc"]);
+  assert.equal(badTimeout.status, 2);
+  assert.match(badTimeout.stdout + badTimeout.stderr, /positive integer/);
+  const unanswered = run(["stop", `--session=${session.sessionPath}`, "--timeout-ms=600"]);
+  assert.equal(unanswered.status, 2);
+  assert.match(unanswered.stdout + unanswered.stderr, /did not pick up the stop/);
+  assert.equal(existsSync(join(dirname(session.sessionPath), "stop-request")), false, "an unanswered stop left its request behind");
+
   const help = run(["help"]);
+  assert.match(help.stdout, /stop --session/);
   assert.match(help.stdout, /queue --session/);
   assert.match(help.stdout, /resume --session/);
   assert.match(help.stdout, /cancel --request/);

@@ -45,7 +45,9 @@ resolve to exactly one page. Never fall back to the first tab.
 `start` and `attach` emit continuously. Keep that process running while editing so reloads,
 additional requests, iframe picks, and acknowledgements have no watcher gap. Stop it once at the
 end with `stop --session=PATH`, which returns after the driver has removed the page runtime and,
-for `start`, closed only the temporary Chrome instance it created and its profile. Ctrl+C or
+for `start`, closed only the temporary Chrome instance it created and its profile. If it times
+out after the driver acknowledged the request, cleanup is still running: run `stop` again rather
+than killing the driver. Ctrl+C or
 SIGINT/SIGTERM does the same on POSIX; killing the process on Windows runs no cleanup at all.
 
 `resume` reopens the exact `session.json`, target id, debug port, binding, artifact root, and pinned
