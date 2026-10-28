@@ -709,8 +709,16 @@ async function commandRecord(options) {
   catch (error) { fail(EXIT_ERROR, error.message); }
   assertHostAllowed(config.baseUrl, config.allowHosts);
 
-  const port = Number(options.port) || 9222;
   const launch = options.launch === true || options.launch === 'true';
+  // `0` is a real request — "let the OS pick" — so it cannot fall through to the default.
+  let port = 9222;
+  if (options.port !== undefined && options.port !== true) {
+    port = Number(options.port);
+    if (String(options.port).trim() === '' || !Number.isInteger(port) || port < 0 || port > 65535) {
+      fail(EXIT_ERROR, `invalid --port ${JSON.stringify(options.port)}; expected 0..65535`);
+    }
+  }
+  if (port === 0 && !launch) fail(EXIT_ERROR, '--port 0 picks a free port for a browser this command opens; add --launch, or name the port of the running browser');
   const forMs = options.for ? Number(options.for) : null;
   const quiet = options.quiet === true || options.quiet === 'true';
   const progress = line => { if (!quiet) process.stderr.write(line + '\n'); };
