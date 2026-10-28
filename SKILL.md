@@ -1,6 +1,6 @@
 ---
 name: dom-picker
-description: Use when the user wants to fix a visible UI issue in a running web app and points at, selects, or precisely describes a specific on-screen element or region ("this button", "that spacing", "the card I picked"). Maps rendered DOM evidence back to local frontend source, applies only a high-confidence safe edit, and verifies the same target in Chromium. Does not cover whole-page visual audits, backend or behavior-only bugs, canvas-only content, blind edits without a concrete rendered target, or work without browser and repository access.
+description: Use when the user points at, selects, or precisely describes one on-screen element in a running web app ("this button", "the card I picked") and wants it fixed in source and verified in Chromium. Not for whole-page audits, backend or behavior-only bugs, canvas-only content, or blind edits.
 license: MIT
 compatibility: Requires a local repository, Node 22 or newer, and browser automation. The full path requires Chrome or Chromium with CDP; other browsers support evidence-only fallback.
 ---
