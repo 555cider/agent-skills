@@ -30,6 +30,7 @@ from .store import (
     prunable_done,
     required_closure,
     validate_graph,
+    validate_plan_set,
 )
 
 
@@ -355,7 +356,7 @@ def _finish_mutation(
     data: dict[str, object] | None = None,
     extra_diagnostics: Iterable[Diagnostic] = (),
 ) -> int:
-    errors = [item for item in validate_graph(after) if item.severity == "error"]
+    errors = [item for item in validate_plan_set(after) if item.severity == "error"]
     if errors:
         return _emit(
             ok=False,

@@ -134,21 +134,7 @@ def _string_array(
             Diagnostic("error", "invalid_metadata", f"{key} must be an array of strings", plan_id)
         )
         return ()
-    cleaned = tuple(item.strip() for item in value)
-    if any(not item for item in cleaned):
-        diagnostics.append(
-            Diagnostic("error", "invalid_metadata", f"{key} contains an empty value", plan_id)
-        )
-    if any("\n" in item or "\r" in item for item in cleaned):
-        diagnostics.append(
-            Diagnostic("error", "invalid_metadata", f"{key} values must be single-line", plan_id)
-        )
-    folded = [item.casefold() for item in cleaned]
-    if len(folded) != len(set(folded)):
-        diagnostics.append(
-            Diagnostic("error", "duplicate_metadata", f"{key} contains duplicate values", plan_id)
-        )
-    return cleaned
+    return tuple(item.strip() for item in value)
 
 
 def _validate_scope(plan_id: str, patterns: Iterable[str]) -> list[Diagnostic]:
@@ -176,6 +162,82 @@ def _validate_scope(plan_id: str, patterns: Iterable[str]) -> list[Diagnostic]:
             diagnostics.append(
                 Diagnostic("error", "invalid_scope", str(exc), plan_id)
             )
+    return diagnostics
+
+
+def field_diagnostics(
+    plan_id: str,
+    *,
+    status: object,
+    requires: tuple[str, ...],
+    replaces: tuple[str, ...],
+    scope: tuple[str, ...],
+    tags: tuple[str, ...],
+    path: str | None = None,
+) -> list[Diagnostic]:
+    """Per-plan metadata checks; the single implementation for parsed and new plans."""
+    diagnostics: list[Diagnostic] = []
+    if status not in VALID_STATUSES:
+        diagnostics.append(
+            Diagnostic("error", "invalid_status", "status must be 'active' or 'done'", plan_id, path)
+        )
+    for key, values in (
+        ("requires", requires),
+        ("replaces", replaces),
+        ("scope", scope),
+        ("tags", tags),
+    ):
+        if any(not item for item in values):
+            diagnostics.append(
+                Diagnostic("error", "invalid_metadata", f"{key} contains an empty value", plan_id, path)
+            )
+        if any("\n" in item or "\r" in item for item in values):
+            diagnostics.append(
+                Diagnostic("error", "invalid_metadata", f"{key} values must be single-line", plan_id, path)
+            )
+        folded = [item.casefold() for item in values]
+        if len(folded) != len(set(folded)):
+            diagnostics.append(
+                Diagnostic("error", "duplicate_metadata", f"{key} contains duplicate values", plan_id, path)
+            )
+    if not scope and not tags:
+        diagnostics.append(
+            Diagnostic("error", "unroutable_plan", "at least one scope or tag is required", plan_id, path)
+        )
+    for item in _validate_scope(plan_id, scope):
+        diagnostics.append(replace(item, path=path))
+    for relation, values in (("requires", requires), ("replaces", replaces)):
+        for value in values:
+            if not ID_RE.fullmatch(value):
+                diagnostics.append(
+                    Diagnostic(
+                        "error",
+                        "invalid_relation_id",
+                        f"{relation} contains invalid plan ID {value!r}",
+                        plan_id,
+                        path,
+                    )
+                )
+    return diagnostics
+
+
+def validate_plan(plan: Plan) -> list[Diagnostic]:
+    """Field checks for a plan built in memory (create, update) before it is written."""
+    diagnostics: list[Diagnostic] = []
+    if not ID_RE.fullmatch(plan.id):
+        diagnostics.append(
+            Diagnostic("error", "invalid_id", "plan ID must be lowercase kebab-case", plan.id)
+        )
+    diagnostics.extend(
+        field_diagnostics(
+            plan.id,
+            status=plan.status,
+            requires=plan.requires,
+            replaces=plan.replaces,
+            scope=plan.scope,
+            tags=plan.tags,
+        )
+    )
     return diagnostics
 
 
@@ -274,45 +336,23 @@ def parse_plan(path: Path, root: Path) -> tuple[Plan | None, list[Diagnostic]]:
             )
         )
 
-    status = metadata.get("status")
-    if status not in VALID_STATUSES:
-        diagnostics.append(
-            Diagnostic(
-                "error",
-                "invalid_status",
-                "status must be 'active' or 'done'",
-                plan_id,
-                relative,
-            )
-        )
-        status = "active"
+    raw_status = metadata.get("status")
     requires = _string_array(metadata, "requires", plan_id=plan_id, diagnostics=diagnostics)
     replaces = _string_array(metadata, "replaces", plan_id=plan_id, diagnostics=diagnostics)
     scope = _string_array(metadata, "scope", plan_id=plan_id, diagnostics=diagnostics)
     tags = _string_array(metadata, "tags", plan_id=plan_id, diagnostics=diagnostics)
-    if not scope and not tags:
-        diagnostics.append(
-            Diagnostic(
-                "error",
-                "unroutable_plan",
-                "at least one scope or tag is required",
-                plan_id,
-                relative,
-            )
+    diagnostics.extend(
+        field_diagnostics(
+            plan_id,
+            status=raw_status,
+            requires=requires,
+            replaces=replaces,
+            scope=scope,
+            tags=tags,
+            path=relative,
         )
-    diagnostics.extend(_validate_scope(plan_id, scope))
-    for relation, values in (("requires", requires), ("replaces", replaces)):
-        for value in values:
-            if not ID_RE.fullmatch(value):
-                diagnostics.append(
-                    Diagnostic(
-                        "error",
-                        "invalid_relation_id",
-                        f"{relation} contains invalid plan ID {value!r}",
-                        plan_id,
-                        relative,
-                    )
-                )
+    )
+    status = raw_status if raw_status in VALID_STATUSES else "active"
 
     body = content[match.end():]
     h1_matches = list(H1_RE.finditer(body))

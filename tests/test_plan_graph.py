@@ -743,6 +743,33 @@ x
         codes = {item["code"] for item in payload["diagnostics"]}
         self.assertTrue({"legacy_store", "nested_store", "invalid_json"} <= codes)
 
+    def test_doctor_reports_each_field_error_once(self) -> None:
+        # parse_plan owns per-field checks; the graph pass used to repeat them, so doctor
+        # printed every error twice -- and the second copy accepted scope ".".
+        self.create("core", tags=("core",))
+        path = self.plan_file("core")
+        content = path.read_text(encoding="utf-8").replace(
+            '"tags": [\n    "core"\n  ]', '"tags": ["core", "Core"]'
+        ).replace('"scope": []', '"scope": ["."]')
+        self.assertIn('"scope": ["."]', content)
+        self.assertIn('"Core"', content)
+        path.write_text(content, encoding="utf-8")
+        payload, _ = self.run_cli("doctor", expect=1)
+        errors = [
+            (item["code"], item["message"])
+            for item in payload["diagnostics"]
+            if item["severity"] == "error"
+        ]
+        self.assertEqual(len(errors), len(set(errors)), errors)
+        codes = [code for code, _ in errors]
+        self.assertEqual(codes.count("invalid_scope"), 1)
+        self.assertEqual(codes.count("duplicate_metadata"), 1)
+
+    def test_create_rejects_dot_scope(self) -> None:
+        payload, _ = self.run_cli("create", "core", "--title", "Core", "--scope", ".", expect=1)
+        self.assertEqual([item["code"] for item in payload["diagnostics"]], ["invalid_scope"])
+        self.assertFalse(self.plan_file("core").exists())
+
     def test_doctor_ignores_store_in_nested_git_worktree(self) -> None:
         nested = self.root / ".worktrees" / "feature"
         nested.mkdir(parents=True)
