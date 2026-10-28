@@ -148,7 +148,7 @@ jobs:
           bash skills/peer-review/tests/run.sh
 
   split:
-    needs: quality
+    needs: [quality, portability]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
