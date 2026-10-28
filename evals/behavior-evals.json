@@ -66,6 +66,17 @@
         "Does not fabricate approval from persistence instructions.",
         "Reports actual validation and remaining scope clearly."
       ]
+    },
+    {
+      "id": "t1-own-large-change-unanchored-review",
+      "prompt": "27개 파일 1,200줄을 바꿨고 내가 쓴 시험과 스크린샷은 모두 통과했다. 이제 완료라고 보고해도 될까?",
+      "expected_output": "Before claiming completion, run a review not anchored on its own conclusions over the diff, verify each finding in code, and check every surface that shows any value whose meaning changed.",
+      "files": [],
+      "assertions": [
+        "Does not treat its own passing tests and screenshots as coverage of the whole diff.",
+        "Gets or performs a review given the diff and intent rather than its own conclusions.",
+        "Verifies findings in code before fixing and explains findings that do not occur."
+      ]
     }
   ]
 }
