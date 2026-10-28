@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'reserve-ports.py'
@@ -57,6 +58,30 @@ class PortReservations(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len({r.stdout.strip() for r in results}), 4)
         self.assertEqual(len(json.loads((self.root / 'registry.json').read_text())), 4)
+
+    def test_fresh_lock_file_survives_simultaneous_first_use(self):
+        # Regression: the lock used to seed a byte into a fresh lock file, and a process could
+        # flush that byte into the region another had just locked; Windows answers EACCES.
+        # Start several lockers at the same instant against a lock file nobody has created.
+        helper = '\n'.join([
+            'import importlib.util, os, sys, time',
+            'from pathlib import Path',
+            'spec = importlib.util.spec_from_file_location("rp", sys.argv[1])',
+            'rp = importlib.util.module_from_spec(spec); spec.loader.exec_module(rp)',
+            'lock, start = Path(sys.argv[2]), float(sys.argv[3])',
+            'while time.time() < start: pass',
+            'with rp.registry_lock(lock):',
+            '    fd = os.open(lock.with_name("held"), os.O_CREAT | os.O_EXCL | os.O_WRONLY)',
+            '    time.sleep(0.002); os.close(fd); os.unlink(lock.with_name("held"))',
+        ])
+        for attempt in range(3):
+            lock = self.root / f'fresh-{attempt}.lock'
+            start = time.time() + 1.0
+            procs = [subprocess.Popen([sys.executable, '-c', helper, str(SCRIPT), str(lock), str(start)],
+                                      stderr=subprocess.PIPE, text=True) for _ in range(8)]
+            for proc in procs:
+                _, err = proc.communicate()
+                self.assertEqual(proc.returncode, 0, err)
 
     def test_removed_reservation_is_reclaimed(self):
         first = self.reserve('old')

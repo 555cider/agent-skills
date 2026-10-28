@@ -17,11 +17,11 @@ import time
 @contextmanager
 def registry_lock(path):
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Nothing is ever written to the lock file. Seeding a byte into a fresh one raced: a second
+    # process could flush its seed byte into the region a first process had just locked, and
+    # Windows fails that write with EACCES. Both lock APIs accept a region past end of file, so
+    # an empty lock file works as is.
     with path.open('a+b') as handle:
-        handle.seek(0, 2)
-        if handle.tell() == 0:
-            handle.write(b'0')
-            handle.flush()
         deadline = time.monotonic() + 10
         while True:
             try:
