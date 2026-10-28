@@ -154,7 +154,7 @@ else
   pass "Chrome sandbox is enabled by default"
 fi
 grep -qF -- "--allow-no-sandbox" "$RUNNER" && pass "unsafe sandbox override is explicit" || fail "unsafe sandbox override is explicit" "missing flag"
-grep -qF "CDP command timeout" "$RUNNER" && pass "CDP requests have a deadline" || fail "CDP requests have a deadline" "missing timeout"
+grep -qF "CDP command timeout" "$HERE/../scripts/chrome-cdp.mjs" && pass "CDP requests have a deadline" || fail "CDP requests have a deadline" "missing timeout"
 
 set +e
 python3 "$PY_RUNNER" http://example.invalid --probes >"$WORK/probes.out" 2>"$WORK/probes.err"

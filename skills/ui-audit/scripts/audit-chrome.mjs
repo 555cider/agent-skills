@@ -16,18 +16,14 @@
  * Exit code: non-zero if a cell is unverified, an un-baselined Fail exists, or a
  * required-review advisory remains unresolved.
  */
-import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as resolvePath } from 'node:path';
-import { tmpdir } from 'node:os';
 import { assessRuleCoverage } from './rule-coverage.mjs';
+import { CDP, closeChrome, launchChrome, requireWebSocket, sleep } from './chrome-cdp.mjs';
 
-if (typeof WebSocket === 'undefined') {
-  console.error('ui-audit audit-chrome.mjs requires Node >= 22 (built-in WebSocket). Detected ' + process.version +
-    '. Upgrade Node; the Python compatibility shim delegates to this same Node runner.');
-  process.exit(2);
-}
+requireWebSocket('ui-audit audit-chrome.mjs',
+  'Upgrade Node; the Python compatibility shim delegates to this same Node runner.');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AUDIT_JS = readFileSync(join(HERE, 'audit.js'), 'utf8');
@@ -222,129 +218,13 @@ for (const state of Object.keys(stateMocks)) {
 
 mkdirSync(join(outDir, 'screens'), { recursive: true });
 
-// ---------- locate chrome ----------
-function findChrome() {
-  if (process.env.CHROME && existsSync(process.env.CHROME)) return process.env.CHROME;
-  const names = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome', 'microsoft-edge'];
-  const which = process.platform === 'win32' ? 'where' : 'which';
-  for (const n of names) {
-    const r = spawnSync(which, [n], { encoding: 'utf8' });
-    if (r.status === 0 && r.stdout.trim()) return r.stdout.trim().split(/\r?\n/)[0];
-  }
-  const abs = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    'C:/Program Files/Google/Chrome/Application/chrome.exe',
-    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-    (process.env.LOCALAPPDATA || '') + '/Google/Chrome/Application/chrome.exe'];
-  for (const a of abs) if (a && existsSync(a)) return a;
-  return 'google-chrome';
-}
-
-// ---------- minimal CDP client over built-in WebSocket ----------
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// Chrome is a process tree, not a process: killing the launcher leaves the
-// zygote and renderers running, reparented and still writing the profile we
-// are about to delete. Windows already got the tree treatment via taskkill /T;
-// POSIX gets it by launching Chrome as its own process-group leader
-// (detached) so the whole group can be signalled with a negative pid.
-const CHROME_DETACHED = process.platform !== 'win32';
-
-function killChromeTree(proc) {
-  if (!proc.pid) return;
-  try {
-    if (process.platform === 'win32') { spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F']); return; }
-    if (CHROME_DETACHED) { process.kill(-proc.pid, 'SIGKILL'); return; }
-  } catch { /* group already gone — fall through to the single-process kill */ }
-  try { proc.kill('SIGKILL'); } catch {}
-}
-
-async function launchChrome() {
-  const bin = findChrome();
-  const profile = mkdtempSync(join(tmpdir(), 'ui-audit-profile-'));
-  const args = [...renderingChromeArgs, '--no-first-run',
-    '--disable-extensions', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
+// ---------- chrome ----------
+// Launch, process-tree cleanup, and the CDP client live in chrome-cdp.mjs, shared verbatim
+// with the dom-picker and screen-map skills.
+function launchAuditChrome() {
+  const args = [...renderingChromeArgs, '--no-first-run', '--disable-extensions'];
   if (allowNoSandbox) args.splice(renderingChromeArgs.length, 0, '--no-sandbox');
-  const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: CHROME_DETACHED });
-  let wsUrl;
-  try { wsUrl = await new Promise((resolve, reject) => {
-    let buf = '';
-    const to = setTimeout(() => reject(new Error('timed out waiting for DevTools endpoint; is Chrome installed? set $CHROME')), 15000);
-    proc.on('error', error => { clearTimeout(to); reject(new Error('failed to start Chrome: ' + error.message)); });
-    proc.stderr.on('data', d => {
-      buf += d.toString();
-      const m = buf.match(/ws:\/\/[^\s]+/);
-      if (m) { clearTimeout(to); resolve(m[0]); }
-    });
-    proc.on('exit', c => { clearTimeout(to); reject(new Error('Chrome exited (' + c + ') before listening')); });
-  }); } catch (error) {
-    killChromeTree(proc);
-    // A profile Chrome still holds open must not replace the launch error with EBUSY.
-    try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {}
-    throw error;
-  }
-  return { proc, wsUrl, profile };
-}
-
-class CDP {
-  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); this.waiters = []; }
-  static async connect(wsUrl) {
-    const ws = new WebSocket(wsUrl);
-    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws connect failed')); });
-    const cdp = new CDP(ws);
-    const disconnect = reason => {
-      const error = new Error('CDP WebSocket ' + reason);
-      for (const pending of cdp.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
-      cdp.pending.clear();
-      for (const waiter of cdp.waiters) waiter({ method: '__disconnect__' });
-      cdp.waiters = [];
-    };
-    ws.onerror = () => disconnect('error');
-    ws.onclose = () => disconnect('closed');
-    ws.onmessage = ev => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && cdp.pending.has(msg.id)) {
-        const { resolve, reject, timer } = cdp.pending.get(msg.id); cdp.pending.delete(msg.id); clearTimeout(timer);
-        msg.error ? reject(new Error(msg.method + ': ' + msg.error.message)) : resolve(msg.result);
-      } else if (msg.method) {
-        cdp.waiters = cdp.waiters.filter(w => !w(msg));
-      }
-    };
-    return cdp;
-  }
-  send(method, params = {}, sessionId) {
-    const id = ++this.id;
-    const payload = { id, method, params };
-    if (sessionId) payload.sessionId = sessionId;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('CDP command timeout: ' + method)); }, 20000);
-      this.pending.set(id, { resolve, reject, timer });
-      try { this.ws.send(JSON.stringify(payload)); }
-      catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
-    });
-  }
-  once(method, sessionId, timeout = 20000) { return this.onceFiltered(method, sessionId, null, timeout); }
-  onceFiltered(method, sessionId, filter, timeout = 20000) {
-    return new Promise((resolve, reject) => {
-      const to = setTimeout(() => { reject(new Error('event timeout: ' + method)); cleanup(); }, timeout);
-      const w = msg => {
-        if (msg.method === method && (!sessionId || msg.sessionId === sessionId) && (!filter || filter(msg.params))) {
-          clearTimeout(to); resolve(msg.params); return true;
-        }
-        return false;
-      };
-      const cleanup = () => { this.waiters = this.waiters.filter(x => x !== w); };
-      this.waiters.push(w);
-    });
-  }
-  listen(method, sessionId, handler) {
-    const w = msg => {
-      if (msg.method === method && (!sessionId || msg.sessionId === sessionId)) handler(msg.params);
-      return false;
-    };
-    this.waiters.push(w);
-    return () => { this.waiters = this.waiters.filter(x => x !== w); };
-  }
+  return launchChrome({ args, profilePrefix: 'ui-audit-profile-' });
 }
 
 // ---------- aggregation ----------
@@ -1027,25 +907,14 @@ async function mapLimit(items, limit, fn) {
 }
 
 const startedAt = Date.now();
-const { proc, wsUrl, profile } = await launchChrome();
-// Chrome runs in its own process group on POSIX, so a terminal Ctrl-C no longer reaches
-// it: without these handlers an interrupted audit leaves Chrome running and its
-// temporary profile on disk.
-for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
-  process.once(signal, () => {
-    console.error(`
-interrupted (${signal}): closing Chrome`);
-    killChromeTree(proc);
-    try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {}
-    if (existsSync(profile)) console.error(`WARNING: Chrome temporary profile could not be removed: ${profile}`);
-    process.exit(code);
-  });
-}
+// A Ctrl-C or SIGTERM mid-run is covered by chrome-cdp.mjs: it kills the Chrome tree,
+// removes the temporary profile, and exits 130/143.
+const chrome = await launchAuditChrome();
 let cdp;
 let results;
 try {
   // Inside the try: a socket that never opens must still take Chrome and its profile down.
-  cdp = await CDP.connect(wsUrl);
+  cdp = await CDP.connect(chrome.wsUrl);
   results = await mapLimit(specs, workers, async spec => {
     const { route, vp, theme, state, adaptation } = spec;
     const url = baseUrl + route;
@@ -1267,26 +1136,9 @@ try {
     }
   });
 } finally {
-  try { if (cdp) cdp.ws.close(); } catch {}
-  killChromeTree(proc);
-  await new Promise(resolve => {
-    if (proc.exitCode !== null) return resolve();
-    const timer = setTimeout(resolve, 1000);
-    proc.once('exit', () => { clearTimeout(timer); resolve(); });
-  });
-  // Removal has to be confirmed, not merely attempted: rmSync unlinks files a
-  // still-shutting-down renderer holds open and reports success, and that
-  // renderer then writes the profile back. Loop until the directory is gone
-  // AND stays gone, so the check below reports what is actually on disk.
-  for (let attempt = 0; attempt < 10; attempt++) {
-    try { rmSync(profile, { recursive: true, force: true }); } catch {}
-    if (!existsSync(profile)) {
-      await sleep(50);
-      if (!existsSync(profile)) break;
-    }
-    await sleep(100 * (attempt + 1));
-  }
-  if (existsSync(profile)) console.error(`WARNING: Chrome temporary profile could not be removed: ${profile}`);
+  if (cdp) cdp.close();
+  // Confirms the profile is gone and warns on stderr when it is not.
+  await closeChrome(chrome);
 }
 
 // Aggregate across cells while preserving routes and the worst-severity evidence.
