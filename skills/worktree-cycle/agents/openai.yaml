@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worktree Cycle"
+  short_description: "Start a git worktree from the local integration branch and squash-merge it back."
+  default_prompt: "Use $worktree-cycle to start or finish isolated work in a git worktree. Start with scripts/start-worktree.sh, which branches from the local integration branch HEAD (default: the main worktree's branch), asserts that base, and reserves a dev-server port block; run only the stack you change on those ports and never restart a server you did not start. Return to the main worktree as its own step, then finish with scripts/finish-worktree.sh to squash-merge and remove the branch and worktree. Report cleanup exactly as it happened and never push."
