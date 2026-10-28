@@ -18,12 +18,14 @@ files.
 ## Start with context
 
 Run commands from anywhere inside the Git worktree. Replace `<skill-dir>` with
-the directory containing this file.
+the directory containing this file. `bin/plan-graph` picks a working Python
+3.10+ (`python3`, `python`, then `py -3`; override with `PLAN_GRAPH_PYTHON`).
+From PowerShell or cmd, call `<skill-dir>\bin\plan-graph.cmd` instead.
 
 For a task that has not changed files yet, route its text and any known paths:
 
 ```bash
-python3 <skill-dir>/scripts/plan-graph.py context \
+<skill-dir>/bin/plan-graph context \
   --query "add retry recovery to checkout" \
   --path apps/backend/checkout/service.py
 ```
@@ -31,7 +33,7 @@ python3 <skill-dir>/scripts/plan-graph.py context \
 With no selectors, `context` uses staged, unstaged, and untracked Git paths:
 
 ```bash
-python3 <skill-dir>/scripts/plan-graph.py context
+<skill-dir>/bin/plan-graph context
 ```
 
 An explicit query/path does not mix in an unrelated dirty worktree unless you
@@ -92,7 +94,7 @@ replacement lineage, and unfilled sections for one plan — run it before
 deciding whether to trust, revise, or replace a specific plan:
 
 ```bash
-python3 <skill-dir>/scripts/plan-graph.py why checkout-recovery
+<skill-dir>/bin/plan-graph why checkout-recovery
 ```
 
 ## Maintain plans through the CLI
@@ -100,7 +102,7 @@ python3 <skill-dir>/scripts/plan-graph.py why checkout-recovery
 Create the metadata and template, then edit the Markdown decision content:
 
 ```bash
-python3 <skill-dir>/scripts/plan-graph.py create checkout-recovery \
+<skill-dir>/bin/plan-graph create checkout-recovery \
   --title "Checkout recovery" \
   --scope "apps/backend/checkout/**" \
   --tag checkout \
@@ -110,7 +112,7 @@ python3 <skill-dir>/scripts/plan-graph.py create checkout-recovery \
 Use `update` for metadata and title changes; it preserves the plan body:
 
 ```bash
-python3 <skill-dir>/scripts/plan-graph.py update checkout-recovery \
+<skill-dir>/bin/plan-graph update checkout-recovery \
   --add-scope "apps/frontend/checkout/**" \
   --remove-require legacy-errors
 ```
@@ -135,8 +137,8 @@ history; deletion also saves the exact current bytes in a recovery directory.
 Before a command that can delete files, inspect its exact change set:
 
 ```bash
-python3 <skill-dir>/scripts/plan-graph.py close checkout-recovery --dry-run
-python3 <skill-dir>/scripts/plan-graph.py close checkout-recovery
+<skill-dir>/bin/plan-graph close checkout-recovery --dry-run
+<skill-dir>/bin/plan-graph close checkout-recovery
 ```
 
 Apply the same dry-run-first pattern to `drop` and `gc`.
@@ -162,8 +164,8 @@ restore only the intended file. Retention is manual, never automatic deletion.
 Run structural validation after editing a plan body or completing CLI changes:
 
 ```bash
-python3 <skill-dir>/scripts/plan-graph.py doctor
-python3 <skill-dir>/scripts/plan-graph.py status
+<skill-dir>/bin/plan-graph doctor
+<skill-dir>/bin/plan-graph status
 ```
 
 `doctor` checks strict metadata, required headings, path safety, dangling

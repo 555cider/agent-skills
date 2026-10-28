@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Plan Graph launcher: finds a working Python 3.10+ and runs the bundled CLI.
+# On Windows `python3` is often missing or the Microsoft Store stub, which exits
+# without running anything, so each candidate is probed before it is used.
+set -euo pipefail
+
+script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/plan-graph.py"
+probe='import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
+
+run_with() {
+  if "$@" -c "$probe" >/dev/null 2>&1; then
+    exec "$@" "$script" "${cli_args[@]}"
+  fi
+}
+
+cli_args=("$@")
+if [ -n "${PLAN_GRAPH_PYTHON:-}" ]; then
+  exec "$PLAN_GRAPH_PYTHON" "$script" "$@"
+fi
+command -v python3 >/dev/null 2>&1 && run_with python3
+command -v python >/dev/null 2>&1 && run_with python
+command -v py >/dev/null 2>&1 && run_with py -3
+echo "plan-graph: no Python 3.10+ found (tried python3, python, py -3); set PLAN_GRAPH_PYTHON" >&2
+exit 127

@@ -7,6 +7,7 @@ contributors changing the skill itself.
 ## Module map
 
 ```text
+bin/plan-graph(.cmd)       launchers: probe for a working Python 3.10+
 scripts/plan-graph.py      entry point (delegates to plan_graph.cli)
 scripts/plan_graph/
   model.py                 Plan/Diagnostic dataclasses, strict-JSON frontmatter,
