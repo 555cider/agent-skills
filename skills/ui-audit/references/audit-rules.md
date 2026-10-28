@@ -17,6 +17,55 @@ caps, and optional advisory caps are distributed round-robin across rules.
 
 ---
 
+## Cross-rule notes
+
+Behaviour and cautions that span several rules or decide how a result is read. `SKILL.md` points here instead of repeating them.
+
+### Colour parsing and text contrast
+
+Computed colours are read as `rgb()`/`rgba()`, `oklab()`, `oklch()`, and `color(srgb …)`. That list is not cosmetic: Chrome returns modern colour functions verbatim and Tailwind v4 emits `oklab()` for every palette entry, so a parser limited to `rgb()` returns "no colour" for such a build — contrast checks skip silently and a modal backdrop measures as absent while it paints correctly. Silence from the colour rules on a modern stack is a reason to check the parser, not evidence of a clean screen.
+
+WCAG text contrast is a confirmed `Fail` below 4.5:1 for normal text or 3:1 for large text, including currently rendered placeholder text. Audit placeholders only while `:placeholder-shown`, and composite computed `::placeholder` opacity into its foreground alpha. A gradient, image, element/ancestor opacity, filter, blend mode, mask, inset shadow, backdrop filter, or otherwise indeterminate paint chain remains a required visual advisory because CSSOM cannot prove the final composited pixels.
+
+### Adaptations and exemptions
+
+- `zoom-200` halves the desktop CSS viewport and doubles its scale, then reruns layout, target, and keyboard checks.
+- `reflow-320` uses a 320 CSS-px desktop viewport and fails page-level horizontal scrolling. An intentionally two-dimensional surface must scroll internally or use `data-ui-audit-reflow-exempt="true"` with a documented reason.
+- Target size is checked in every pointer-capable layout. A target below 24×24 CSS px fails only when the WCAG spacing exception also fails. Inline text links are exempt; essential/equivalent cases may use `data-ui-audit-target-exempt="true"` or a whitelist entry.
+- The 24–44px mobile comfort range is an optional advisory, not a conformance failure.
+- The detector intentionally does not recurse into open shadow roots or inspect pixels/semantics inside `iframe`, `canvas`, `object`, or `embed`. Every visible such surface produces a required `uninspectedSurface` advisory. Resolve it with separate rendered evidence, or add `data-ui-audit-surface-exempt="<reason>"` to that exact host only when equivalent evidence already exists; an empty reason does not exempt it.
+
+- Widget-contract rules that depend on screen size — `multiRowTabs` and `desktopHiddenNav` — are skipped on mobile cells and in `reflow-320`. Wrapped tabs and a hamburger are the correct answer on a narrow screen, not a defect.
+- `modalEscapeUnhandled` is proven with trusted `Escape` input and is the only widget-contract `Fail`. The probe closes dialogs, so it runs last in the cell; nothing reads the post-Escape DOM as evidence. Its result lives in `coverage.matrix[].escapeProbe`, and a probe error marks the cell unverified instead of passing. A dialog that genuinely must not be dismissible uses `data-ui-audit-escape-exempt="<reason>"`; an empty reason does not exempt it.
+- Other widget-contract exemptions are `data-ui-audit-toggle-exempt` (a switch that really is deferred by design) and `data-ui-audit-nav-exempt` (an app rail or canvas tool with no top-level navigation to show).
+- Copy-convention rules (`koreanButtonVerbForm`, `buttonLabelPunctuation`, `genericConfirmLabel`, `mixedSpeechLevel`, `mixedValueFormat`, `freeformValueBadge`) read wording, not pixels, and stay optional `Polish` — except `genericConfirmLabel` on a destructive dialog, which is `Risk`. Deliberate copy uses `data-ui-audit-copy-exempt="<reason>"`; a team that accepts specific Korean button words lists them in `auditConfig.copy.koButtonAllow`. Korean action-noun wording is opt-in through `auditConfig.copy.koButtonNounStyle: true`, never a universal requirement; turn it on when the user's instructions or memory state that convention (e.g. "수정·선택·업로드, not 고치기·고르기·올리기"). The rule reads buttons only, so under that convention also review dialog titles, tooltips, and notifications for the same `~기` forms by hand. Hangul loanwords that most readers know (업로드, 다운로드, 텍스트, 메타데이터) are still Korean product language, not a switch to English. Natural actions such as 더보기 and 닫기 remain accepted. Preserve the product language and terminology; never switch to English to satisfy a wording preference.
+
+### Runner behaviour that shapes results
+
+- `nonTextContrast` recognizes a transparent, borderless input whose immediate wrapper provides a measured 3:1 field boundary; check the wrapper before changing an intentional chip-input design.
+- The keyboard probe also measures a changed outline on the focused control's immediate wrapper, as used by `:focus-within` row links and selects; a distant ancestor highlight is not sufficient.
+- Keyboard traversal counts the summary of closed `<details>` and excludes its hidden descendants; counting those descendants makes a valid dialog focus trap look incomplete.
+
+### Cautions when reading results
+
+- Unioning rule names across scroll positions so a top report masks a missing rule in a later viewport report.
+- Auditing placeholder styles on a populated or unsupported control where placeholder text is not rendered.
+- Treating light-DOM coverage as inspection of shadow-root, frame, canvas, object, or embed contents.
+- Treating a typography recommendation such as 1.5 body line-height or one sans-serif family as a WCAG failure.
+- Claiming a modal trap from DOM structure without trusted forward and reverse Tab input.
+- Reading the DOM after the Escape probe and treating it as cell evidence; the probe closes dialogs on purpose and runs last for that reason.
+- Reporting wrapped tabs or a hamburger on a mobile cell; both rules are desktop-only by design.
+- Treating a placeholder as the field's label. `unlabeledInput` covers a control with no accessible name at all; `placeholderAsOnlyLabel` covers the aria-labeled control whose only *visible* naming text vanishes at the first keystroke.
+- Reporting `alt=""` as a missing alternative text. An empty `alt` is an explicit declaration that the image carries no information, which is the right answer for decoration; `imageMissingAlt` fires only when the attribute is absent entirely.
+- Reading a silent `selectAutoSubmit` as proof that nothing auto-submits. Only inline `onchange` attributes are visible to the DOM pass; a listener added with `addEventListener` is not, and belongs to a functional interaction test.
+- Demanding a skip link on a page that already has a `main` landmark. The landmark is itself a bypass mechanism, which is why `skipLinkMissing` fires only when neither route exists.
+- Assuming the text-pattern rules only understand Korean conventions. `unlinkedContactInfo` recognizes `+country`, NANP, and trunk-`0` phone shapes plus internationalized email addresses; `numericColumnAlignment` reads `1,240,000.50`, `1.240.000,50`, and `1 240 000,50` alike; `flagAsLanguageIndicator` matches language vocabulary in more than twenty languages. A locale these still miss is a rule gap to widen, not a screen that passed.
+- Applying Korean button grammar to English. `koreanButtonVerbForm` reads only Hangul labels; English buttons stay verb phrases ("Save draft").
+- Reading a counter or delta pill (`12`, `+12%`) or a removable input chip as `freeformValueBadge`. The rule targets value displays whose field has no closed set.
+- Evaluating `audit.js` after navigation and assuming CLS was measured; install `__uiAuditInstallCLS()` on the new document as the runner does.
+
+---
+
 ## effectiveContrast — `Fail` — auto-measured
 Text legibility vs the real rendered background.
 - **Method:** TreeWalker over text nodes (skips emoji/symbol-only runs via `\p{L}\p{N}`).

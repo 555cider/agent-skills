@@ -63,95 +63,21 @@ and evidence gates. Do not remove a failed cell merely to make the report green.
 5. Apply `references/scrutiny-checklist.md` to composition, thumbnail/squint hierarchy, purposeful color, typography, microcopy, brand coherence, and other subjective residue. Judge composition on the full-height screenshot of the finished page, not a crop around the changed element: moving one block can strand a counter, collapse a grid, or make two cards touch elsewhere on the page.
 6. Report the verified matrix, findings, advisories, and any unverified cells.
 
-## Matrix and deterministic state setup
+## Matrix and state proof
 
-Copy `scripts/audit-config.default.json` and narrow it to the surface under review. The bundled full configuration includes two workers plus desktop `zoom-200` and `reflow-320` adaptations.
+Copy `scripts/audit-config.default.json` and narrow it to the surface under review. The bundled full configuration includes two workers plus desktop `zoom-200` and `reflow-320` adaptations. Force data states with `stateMocks` (CDP Fetch interception; a mock counts only when it actually intercepts) and interaction states with `stateSetups` (structured `click`, `fill`, `press`, `hover`, `check`, `selectOption`, `upload` actions plus a visible `expect`). Configuration, authenticated routes, file-picker uploads, `timeoutMs`, and nested scroll containers are specified in `references/findings-schema.md` under "State setup and proof".
 
-```jsonc
-{
-  "routes": ["/", "/settings"],
-  "viewports": [
-    { "name": "mobile", "width": 390, "height": 844, "isMobile": true, "dpr": 3 },
-    { "name": "desktop", "width": 1280, "height": 900, "isMobile": false, "dpr": 1 }
-  ],
-  "themes": ["light", "dark"],
-  "states": ["default", "empty", "error", "loading"],
-  "adaptations": ["zoom-200", "reflow-320"],
-  "workers": 2,
-  "stateMocks": {
-    "empty": [{ "pattern": "**/api/items", "method": "GET", "minMatches": 1, "body": [] }],
-    "error": [{ "pattern": "**/api/items", "method": "GET", "status": 500, "body": { "error": "forced" } }],
-    "loading": [{ "pattern": "**/api/items", "method": "GET", "hold": true }]
-  },
-  "stateSetups": {
-    "dialog-open": {
-      "actions": [{ "type": "click", "selector": "#open-dialog" }],
-      "expect": [{ "selector": "[role=dialog][aria-modal=true]", "state": "visible" }]
-    }
-  }
-}
-```
+A populated fixture proves only that data reached the DOM:
 
-`routes`, `viewports`, `themes`, `states`, and `scrollPositions` must each be non-empty and valid. `light` and `dark` use media emulation; every other theme name requires a non-empty matching `themeInitScripts.<theme>` driver. Invalid configuration exits 2 before Chrome starts.
+- Data presence also does not prove data density. Include a credible high-density fixture (maximum item counts, longest localized strings, mixed or null values). Treat interaction reachability and content density as separate matrix requirements; prove both when the surface has both risks.
+- A state below the fold in an independently scrolling pane needs the real product action, a visible post-action expectation, and a scroller you confirmed moved; document `top`/`bottom` positions scroll `window` only.
+- The final response also does not prove asynchronous mutation feedback. Hold the exact mutation request, drive the real control, and require visible progress plus a single-flight control state; add a functional interaction test for request count when repeated activation could duplicate work.
 
-Configured or fallback mocks count as coverage only when CDP Fetch actually intercepts the declared request. `method` defaults to `any`; `minMatches` defaults to `1`. Every explicit rule must independently reach its minimum, including rules declared for `default`; one matching rule cannot make unmatched siblings green. Inspect `coverage.matrix[].stateMock.rules[]` for `pattern`, `method`, `minMatches`, `matches`, `held`, and per-rule `status`. The flat `interceptions` count remains an aggregate compatibility field. If an explicit network mock and structured setup are both configured, both must succeed.
+Leave a cell unverified when no deterministic action can reach its state.
 
-Structured actions support `click`, `fill`, `press`, `hover`, `check`, `selectOption`, and `upload`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
+## Adaptations, exemptions, and rule cautions
 
-For local authenticated routes, a fresh browser context starts signed out in every cell. If the app exposes a local demo login, set each route to its login URL with `returnTo` pointing at the target, use `stateSetups.default.actions` to click the login control, and assert a selector unique to the destination page. `waitForSelector` must name an element visible before the setup runs (usually the login control). Confirm the screenshot shows the destination; the report's `route` still names the initial login URL.
-
-`upload` reaches a screen that sits behind a file picker. Its `selector` names the **trigger the user presses**, not the file input — a page commonly creates an `<input type=file>`, clicks it, and removes it again, so the input is never a stable single-match visible selector. The runner intercepts the chooser the press opens and feeds it `files` (paths, resolved against the working directory; a missing path fails the setup instead of timing out).
-
-```jsonc
-"import-dialog": {
-  "timeoutMs": 45000,
-  "actions": [
-    { "type": "click", "selector": "button[aria-label='파일']" },
-    { "type": "upload", "selector": "[data-testid='import-ifc']", "files": ["fixtures/two-storey.ifc"] }
-  ],
-  "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
-}
-```
-
-`timeoutMs` (default 5000) covers each action's target wait and every `expect`. Raise it when the state sits behind work that takes much longer than a paint — a parsed upload, a recognition pass, a scene load. The default is right for a click that opens a menu and wrong for those, and an unreachable state is reported as unverified coverage, so leaving it silently shrinks the matrix.
-
-A populated fixture proves only that data reached the DOM. It does not prove a decision or action state that sits below the fold in an independently scrolling pane. Document `top`/`bottom` positions scroll the document, not nested scroll containers. For those surfaces:
-
-- drive the real primary product action through `stateSetups`;
-- require a visible post-action expectation inside the target state;
-- inspect the post-action screenshots as well as setup proof; and
-- leave the cell unverified when no deterministic product action can reach the state instead of using arbitrary page JavaScript or DOM presence as proof.
-
-Data presence also does not prove data density. For variable-length fields, lists, tables, and server messages, include a credible high-density fixture derived from the current API or domain contract: representative maximum item counts, longest supported localized strings, and meaningful null or mixed values. A short one-item fixture cannot verify wrapping, prioritization, disclosure, or action reachability for a dense state. Treat interaction reachability and content density as separate matrix requirements; prove both when the surface has both risks.
-
-Before counting a `bottom` screenshot as below-the-fold evidence, identify the actual scroll container. The runner's `scrollPositions` move `window`; an app can instead scroll a `main` or panel while the window stays at zero. If the requested content is inside such a container, scroll it in a real browser, confirm its `scrollTop` increased, and capture the target in view. A repeated top image is not bottom coverage. Keep the runner's measured cells and this manual scroller check distinct in the report.
-
-The final response also does not prove asynchronous mutation feedback. For an in-scope control that writes remotely or can remain pending beyond the next paint, audit the transition as separate states:
-
-- use `stateMocks` with `hold: true` on the exact mutation request and drive the real control through `stateSetups`;
-- require immediate visible progress text plus a disabled, inert, or otherwise proven single-flight control state, using selectors such as `[disabled][aria-busy="true"]` and `[role="status"]`;
-- inspect the held-request screenshot instead of treating a later rerender or success toast as pending-state proof;
-- exercise success and retryable error recovery separately; and
-- add a functional interaction test for request count when repeated activation could duplicate work, because the visual audit does not replace idempotency or submission tests.
-
-Leave the pending cell unverified when the mutation cannot be held deterministically or the expected busy state does not appear.
-
-## Adaptability and exemptions
-
-- `zoom-200` halves the desktop CSS viewport and doubles its scale, then reruns layout, target, and keyboard checks.
-- `reflow-320` uses a 320 CSS-px desktop viewport and fails page-level horizontal scrolling. An intentionally two-dimensional surface must scroll internally or use `data-ui-audit-reflow-exempt="true"` with a documented reason.
-- Target size is checked in every pointer-capable layout. A target below 24×24 CSS px fails only when the WCAG spacing exception also fails. Inline text links are exempt; essential/equivalent cases may use `data-ui-audit-target-exempt="true"` or a whitelist entry.
-- The 24–44px mobile comfort range is an optional advisory, not a conformance failure.
-- The detector intentionally does not recurse into open shadow roots or inspect pixels/semantics inside `iframe`, `canvas`, `object`, or `embed`. Every visible such surface produces a required `uninspectedSurface` advisory. Resolve it with separate rendered evidence, or add `data-ui-audit-surface-exempt="<reason>"` to that exact host only when equivalent evidence already exists; an empty reason does not exempt it.
-
-- Widget-contract rules that depend on screen size — `multiRowTabs` and `desktopHiddenNav` — are skipped on mobile cells and in `reflow-320`. Wrapped tabs and a hamburger are the correct answer on a narrow screen, not a defect.
-- `modalEscapeUnhandled` is proven with trusted `Escape` input and is the only widget-contract `Fail`. The probe closes dialogs, so it runs last in the cell; nothing reads the post-Escape DOM as evidence. Its result lives in `coverage.matrix[].escapeProbe`, and a probe error marks the cell unverified instead of passing. A dialog that genuinely must not be dismissible uses `data-ui-audit-escape-exempt="<reason>"`; an empty reason does not exempt it.
-- Other widget-contract exemptions are `data-ui-audit-toggle-exempt` (a switch that really is deferred by design) and `data-ui-audit-nav-exempt` (an app rail or canvas tool with no top-level navigation to show).
-- Copy-convention rules (`koreanButtonVerbForm`, `buttonLabelPunctuation`, `genericConfirmLabel`, `mixedSpeechLevel`, `mixedValueFormat`, `freeformValueBadge`) read wording, not pixels, and stay optional `Polish` — except `genericConfirmLabel` on a destructive dialog, which is `Risk`. Deliberate copy uses `data-ui-audit-copy-exempt="<reason>"`; a team that accepts specific Korean button words lists them in `auditConfig.copy.koButtonAllow`. Korean action-noun wording is opt-in through `auditConfig.copy.koButtonNounStyle: true`, never a universal requirement; turn it on when the user's instructions or memory state that convention (e.g. "수정·선택·업로드, not 고치기·고르기·올리기"). The rule reads buttons only, so under that convention also review dialog titles, tooltips, and notifications for the same `~기` forms by hand. Hangul loanwords that most readers know (업로드, 다운로드, 텍스트, 메타데이터) are still Korean product language, not a switch to English. Natural actions such as 더보기 and 닫기 remain accepted. Preserve the product language and terminology; never switch to English to satisfy a wording preference.
-
-Computed colours are read as `rgb()`/`rgba()`, `oklab()`, `oklch()`, and `color(srgb …)`. That list is not cosmetic: Chrome returns modern colour functions verbatim and Tailwind v4 emits `oklab()` for every palette entry, so a parser limited to `rgb()` returns "no colour" for such a build — contrast checks skip silently and a modal backdrop measures as absent while it paints correctly. Silence from the colour rules on a modern stack is a reason to check the parser, not evidence of a clean screen.
-
-WCAG text contrast is a confirmed `Fail` below 4.5:1 for normal text or 3:1 for large text, including currently rendered placeholder text. Audit placeholders only while `:placeholder-shown`, and composite computed `::placeholder` opacity into its foreground alpha. A gradient, image, element/ancestor opacity, filter, blend mode, mask, inset shadow, backdrop filter, or otherwise indeterminate paint chain remains a required visual advisory because CSSOM cannot prove the final composited pixels.
+`zoom-200` and `reflow-320` rerun layout, target, and keyboard checks at 200% zoom and a 320 CSS-px viewport. Exemption attributes (`data-ui-audit-*-exempt`), colour parsing, contrast scope, desktop-only widget rules, copy conventions, and the cautions for reading individual rules live in `references/audit-rules.md` under "Cross-rule notes"; read it before suppressing or disputing a finding.
 
 ## Output and completion gate
 
@@ -189,15 +115,16 @@ Not verified: <cells/rules, or none>
 
 ## Files
 
+- `scripts/audit-chrome.mjs`: canonical Node/CDP runner, network mocks, adaptations, concurrency, and v2 outputs.
+- `scripts/chrome-cdp.mjs`: Chrome launch, process-tree cleanup, and CDP client, shared verbatim with dom-picker and screen-map.
 - `scripts/audit.js`: DOM/CSSOM/geometry detector and finding/advisory classifier.
 - `scripts/rule-coverage.mjs`: per-report rule-manifest completeness validator.
 - `scripts/keyboard-probe.js`, `pointer-probe.js`: trusted-input planning and evidence helpers.
-- `scripts/audit-chrome.mjs`: canonical Node/CDP runner, network mocks, adaptations, concurrency, and v2 outputs.
-- `nonTextContrast` recognizes a transparent, borderless input whose immediate wrapper provides a measured 3:1 field boundary; check the wrapper before changing an intentional chip-input design.
-- The keyboard probe also measures a changed outline on the focused control's immediate wrapper, as used by `:focus-within` row links and selects; a distant ancestor highlight is not sufficient.
-- Keyboard traversal counts the summary of closed `<details>` and excludes its hidden descendants; counting those descendants makes a valid dialog focus trap look incomplete.
-- `references/audit-rules.md`: exact rules, thresholds, and false-positive guards.
-- `references/findings-schema.md`: configuration and schema-v2 contract.
+- `scripts/run-ui-audit.py`, `capture.py`: compatibility shims that forward to the Node runner.
+- `scripts/audit-config.default.json`: full default matrix to copy and narrow.
+- `references/audit-rules.md`: exact rules, thresholds, false-positive guards, exemptions, and per-rule cautions.
+- `references/findings-schema.md`: configuration, state setup and proof, and the schema-v2 contract.
+- `references/scrutiny-checklist.md`: subjective residue reviewed after the measured pass.
 - `tests/fixtures/` and `tests/expected.json`: recall and precision regression corpus.
 
 When adding a failure mode, put deterministic measurement in code and add `mustHit`/`mustNotHit` coverage. Put heuristics in the advisory channel with `mustAdvise`/`mustNotAdvise` coverage.
@@ -210,25 +137,9 @@ When adding a failure mode, put deterministic measurement in code and add `mustH
 
 ## Common mistakes
 
-- Treating an installed mock as proof when its interception count is zero.
-- Treating one matched mock rule as proof for every declared endpoint or ignoring the request method/minimum count.
+- Treating an installed mock as proof when its interception count is zero, or one matched mock rule as proof for every declared endpoint while ignoring the request method/minimum count.
 - Treating a zero-cell matrix, a custom theme without a driver, or a cell with zero reported rules as successful coverage.
-- Unioning rule names across scroll positions so a top report masks a missing rule in a later viewport report.
-- Auditing placeholder styles on a populated or unsupported control where placeholder text is not rendered.
-- Treating light-DOM coverage as inspection of shadow-root, frame, canvas, object, or embed contents.
 - Running only the normal desktop cell and skipping 200% zoom or 320px reflow.
 - Treating optional advisory volume as confirmed defects.
-- Treating a typography recommendation such as 1.5 body line-height or one sans-serif family as a WCAG failure.
 - Suppressing broad selectors before investigating a shared-component root cause.
-- Claiming a modal trap from DOM structure without trusted forward and reverse Tab input.
-- Reading the DOM after the Escape probe and treating it as cell evidence; the probe closes dialogs on purpose and runs last for that reason.
-- Reporting wrapped tabs or a hamburger on a mobile cell; both rules are desktop-only by design.
-- Treating a placeholder as the field's label. `unlabeledInput` covers a control with no accessible name at all; `placeholderAsOnlyLabel` covers the aria-labeled control whose only *visible* naming text vanishes at the first keystroke.
-- Reporting `alt=""` as a missing alternative text. An empty `alt` is an explicit declaration that the image carries no information, which is the right answer for decoration; `imageMissingAlt` fires only when the attribute is absent entirely.
-- Reading a silent `selectAutoSubmit` as proof that nothing auto-submits. Only inline `onchange` attributes are visible to the DOM pass; a listener added with `addEventListener` is not, and belongs to a functional interaction test.
-- Demanding a skip link on a page that already has a `main` landmark. The landmark is itself a bypass mechanism, which is why `skipLinkMissing` fires only when neither route exists.
-- Assuming the text-pattern rules only understand Korean conventions. `unlinkedContactInfo` recognizes `+country`, NANP, and trunk-`0` phone shapes plus internationalized email addresses; `numericColumnAlignment` reads `1,240,000.50`, `1.240.000,50`, and `1 240 000,50` alike; `flagAsLanguageIndicator` matches language vocabulary in more than twenty languages. A locale these still miss is a rule gap to widen, not a screen that passed.
-- Applying Korean button grammar to English. `koreanButtonVerbForm` reads only Hangul labels; English buttons stay verb phrases ("Save draft").
-- Reading a counter or delta pill (`12`, `+12%`) or a removable input chip as `freeformValueBadge`. The rule targets value displays whose field has no closed set.
-- Evaluating `audit.js` after navigation and assuming CLS was measured; install `__uiAuditInstallCLS()` on the new document as the runner does.
 - Treating document top/bottom coverage or a populated DOM fixture as proof that a nested-scroll decision state was reached.

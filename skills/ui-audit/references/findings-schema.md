@@ -58,6 +58,81 @@
 
 Every explicit rule is verified independently after its URL pattern, request method, and minimum match count are satisfied. This applies to explicit mocks on `default` as well as non-default states. A successful structured setup may independently prove a custom interaction state only when no incomplete explicit mock contract remains.
 
+## State setup and proof
+
+How to reach and prove each configured state. `SKILL.md` keeps only the summary.
+
+A whole-screen matrix with forced data and interaction states:
+
+```jsonc
+{
+  "routes": ["/", "/settings"],
+  "viewports": [
+    { "name": "mobile", "width": 390, "height": 844, "isMobile": true, "dpr": 3 },
+    { "name": "desktop", "width": 1280, "height": 900, "isMobile": false, "dpr": 1 }
+  ],
+  "themes": ["light", "dark"],
+  "states": ["default", "empty", "error", "loading"],
+  "adaptations": ["zoom-200", "reflow-320"],
+  "workers": 2,
+  "stateMocks": {
+    "empty": [{ "pattern": "**/api/items", "method": "GET", "minMatches": 1, "body": [] }],
+    "error": [{ "pattern": "**/api/items", "method": "GET", "status": 500, "body": { "error": "forced" } }],
+    "loading": [{ "pattern": "**/api/items", "method": "GET", "hold": true }]
+  },
+  "stateSetups": {
+    "dialog-open": {
+      "actions": [{ "type": "click", "selector": "#open-dialog" }],
+      "expect": [{ "selector": "[role=dialog][aria-modal=true]", "state": "visible" }]
+    }
+  }
+}
+```
+
+`routes`, `viewports`, `themes`, `states`, and `scrollPositions` must each be non-empty and valid. `light` and `dark` use media emulation; every other theme name requires a non-empty matching `themeInitScripts.<theme>` driver. Invalid configuration exits 2 before Chrome starts.
+
+Configured or fallback mocks count as coverage only when CDP Fetch actually intercepts the declared request. `method` defaults to `any`; `minMatches` defaults to `1`. Every explicit rule must independently reach its minimum, including rules declared for `default`; one matching rule cannot make unmatched siblings green. Inspect `coverage.matrix[].stateMock.rules[]` for `pattern`, `method`, `minMatches`, `matches`, `held`, and per-rule `status`. The flat `interceptions` count remains an aggregate compatibility field. If an explicit network mock and structured setup are both configured, both must succeed.
+
+Structured actions support `click`, `fill`, `press`, `hover`, `check`, `selectOption`, and `upload`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
+
+For local authenticated routes, a fresh browser context starts signed out in every cell. If the app exposes a local demo login, set each route to its login URL with `returnTo` pointing at the target, use `stateSetups.default.actions` to click the login control, and assert a selector unique to the destination page. `waitForSelector` must name an element visible before the setup runs (usually the login control). Confirm the screenshot shows the destination; the report's `route` still names the initial login URL.
+
+`upload` reaches a screen that sits behind a file picker. Its `selector` names the **trigger the user presses**, not the file input — a page commonly creates an `<input type=file>`, clicks it, and removes it again, so the input is never a stable single-match visible selector. The runner intercepts the chooser the press opens and feeds it `files` (paths, resolved against the working directory; a missing path fails the setup instead of timing out).
+
+```jsonc
+"import-dialog": {
+  "timeoutMs": 45000,
+  "actions": [
+    { "type": "click", "selector": "button[aria-label='파일']" },
+    { "type": "upload", "selector": "[data-testid='import-ifc']", "files": ["fixtures/two-storey.ifc"] }
+  ],
+  "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
+}
+```
+
+`timeoutMs` (default 5000) covers each action's target wait and every `expect`. Raise it when the state sits behind work that takes much longer than a paint — a parsed upload, a recognition pass, a scene load. The default is right for a click that opens a menu and wrong for those, and an unreachable state is reported as unverified coverage, so leaving it silently shrinks the matrix.
+
+A populated fixture proves only that data reached the DOM. It does not prove a decision or action state that sits below the fold in an independently scrolling pane. Document `top`/`bottom` positions scroll the document, not nested scroll containers. For those surfaces:
+
+- drive the real primary product action through `stateSetups`;
+- require a visible post-action expectation inside the target state;
+- inspect the post-action screenshots as well as setup proof; and
+- leave the cell unverified when no deterministic product action can reach the state instead of using arbitrary page JavaScript or DOM presence as proof.
+
+Data presence also does not prove data density. For variable-length fields, lists, tables, and server messages, include a credible high-density fixture derived from the current API or domain contract: representative maximum item counts, longest supported localized strings, and meaningful null or mixed values. A short one-item fixture cannot verify wrapping, prioritization, disclosure, or action reachability for a dense state. Treat interaction reachability and content density as separate matrix requirements; prove both when the surface has both risks.
+
+Before counting a `bottom` screenshot as below-the-fold evidence, identify the actual scroll container. The runner's `scrollPositions` move `window`; an app can instead scroll a `main` or panel while the window stays at zero. If the requested content is inside such a container, scroll it in a real browser, confirm its `scrollTop` increased, and capture the target in view. A repeated top image is not bottom coverage. Keep the runner's measured cells and this manual scroller check distinct in the report.
+
+The final response also does not prove asynchronous mutation feedback. For an in-scope control that writes remotely or can remain pending beyond the next paint, audit the transition as separate states:
+
+- use `stateMocks` with `hold: true` on the exact mutation request and drive the real control through `stateSetups`;
+- require immediate visible progress text plus a disabled, inert, or otherwise proven single-flight control state, using selectors such as `[disabled][aria-busy="true"]` and `[role="status"]`;
+- inspect the held-request screenshot instead of treating a later rerender or success toast as pending-state proof;
+- exercise success and retryable error recovery separately; and
+- add a functional interaction test for request count when repeated activation could duplicate work, because the visual audit does not replace idempotency or submission tests.
+
+Leave the pending cell unverified when the mutation cannot be held deterministically or the expected busy state does not appear.
+
 ## In-page report
 
 ```jsonc
