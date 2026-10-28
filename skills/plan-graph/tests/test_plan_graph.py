@@ -835,6 +835,18 @@ x
         payload, _ = self.run_cli("context", "--path", "../outside.py", expect=1)
         self.assertEqual(payload["diagnostics"][0]["code"], "path_escape")
 
+    def test_store_changed_after_read_is_concurrent_change(self) -> None:
+        self.create("one", tags=("one",))
+        stale = load_store(self.root).plans
+        # Another writer changes the store between this read and the write.
+        self.run_cli("update", "one", "--add-tag", "two")
+        written = self.plan_file("one").read_bytes()
+        after = {"one": replace(stale["one"], title="Renamed")}
+        with self.assertRaises(PlanGraphError) as raised:
+            apply_plan_set(self.root, stale, after)
+        self.assertEqual(raised.exception.code, "concurrent_change")
+        self.assertEqual(self.plan_file("one").read_bytes(), written)
+
     def test_live_lock_blocks_mutation_and_is_preserved(self) -> None:
         self.create("one", tags=("one",))
         lock = lock_path_for(self.root)
