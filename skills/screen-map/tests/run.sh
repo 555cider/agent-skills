@@ -14,6 +14,11 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/screen-map-tests.XXXXXX")"
 SERVER_PID=""
 trap '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
 
+# Every launched Chrome gets a temporary profile that must be gone when the command ends;
+# on Windows a launcher-only kill left the renderers holding it open.
+count_profiles() { find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'screen-map-profile-*' | wc -l; }
+PROFILES_BEFORE="$(count_profiles)"
+
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
@@ -681,6 +686,18 @@ if record_session "$APPHOST" --goto "$BASE/" --wait 400 --goto "http://localhost
   else
     fail "a host outside allowHosts is watched but never recorded" "$(cat "$WORK/host.err")"
   fi
+fi
+
+PROFILES_AFTER=""
+for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+  PROFILES_AFTER="$(count_profiles)"
+  [ "$PROFILES_AFTER" = "$PROFILES_BEFORE" ] && break
+  sleep 0.2
+done
+if [ "$PROFILES_AFTER" = "$PROFILES_BEFORE" ]; then
+  pass "Chrome temporary profiles are removed"
+else
+  fail "Chrome temporary profiles are removed" "before=$PROFILES_BEFORE after=$PROFILES_AFTER"
 fi
 
 echo

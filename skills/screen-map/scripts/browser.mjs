@@ -1,94 +1,20 @@
 /**
  * Zero-dependency Chrome driver for screen-map: launches Chrome, speaks CDP over
  * Node's built-in WebSocket (Node >= 22), and exposes the few page operations the
- * crawler needs. Mirrors the driver shape used by the ui-audit skill.
+ * crawler needs. Launch, process-tree cleanup, and the CDP client come from
+ * chrome-cdp.mjs, an identical copy of the module the ui-audit and dom-picker skills use.
  */
 
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CDP, closeChrome, launchChrome, sleep } from './chrome-cdp.mjs';
 import { countsTowardSettle, storageSeedSource } from './model.mjs';
+
+export { findChrome, sleep } from './chrome-cdp.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HARVEST_SOURCE = readFileSync(join(HERE, 'harvest.js'), 'utf8');
-
-export function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-
-export function findChrome() {
-  if (process.env.CHROME && existsSync(process.env.CHROME)) return process.env.CHROME;
-  const names = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome', 'microsoft-edge'];
-  const which = process.platform === 'win32' ? 'where' : 'which';
-  for (const name of names) {
-    const result = spawnSync(which, [name], { encoding: 'utf8' });
-    if (result.status === 0 && result.stdout.trim()) return result.stdout.trim().split(/\r?\n/)[0];
-  }
-  const absolute = [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    'C:/Program Files/Google/Chrome/Application/chrome.exe',
-    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-    (process.env.LOCALAPPDATA || '') + '/Google/Chrome/Application/chrome.exe',
-  ];
-  for (const candidate of absolute) if (candidate && existsSync(candidate)) return candidate;
-  return 'google-chrome';
-}
-
-class CDP {
-  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); this.waiters = []; }
-
-  static async connect(wsUrl) {
-    const ws = new WebSocket(wsUrl);
-    await new Promise((resolve, reject) => {
-      ws.onopen = resolve;
-      ws.onerror = () => reject(new Error('CDP websocket connect failed'));
-    });
-    const cdp = new CDP(ws);
-    const disconnect = reason => {
-      const error = new Error('CDP WebSocket ' + reason);
-      for (const pending of cdp.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
-      cdp.pending.clear();
-      for (const waiter of cdp.waiters) waiter({ method: '__disconnect__' });
-      cdp.waiters = [];
-    };
-    ws.onerror = () => disconnect('error');
-    ws.onclose = () => disconnect('closed');
-    ws.onmessage = event => {
-      const message = JSON.parse(event.data);
-      if (message.id && cdp.pending.has(message.id)) {
-        const { resolve, reject, timer } = cdp.pending.get(message.id);
-        cdp.pending.delete(message.id);
-        clearTimeout(timer);
-        message.error ? reject(new Error(message.error.message)) : resolve(message.result);
-      } else if (message.method) {
-        cdp.waiters = cdp.waiters.filter(waiter => !waiter(message));
-      }
-    };
-    return cdp;
-  }
-
-  send(method, params = {}, sessionId) {
-    const id = ++this.id;
-    const payload = { id, method, params };
-    if (sessionId) payload.sessionId = sessionId;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('CDP command timeout: ' + method)); }, 20000);
-      this.pending.set(id, { resolve, reject, timer });
-      try { this.ws.send(JSON.stringify(payload)); }
-      catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
-    });
-  }
-
-  listen(method, sessionId, handler) {
-    const waiter = message => {
-      if (message.method === method && (!sessionId || message.sessionId === sessionId)) handler(message.params);
-      return false;
-    };
-    this.waiters.push(waiter);
-    return () => { this.waiters = this.waiters.filter(entry => entry !== waiter); };
-  }
-}
 
 /** Distinguishable so a caller can tell "no Chrome here" from "Chrome refuses to run this way". */
 export class SandboxRefused extends Error {}
@@ -116,7 +42,7 @@ export async function connectBrowser({ host = '127.0.0.1', port } = {}) {
     cdp,
     owned: false,
     browser: info.Browser || 'unknown',
-    async close() { try { cdp.ws.close(); } catch { /* already gone */ } },
+    async close() { cdp.close(); },
   };
 }
 
@@ -138,52 +64,32 @@ export async function launchBrowser({ headless = true, noSandbox = false, port =
   if (allowNoSandbox) {
     process.stderr.write('WARNING: Chrome sandbox disabled. Crawl only local pages you trust.\n');
   }
-  const bin = findChrome();
-  const profile = mkdtempSync(join(tmpdir(), 'screen-map-'));
   const args = [
     headless ? '--headless=new' : '--new-window',
     '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
-    `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank',
   ];
   if (allowNoSandbox) args.splice(1, 0, '--no-sandbox');
 
-  const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-  let wsUrl;
+  const chrome = await launchChrome({ args, port, profilePrefix: 'screen-map-profile-' });
+  let cdp;
   try {
-    wsUrl = await new Promise((resolve, reject) => {
-      let buffer = '';
-      const timer = setTimeout(
-        () => reject(new Error('timed out waiting for the DevTools endpoint; is Chrome installed? set $CHROME')), 15000);
-      proc.on('error', error => { clearTimeout(timer); reject(new Error('failed to start Chrome: ' + error.message)); });
-      proc.on('exit', code => { clearTimeout(timer); reject(new Error('Chrome exited (' + code + ') before listening')); });
-      proc.stderr.on('data', chunk => {
-        buffer += chunk.toString();
-        const match = buffer.match(/ws:\/\/[^\s]+/);
-        if (match) { clearTimeout(timer); resolve(match[0]); }
-      });
-    });
+    cdp = await CDP.connect(chrome.wsUrl);
   } catch (error) {
-    try { proc.kill(); } catch { /* already gone */ }
-    rmSync(profile, { recursive: true, force: true });
+    // A socket that never opened must not leave Chrome and its profile behind.
+    await closeChrome(chrome);
     throw error;
   }
-
-  const cdp = await CDP.connect(wsUrl);
   return {
     cdp,
     owned: true,
-    wsUrl,
-    port,
+    wsUrl: chrome.wsUrl,
+    port: chrome.port,
     async close() {
       try { await cdp.send('Browser.close'); } catch { /* fall through to kill */ }
-      try { proc.kill(); } catch { /* already gone */ }
-      // Windows keeps handles on the profile briefly after exit; a leftover temp
-      // directory must never be reported as a crawl failure.
-      for (let attempt = 0; attempt < 5; attempt++) {
-        await sleep(100);
-        try { rmSync(profile, { recursive: true, force: true }); return; }
-        catch { /* retry */ }
-      }
+      cdp.close();
+      // Kills the whole tree (taskkill /T on Windows, the process group elsewhere) and
+      // confirms the profile is gone, warning on stderr — never failing the crawl — if not.
+      await closeChrome(chrome, { graceMs: 2000 });
     },
   };
 }
