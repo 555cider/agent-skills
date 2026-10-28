@@ -26,7 +26,9 @@ import {
   requestCancellation,
   writeUiState,
 } from "./session-ledger.mjs";
-import { CDP, closeChrome, launchChrome } from "./chrome-cdp.mjs";
+import { CDP, closeChrome, launchChrome, requireWebSocket } from "./chrome-cdp.mjs";
+
+requireWebSocket("dom-picker");
 
 const PROTOCOL_VERSION = 2;
 const WORLD_NAME = "dom-picker-v2";
