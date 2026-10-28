@@ -187,7 +187,7 @@ def field_diagnostics(
         ("scope", scope),
         ("tags", tags),
     ):
-        if any(not item for item in values):
+        if any(not item.strip() for item in values):
             diagnostics.append(
                 Diagnostic("error", "invalid_metadata", f"{key} contains an empty value", plan_id, path)
             )
