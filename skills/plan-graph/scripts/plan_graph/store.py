@@ -43,16 +43,26 @@ class Store:
 
 
 def _run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    # Bytes, decoded here as UTF-8: git prints paths as UTF-8, and `text=True` decodes
+    # with the locale codec instead. On a cp949 Windows console a Korean repository
+    # path failed that decode inside subprocess's reader thread, which swallows the
+    # error and leaves stdout as None.
     try:
-        return subprocess.run(
+        raw = subprocess.run(
             ["git", "-C", str(root), *args],
             check=False,
             capture_output=True,
-            text=True,
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         raise PlanGraphError(f"failed to run Git: {exc}", code="git_failed") from exc
+    try:
+        stdout = raw.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PlanGraphError(f"Git output is not UTF-8: {exc}", code="git_failed") from exc
+    return subprocess.CompletedProcess(
+        raw.args, raw.returncode, stdout, raw.stderr.decode("utf-8", errors="replace")
+    )
 
 
 def discover_root(explicit: Path | None, cwd: Path | None = None) -> Path:

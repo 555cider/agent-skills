@@ -439,6 +439,17 @@ x
             context["data"]["decision_pack"][0]["staleness"]["state"], "unknown"
         )
 
+    def test_non_ascii_repository_path_is_discovered_and_aged(self) -> None:
+        # git prints the toplevel as UTF-8; decoding it with the locale codec (cp949 on
+        # a Korean Windows console) lost the root and broke discovery.
+        self.root = self.root / "계획 저장소 🧠"
+        self.root.mkdir()
+        self.churned_repo(commits=5)
+        payload, _ = self.run_cli("doctor", root=False, cwd=self.root)
+        self.assertEqual(Path(str(payload["root"])).resolve(), self.root.resolve())
+        stale = [item for item in payload["diagnostics"] if item["code"] == "stale_plan"]
+        self.assertEqual([item["plan"] for item in stale], ["core"])
+
     def test_doctor_warns_overlapping_unrelated_active_plans(self) -> None:
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         self.create("checkout-api", scopes=("apps/checkout/**",), tags=("checkout",))
