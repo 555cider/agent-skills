@@ -24,7 +24,16 @@ export HOME="$WORK/home"
 export USERPROFILE="$HOME"
 export GIT_CONFIG_NOSYSTEM=1
 export WORKTREE_CYCLE_PORT_REGISTRY="$WORK/port-registry.json"
-python "${HERE}/test_ports.py" -q || exit 1
+# A bare `command -v` is not enough: on Windows `python3` can be the Microsoft Store stub, which
+# exists on PATH and fails when run. Same check as scripts/start-worktree.sh.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; assert sys.version_info >= (3, 10)' 2>/dev/null; then
+    PY="$candidate"; break
+  fi
+done
+[ -n "$PY" ] || { echo "FAIL  Python 3.10+ not found (tried python3, python)" >&2; exit 1; }
+"$PY" "${HERE}/test_ports.py" -q || exit 1
 mkdir -p "$HOME"
 
 PASS=0
