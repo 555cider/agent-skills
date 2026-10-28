@@ -1027,6 +1027,19 @@ async function mapLimit(items, limit, fn) {
 
 const startedAt = Date.now();
 const { proc, wsUrl, profile } = await launchChrome();
+// Chrome runs in its own process group on POSIX, so a terminal Ctrl-C no longer reaches
+// it: without these handlers an interrupted audit leaves Chrome running and its
+// temporary profile on disk.
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.once(signal, () => {
+    console.error(`
+interrupted (${signal}): closing Chrome`);
+    killChromeTree(proc);
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {}
+    if (existsSync(profile)) console.error(`WARNING: Chrome temporary profile could not be removed: ${profile}`);
+    process.exit(code);
+  });
+}
 const cdp = await CDP.connect(wsUrl);
 let results;
 try {
