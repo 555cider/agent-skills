@@ -149,7 +149,8 @@ jobs:
 
   split:
     needs: [quality, portability]
-    if: github.event_name != 'pull_request'
+    # Only main publishes: a manual run from another branch must not overwrite split/*.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
