@@ -87,14 +87,18 @@ def _git_stdout(root: Path, args: list[str]) -> str | None:
             ["git", "-C", str(root), *args],
             check=False,
             capture_output=True,
-            text=True,
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError, UnicodeError):
+    except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
-    return result.stdout.strip()
+    # Bytes decoded as UTF-8, as git emits; the locale codec (`text=True`) is cp949 on
+    # a Korean Windows console and loses the output inside subprocess's reader thread.
+    try:
+        return result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
 
 
 def staleness(
