@@ -266,24 +266,37 @@ class CommandProvider(Provider):
             "operation": operation,
             "payload": payload,
         }
+        # Bytes in both directions, UTF-8 on the wire: `text=True` would use the locale
+        # codec (cp949 on a Korean Windows console), and the payload is serialized with
+        # ensure_ascii=False, so an emoji raised UnicodeEncodeError past every
+        # `except ProviderError` handler.
+        try:
+            stdin = stable_json(request).encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ProviderError(f"command provider payload is not encodable: {exc}") from exc
         try:
             result = subprocess.run(
                 self.argv,
-                input=stable_json(request),
-                text=True,
+                input=stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=self.timeout,
                 check=False,
-                env={**os.environ, "AGENT_MEMORY_PROVIDER_OPERATION": operation},
+                env={
+                    **os.environ,
+                    "AGENT_MEMORY_PROVIDER_OPERATION": operation,
+                    "PYTHONIOENCODING": "utf-8",
+                },
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ProviderError(f"command provider failed: {exc}") from exc
         if result.returncode != 0:
-            detail = result.stderr.strip()[-500:]
+            detail = result.stderr.decode("utf-8", errors="replace").strip()[-500:]
             raise ProviderError(f"command provider exited {result.returncode}: {detail}")
         try:
-            response = json.loads(result.stdout)
+            response = json.loads(result.stdout.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise ProviderError("command provider returned non-UTF-8 output") from exc
         except json.JSONDecodeError as exc:
             raise ProviderError("command provider returned malformed JSON") from exc
         if not isinstance(response, dict) or response.get("schema") != PROVIDER_RESPONSE_SCHEMA:

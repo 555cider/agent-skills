@@ -46,7 +46,11 @@ export AGENT_MEMORY_PROVIDER_COMMAND='/absolute/path/to/provider --flag'
 export AGENT_MEMORY_PROVIDER_TIMEOUT=30
 ```
 
-The executable receives one JSON object on stdin:
+The executable receives one JSON object on stdin. Both stdin and stdout are
+UTF-8 regardless of the system locale (the request is not ASCII-escaped, so
+Korean text or emoji arrive as raw UTF-8); `PYTHONIOENCODING=utf-8` is set for
+the child so a Python provider can use plain `sys.stdin`/`print`. Output that
+is not UTF-8 is a provider failure.
 
 ```json
 {

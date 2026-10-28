@@ -819,12 +819,51 @@ def test_auto_activation_precision_gate(tmp_path):
         db.close()
 
 
+def _python_command(program: Path) -> str:
+    # shlex.split is POSIX: unquoted Windows paths lose their backslashes.
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(program))}"
+
+
 def test_command_provider_rejects_malformed_protocol(tmp_path, monkeypatch):
     program = tmp_path / "provider.py"
     program.write_text("print('not json')\n", encoding="utf-8")
-    # shlex.split is POSIX: unquoted Windows paths lose their backslashes.
-    provider = CommandProvider(f"{shlex.quote(sys.executable)} {shlex.quote(str(program))}")
+    provider = CommandProvider(_python_command(program))
     with pytest.raises(ProviderError, match="malformed JSON"):
+        provider.extract([], "repo")
+
+
+def test_command_provider_round_trips_non_ascii_as_utf8(tmp_path):
+    # The payload is serialized with ensure_ascii=False; the locale codec (cp949 on a
+    # Korean Windows console) cannot encode an emoji, so the wire must be UTF-8.
+    program = tmp_path / "provider.py"
+    program.write_text(
+        "import json, sys\n"
+        "request = json.loads(sys.stdin.buffer.read().decode('utf-8'))\n"
+        "texts = request['payload']['texts']\n"
+        "response = {'schema': 'agent-memory.provider.response.v2',\n"
+        "            'result': {'vectors': [[float(ord(c)) for c in t] for t in texts]},\n"
+        "            'echo': texts}\n"
+        "sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    provider = CommandProvider(_python_command(program))
+    text = "기억해줘 \U0001f9e0 메모리"
+    assert provider.embed([text]) == [[float(ord(c)) for c in text]]
+
+
+def test_command_provider_unencodable_payload_is_provider_error(tmp_path):
+    program = tmp_path / "provider.py"
+    program.write_text("import sys\nsys.stdin.buffer.read()\n", encoding="utf-8")
+    provider = CommandProvider(_python_command(program))
+    with pytest.raises(ProviderError, match="not encodable"):
+        provider.embed(["lone surrogate \ud800"])
+
+
+def test_command_provider_non_utf8_output_is_provider_error(tmp_path):
+    program = tmp_path / "provider.py"
+    program.write_text("import sys\nsys.stdout.buffer.write(b'\\xff\\xfe')\n", encoding="utf-8")
+    provider = CommandProvider(_python_command(program))
+    with pytest.raises(ProviderError, match="non-UTF-8"):
         provider.extract([], "repo")
 
 
