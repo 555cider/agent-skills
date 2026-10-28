@@ -14,8 +14,11 @@ The CLI always resolves the Git toplevel before looking for `.agents/plans`.
 Running it from a nested application must not create another store. `--root`
 exists for tests and deliberate non-Git use.
 
-The v1 `.agents/plan/graph.yaml` file is unsupported. Its presence is a doctor
-error rather than a migration signal.
+Plan Graph v2 is intentionally incompatible with the v1 numeric-ID
+`.agents/plan/graph.yaml` format: each Markdown plan is the source of truth and
+the CLI derives the graph, readiness, impact, and roadmap directly from the
+files. The v1 file is unsupported; its presence is a doctor error
+(`legacy_store`) rather than a migration signal.
 
 ## Document schema
 

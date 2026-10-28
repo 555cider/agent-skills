@@ -10,11 +10,6 @@ compatibility: Requires Python 3.10 or newer, git for default repository-root di
 Keep the smallest useful set of persistent plans in context for the next
 decision. A plan is a decision document, not a task tracker or archive.
 
-Plan Graph v2 is intentionally incompatible with the old numeric-ID
-`.agents/plan/graph.yaml` format. Each Markdown plan is now the source of truth;
-the CLI derives the graph, readiness, impact, and roadmap directly from the
-files.
-
 ## Start with context
 
 Run commands from anywhere inside the Git worktree. Replace `<skill-dir>` with
