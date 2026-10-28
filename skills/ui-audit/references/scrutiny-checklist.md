@@ -185,6 +185,10 @@ states are *meaningfully distinct* is judgment.
 - **[visual]** Double negatives ("~하지 않으면 안 됩니다", "Don't forget to not…") make the reader
   compute the meaning. State the positive requirement. `Polish`; `Risk` on consent or
   destructive copy.
+- **[visual]** Contradictory indicators on one item (a "no source" warning beside a
+  source chip, "saved" beside an unsaved marker): fix the indicator that is wrong. Do not
+  lengthen the wording until both read as true; longer qualifying copy hides the defect
+  and reads awkwardly. `Risk`.
 - **[visual]** Casing consistency (Title Case vs sentence case mixed across peers),
   punctuation, terminology drift (same concept named two ways). `Polish`.
 - **[visual]** Placeholder used as the only label (disappears on input). `Risk`.
