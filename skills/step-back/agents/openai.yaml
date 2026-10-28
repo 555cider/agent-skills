@@ -1,0 +1,4 @@
+interface:
+  display_name: "Step Back"
+  short_description: "Reassess coverage, evidence, and the value of the next action before declaring done."
+  default_prompt: "Use $step-back before declaring a task or plan complete, before a third repeated check, or after more than 15 tool calls on one subgoal. Compare the result against everything the user asked for, name the evidence behind each claim, and decide whether the next action adds information; continue, change approach, or stop accordingly. Never use it to narrow the requested scope or to skip required verification."
