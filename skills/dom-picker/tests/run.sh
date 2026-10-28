@@ -5,13 +5,11 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SKILL="$(cd "$HERE/.." && pwd)"
-ROOT="$(cd "$SKILL/../.." && pwd)"
 PICKER="$SKILL/assets/picker-runtime.js"
 DRIVER="$SKILL/scripts/dom-picker.mjs"
 LOCATOR="$SKILL/scripts/locate-source.mjs"
 LEDGER="$SKILL/scripts/session-ledger.mjs"
 REPORT="$SKILL/scripts/locator-report.mjs"
-UI_FIXTURE="$HERE/ui-audit-fixture.mjs"
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 
@@ -35,12 +33,12 @@ assert_status() {
 
 assert_contains() {
   local label="$1" needle="$2" file="$3"
-  if grep -qF -- "$needle" "$file"; then pass "$label"; else fail "$label" "missing [$needle] in ${file#$ROOT/}"; fi
+  if grep -qF -- "$needle" "$file"; then pass "$label"; else fail "$label" "missing [$needle] in ${file#$SKILL/}"; fi
 }
 
 assert_not_contains() {
   local label="$1" needle="$2" file="$3"
-  if grep -qF -- "$needle" "$file"; then fail "$label" "found stale [$needle] in ${file#$ROOT/}"; else pass "$label"; fi
+  if grep -qF -- "$needle" "$file"; then fail "$label" "found stale [$needle] in ${file#$SKILL/}"; else pass "$label"; fi
 }
 
 # Syntax and command contracts.
@@ -49,7 +47,6 @@ assert_status 0 "Chromium driver parses" node --check "$DRIVER"
 assert_status 0 "source locator parses" node --check "$LOCATOR"
 assert_status 0 "session ledger parses" node --check "$LEDGER"
 assert_status 0 "locator report parses" node --check "$REPORT"
-assert_status 0 "UI audit fixture parses" node --check "$UI_FIXTURE"
 assert_status 0 "driver help succeeds" node "$DRIVER" help
 if grep -qF "start <url>" "$TMP/out" && grep -qF "verify --request" "$TMP/out"; then
   pass "driver help documents continuous and verification paths"
@@ -62,7 +59,7 @@ assert_status 2 "driver rejects unknown commands" node "$DRIVER" legacy-serve
 assert_status 2 "verifier requires declared assertions" node "$DRIVER" verify --request="$TMP/missing-request.json"
 if grep -qF "verify requires --assertions" "$TMP/err"; then pass "missing-assertion diagnostic is actionable"; else fail "missing-assertion diagnostic is actionable" "$(cat "$TMP/out" "$TMP/err")"; fi
 printf '{"picks":[]}\n' >"$TMP/no-picks.json"
-assert_status 2 "locator rejects evidence with no picks" node "$LOCATOR" --repo="$ROOT" --input="$TMP/no-picks.json"
+assert_status 2 "locator rejects evidence with no picks" node "$LOCATOR" --repo="$SKILL" --input="$TMP/no-picks.json"
 
 # Runtime and trust-boundary regression guards.
 assert_contains "runtime exposes protocol v2" "var VERSION = 2" "$PICKER"
