@@ -15,15 +15,14 @@ from .model import (
     ID_RE,
     LEGACY_GRAPH,
     PLAN_DIR,
-    VALID_STATUSES,
     Diagnostic,
     Plan,
     PlanGraphError,
-    compile_scope,
     parse_plan,
     render_plan,
     repo_relative,
     unfilled_sections,
+    validate_plan,
 )
 
 
@@ -180,72 +179,24 @@ def load_store(root: Path, *, deep: bool = False) -> Store:
     return Store(root=root, plans=plans, diagnostics=tuple(diagnostics))
 
 
-def _validate_plan_fields(plan: Plan) -> list[Diagnostic]:
+def validate_plan_set(plans: dict[str, Plan]) -> list[Diagnostic]:
+    """Field plus graph checks for a plan set built in memory before it is written.
+
+    Loaded plans already carry their field diagnostics from `parse_plan`, so
+    `load_store` runs only `validate_graph`; running both reported each error twice.
+    """
     diagnostics: list[Diagnostic] = []
-    if not ID_RE.fullmatch(plan.id):
-        diagnostics.append(
-            Diagnostic("error", "invalid_id", "plan ID must be lowercase kebab-case", plan.id)
-        )
-    if plan.status not in VALID_STATUSES:
-        diagnostics.append(
-            Diagnostic("error", "invalid_status", "status must be active or done", plan.id)
-        )
-    if not plan.scope and not plan.tags:
-        diagnostics.append(
-            Diagnostic("error", "unroutable_plan", "at least one scope or tag is required", plan.id)
-        )
-    for key, values in (
-        ("requires", plan.requires),
-        ("replaces", plan.replaces),
-        ("scope", plan.scope),
-        ("tags", plan.tags),
-    ):
-        if any(not value.strip() for value in values):
-            diagnostics.append(
-                Diagnostic("error", "invalid_metadata", f"{key} contains an empty value", plan.id)
-            )
-        if any("\n" in value or "\r" in value for value in values):
-            diagnostics.append(
-                Diagnostic("error", "invalid_metadata", f"{key} values must be single-line", plan.id)
-            )
-        if len({value.casefold() for value in values}) != len(values):
-            diagnostics.append(
-                Diagnostic("error", "duplicate_metadata", f"{key} contains duplicates", plan.id)
-            )
-    for relation, values in (("requires", plan.requires), ("replaces", plan.replaces)):
-        for value in values:
-            if not ID_RE.fullmatch(value):
-                diagnostics.append(
-                    Diagnostic(
-                        "error",
-                        "invalid_relation_id",
-                        f"{relation} contains invalid plan ID {value!r}",
-                        plan.id,
-                    )
-                )
-    for pattern in plan.scope:
-        if pattern.startswith("/") or "\\" in pattern or ".." in Path(pattern).parts:
-            diagnostics.append(
-                Diagnostic(
-                    "error",
-                    "invalid_scope",
-                    f"scope must be repository-relative POSIX glob: {pattern!r}",
-                    plan.id,
-                )
-            )
-            continue
-        try:
-            compile_scope(pattern)
-        except ValueError as exc:
-            diagnostics.append(Diagnostic("error", "invalid_scope", str(exc), plan.id))
+    for _, plan in sorted(plans.items()):
+        diagnostics.extend(validate_plan(plan))
+    diagnostics.extend(validate_graph(plans))
     return diagnostics
 
 
 def validate_graph(plans: dict[str, Plan]) -> list[Diagnostic]:
+    """Graph-level checks only: relations, cycles, replacement and lifecycle hygiene."""
     diagnostics: list[Diagnostic] = []
     replacement_owners: dict[str, str] = {}
     for plan_id, plan in sorted(plans.items()):
-        diagnostics.extend(_validate_plan_fields(plan))
         if plan_id in plan.requires:
             diagnostics.append(
                 Diagnostic("error", "self_dependency", "plan may not require itself", plan_id)
@@ -614,7 +565,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
 
 
 def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) -> Path | None:
-    graph_errors = [item for item in validate_graph(after) if item.severity == "error"]
+    graph_errors = [item for item in validate_plan_set(after) if item.severity == "error"]
     if graph_errors:
         raise PlanGraphError(graph_errors[0].message, code=graph_errors[0].code)
     if before == after:
