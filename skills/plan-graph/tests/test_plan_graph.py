@@ -702,6 +702,17 @@ x
         self.run_cli("reopen", "base")
         self.assertEqual(load_store(self.root).plans["base"].status, "active")
 
+    def test_close_on_done_plan_reports_no_changes(self) -> None:
+        self.create("base", tags=("base",))
+        self.create("child", tags=("child",), requires=("base",))
+        self.fill_sections("base")
+        self.run_cli("close", "base")
+        before = self.plan_file("base").read_bytes()
+        for extra in ((), ("--force",)):
+            failed, _ = self.run_cli("close", "base", *extra, expect=1)
+            self.assertEqual(failed["diagnostics"][0]["code"], "no_changes")
+        self.assertEqual(self.plan_file("base").read_bytes(), before)
+
     def test_drop_refuses_indirect_active_dependent_through_done_plan(self) -> None:
         self.create("base", tags=("base",))
         self.create("middle", tags=("middle",), requires=("base",))

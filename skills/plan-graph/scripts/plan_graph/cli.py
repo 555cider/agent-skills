@@ -581,6 +581,11 @@ def _handle_reopen(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
     plan = _require_plan(store, args.id)
+    if plan.status == "done":
+        raise PlanGraphError(
+            f"{args.id} is already done; it is retained for its active dependents",
+            code="no_changes",
+        )
     if args.force:
         dependents = _active_dependents(store.plans, args.id)
         if dependents:
