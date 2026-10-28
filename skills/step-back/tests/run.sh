@@ -2,8 +2,16 @@
 # Packaging checks only. Behavioral quality is evaluated with evals, not exact prose.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PY=python3
-command -v "$PY" >/dev/null 2>&1 || PY=python
+# A bare `command -v` is not enough: on Windows `python3` can be the Microsoft Store stub, which
+# exists on PATH and fails when run. Same check as
+# skills/worktree-cycle/scripts/start-worktree.sh.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; assert sys.version_info >= (3, 10)' 2>/dev/null; then
+    PY="$candidate"; break
+  fi
+done
+[ -n "$PY" ] || { echo "FAIL  Python 3.10+ not found (tried python3, python)" >&2; exit 1; }
 "$PY" - "$HERE/.." <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
