@@ -254,9 +254,9 @@ def split_provider_command(command: str, windows: bool | None = None) -> list[st
     r"""Split AGENT_MEMORY_PROVIDER_COMMAND into argv.
 
     A value starting with `[` is a JSON array of strings, used verbatim. Otherwise
-    the string is split shell-style: POSIX rules elsewhere, and on Windows a
-    non-POSIX split that keeps backslashes (POSIX `shlex` turns an unquoted
-    `C:\tools\p.exe` into `C:toolsp.exe`) and drops the quotes around a token.
+    the string is split shell-style: POSIX rules elsewhere, and on Windows the
+    MS C runtime rules every Windows program parses its own command line with
+    (POSIX `shlex` turns an unquoted `C:\tools\p.exe` into `C:toolsp.exe`).
     """
     if windows is None:
         windows = os.name == "nt"
@@ -269,16 +269,72 @@ def split_provider_command(command: str, windows: bool | None = None) -> list[st
         if not isinstance(argv, list) or not all(isinstance(part, str) and part for part in argv):
             raise ProviderError("AGENT_MEMORY_PROVIDER_COMMAND JSON form must be an array of non-empty strings")
         return argv
+    if windows:
+        return _split_windows_command_line(text)
     try:
-        if not windows:
-            return shlex.split(text)
-        parts = shlex.split(text, posix=False)
+        return shlex.split(text)
     except ValueError as exc:
         raise ProviderError(f"AGENT_MEMORY_PROVIDER_COMMAND cannot be parsed: {exc}") from exc
-    return [
-        part[1:-1] if len(part) >= 2 and part[0] == part[-1] and part[0] in "\"'" else part
-        for part in parts
-    ]
+
+
+def _split_windows_command_line(text: str) -> list[str]:
+    """Split like the MS C runtime: backslashes are literal unless they precede a
+    double quote (2n backslashes + quote -> n backslashes and a quote toggle,
+    2n+1 -> n backslashes and a literal quote), `""` inside quotes is a literal
+    quote, and whitespace outside quotes separates arguments. Single quotes also
+    group, literally, as POSIX `shlex` did here before: configs written as
+    `'C:\\Program Files\\p.exe'` kept working."""
+    args: list[str] = []
+    current: list[str] = []
+    in_token = False
+    in_quotes = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            run = 0
+            while index < len(text) and text[index] == "\\":
+                run += 1
+                index += 1
+            if index < len(text) and text[index] == '"':
+                current.append("\\" * (run // 2))
+                if run % 2:
+                    current.append('"')
+                    index += 1
+            else:
+                current.append("\\" * run)
+            in_token = True
+            continue
+        if char == '"':
+            if in_quotes and index + 1 < len(text) and text[index + 1] == '"':
+                current.append('"')
+                index += 2
+                in_token = True
+                continue
+            in_quotes = not in_quotes
+            in_token = True
+            index += 1
+            continue
+        if char == "'" and not in_quotes:
+            end = text.find("'", index + 1)
+            if end < 0:
+                raise ProviderError("AGENT_MEMORY_PROVIDER_COMMAND cannot be parsed: No closing quotation")
+            current.append(text[index + 1:end])
+            index = end + 1
+            in_token = True
+            continue
+        if char in " \t" and not in_quotes:
+            if in_token:
+                args.append("".join(current))
+                current, in_token = [], False
+            index += 1
+            continue
+        current.append(char)
+        in_token = True
+        index += 1
+    if in_token:
+        args.append("".join(current))
+    return args
 
 
 class CommandProvider(Provider):
