@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 
 import {
-  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -29,6 +26,7 @@ import {
   requestCancellation,
   writeUiState,
 } from "./session-ledger.mjs";
+import { CDP, closeChrome, launchChrome } from "./chrome-cdp.mjs";
 
 const PROTOCOL_VERSION = 2;
 const WORLD_NAME = "dom-picker-v2";
@@ -69,23 +67,6 @@ function parsePort(raw, { allowZero = false } = {}) {
     fail(`invalid port ${JSON.stringify(raw)}; expected ${minimum}..65535`);
   }
   return value;
-}
-
-function chromeBinary() {
-  if (process.env.CHROME && existsSync(process.env.CHROME)) return process.env.CHROME;
-  const candidates = process.platform === "win32"
-    ? [
-        "C:/Program Files/Google/Chrome/Application/chrome.exe",
-        "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
-        `${process.env.LOCALAPPDATA || ""}/Google/Chrome/Application/chrome.exe`,
-      ]
-    : process.platform === "darwin"
-      ? [
-          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-          "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        ]
-      : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
-  return candidates.find((candidate) => candidate && existsSync(candidate)) || null;
 }
 
 function baseUrl(port) {
@@ -181,90 +162,11 @@ async function chooseTarget(port, { targetId, match, preferredUrl } = {}) {
   return matches[0];
 }
 
-class CdpConnection {
+// The CDP client is shared verbatim with the screen-map and ui-audit skills (chrome-cdp.mjs);
+// dom-picker connects one socket per page target with a shorter command deadline.
+class CdpConnection extends CDP {
   constructor(webSocketUrl) {
-    this.socket = new WebSocket(webSocketUrl);
-    this.sequence = 0;
-    this.pending = new Map();
-    this.listeners = new Map();
-    this.opened = false;
-    this.ready = new Promise((resolveReady, rejectReady) => {
-      this.resolveReady = resolveReady;
-      this.rejectReady = rejectReady;
-    });
-    this.closed = new Promise((resolveClosed) => { this.resolveClosed = resolveClosed; });
-    this.socket.addEventListener("open", () => {
-      this.opened = true;
-      this.resolveReady();
-    }, { once: true });
-    this.socket.addEventListener("message", (event) => this.onMessage(event));
-    this.socket.addEventListener("error", () => this.disconnect("error"));
-    this.socket.addEventListener("close", () => this.disconnect("closed"));
-  }
-
-  on(method, handler) {
-    if (!this.listeners.has(method)) this.listeners.set(method, new Set());
-    this.listeners.get(method).add(handler);
-    return () => this.listeners.get(method)?.delete(handler);
-  }
-
-  onMessage(event) {
-    let message;
-    try { message = JSON.parse(event.data); }
-    catch { return; }
-    if (message.id && this.pending.has(message.id)) {
-      const pending = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      clearTimeout(pending.timer);
-      if (message.error) pending.reject(new Error(JSON.stringify(message.error)));
-      else pending.resolve(message.result);
-      return;
-    }
-    if (message.method && this.listeners.has(message.method)) {
-      for (const handler of this.listeners.get(message.method)) {
-        try { handler(message.params || {}); }
-        catch (error) { diagnostic(`event handler failed for ${message.method}: ${error.message}`); }
-      }
-    }
-  }
-
-  disconnect(kind) {
-    const error = new Error(`CDP WebSocket ${kind}`);
-    if (!this.opened) this.rejectReady(error);
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(error);
-    }
-    this.pending.clear();
-    if (this.resolveClosed) {
-      this.resolveClosed(error);
-      this.resolveClosed = null;
-    }
-  }
-
-  send(method, params = {}) {
-    return new Promise((resolveSend, rejectSend) => {
-      if (this.socket.readyState !== WebSocket.OPEN) {
-        rejectSend(new Error("CDP WebSocket is not open"));
-        return;
-      }
-      const id = ++this.sequence;
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        rejectSend(new Error(`CDP command timed out: ${method}`));
-      }, COMMAND_TIMEOUT_MS);
-      this.pending.set(id, { resolve: resolveSend, reject: rejectSend, timer });
-      try { this.socket.send(JSON.stringify({ id, method, params })); }
-      catch (error) {
-        clearTimeout(timer);
-        this.pending.delete(id);
-        rejectSend(error);
-      }
-    });
-  }
-
-  close() {
-    try { this.socket.close(); } catch { /* already closed */ }
+    super(webSocketUrl, { timeoutMs: COMMAND_TIMEOUT_MS });
   }
 }
 
@@ -397,33 +299,11 @@ function urlOrigin(url) {
   catch { return "null"; }
 }
 
-async function waitForChildExit(child, timeoutMs) {
-  if (!child || child.exitCode != null || child.signalCode != null) return true;
-  return new Promise((resolveWait) => {
-    const onExit = () => { clearTimeout(timer); resolveWait(true); };
-    const timer = setTimeout(() => {
-      child.removeListener("exit", onExit);
-      resolveWait(false);
-    }, timeoutMs);
-    child.once("exit", onExit);
-  });
-}
-
 async function cleanupOwnedChrome(owned) {
   if (!owned) return;
-  if (owned.child && owned.child.exitCode == null && owned.child.signalCode == null) {
-    try { owned.child.kill("SIGTERM"); } catch { /* already exited */ }
-    if (!(await waitForChildExit(owned.child, 2500))) {
-      try { owned.child.kill("SIGKILL"); } catch { /* already exited */ }
-      await waitForChildExit(owned.child, 1000);
-    }
-  }
-  if (owned.removeProfile) {
-    for (let attempt = 0; attempt < 5 && existsSync(owned.profile); attempt += 1) {
-      try { rmSync(owned.profile, { recursive: true, force: true }); } catch { /* retry after file handles close */ }
-      if (existsSync(owned.profile)) await delay(100);
-    }
-  }
+  // SIGTERM first so a caller-supplied --user-data-dir is closed cleanly, then the whole
+  // process tree (taskkill /T on Windows) and a confirmed removal of a temporary profile.
+  await closeChrome(owned, { graceMs: 2500 });
 }
 
 function bootstrapSource({ sessionId, bindingName, allowedOrigin, armOnStart, shadowMode = "closed" }) {
@@ -432,46 +312,25 @@ function bootstrapSource({ sessionId, bindingName, allowedOrigin, armOnStart, sh
 }
 
 async function launchOwnedChrome(url) {
-  const binary = chromeBinary();
-  if (!binary) fail("Chrome/Chromium not found; set CHROME=/path/to/chrome");
   const requestedPort = parsePort(option("port", "0"), { allowZero: true });
-  const providedProfile = option("user-data-dir", null);
-  const profile = providedProfile ? resolve(providedProfile) : mkdtempSync(join(tmpdir(), "dom-picker-v2-"));
-  const args = [
-    `--remote-debugging-port=${requestedPort}`,
-    `--user-data-dir=${profile}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--new-window",
-  ];
+  const args = ["--no-first-run", "--no-default-browser-check", "--new-window"];
   if (hasFlag("headless")) args.push("--headless=new", "--disable-gpu");
   if (hasFlag("no-sandbox")) args.push("--no-sandbox");
-  args.push(url);
-  const child = spawn(binary, args, { stdio: "ignore" });
-  const deadline = Date.now() + 20_000;
-  let port = requestedPort || null;
-  while (Date.now() < deadline) {
-    if (!port) {
-      const activePortFile = join(profile, "DevToolsActivePort");
-      if (existsSync(activePortFile)) {
-        const firstLine = readFileSync(activePortFile, "utf8").split(/\r?\n/)[0];
-        port = Number(firstLine);
-      }
-    }
-    if (port) {
-      try {
-        await fetchJson(`${baseUrl(port)}/json/version`);
-        return { child, port, profile, removeProfile: !providedProfile };
-      } catch { /* keep waiting */ }
-    }
-    if (child.exitCode != null) {
-      await cleanupOwnedChrome({ child, profile, removeProfile: !providedProfile });
-      fail(`Chrome exited before the debug endpoint was ready (code ${child.exitCode})`);
-    }
-    await delay(100);
+  try {
+    // launchChrome refuses a --port another browser already answers on, ignores a stale
+    // DevToolsActivePort under --user-data-dir, and checks that the endpoint it returns
+    // belongs to the Chrome it started.
+    return await launchChrome({
+      args,
+      url,
+      port: requestedPort,
+      userDataDir: option("user-data-dir", null),
+      profilePrefix: "dom-picker-v2-",
+      timeoutMs: 20_000,
+    });
+  } catch (error) {
+    fail(error.message);
   }
-  await cleanupOwnedChrome({ child, profile, removeProfile: !providedProfile });
-  fail("Chrome debug endpoint did not become ready within 20 seconds");
 }
 
 function extractFrameTree(frameTree) {
