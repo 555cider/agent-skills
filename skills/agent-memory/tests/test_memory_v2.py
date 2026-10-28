@@ -833,6 +833,15 @@ def test_provider_command_split_keeps_windows_backslashes():
         r"C:\Program Files\cfg\p.json",
         "plain",
     ]
+    # MS C runtime rules: quotes may sit inside a token, and escaped quotes survive.
+    assert split_provider_command(r'node C:\x\p.js --name="a b"', windows=True) == [
+        "node", r"C:\x\p.js", "--name=a b",
+    ]
+    assert split_provider_command(r'p --x "say \"hi\""', windows=True) == ["p", "--x", 'say "hi"']
+    assert split_provider_command(r'p "C:\dir\\" next', windows=True) == ["p", "C:\\dir\\", "next"]
+    assert split_provider_command("p 'C:\\a b\\q.exe'", windows=True) == ["p", "C:\\a b\\q.exe"]
+    with pytest.raises(ProviderError, match="cannot be parsed"):
+        split_provider_command("p 'unterminated", windows=True)
     assert split_provider_command("/opt/p --name 'a b'", windows=False) == ["/opt/p", "--name", "a b"]
     assert split_provider_command(' ["C:\\\\a b\\\\p.exe", "--x"] ', windows=False) == [r"C:\a b\p.exe", "--x"]
     with pytest.raises(ProviderError, match="array of non-empty strings"):

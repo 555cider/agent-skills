@@ -47,9 +47,10 @@ export AGENT_MEMORY_PROVIDER_TIMEOUT=30
 ```
 
 The command is split into argv without a shell. On macOS and Linux it follows
-POSIX shell quoting. On Windows backslashes are kept literally, so
-`C:\tools\provider.exe --flag` works unquoted; wrap a path containing spaces in
-double quotes (`"C:\Program Files\provider\provider.exe" --flag`). For exact
+POSIX shell quoting. On Windows it follows the C runtime rules every Windows
+program uses, so `C:\tools\provider.exe --flag` works unquoted, double quotes
+group (`"C:\Program Files\provider\provider.exe" --name="a b"`), `\"` is a
+literal quote, and single quotes still group literally as before. For exact
 argv on any platform, give a JSON array instead:
 
 ```bash
