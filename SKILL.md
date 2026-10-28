@@ -1,6 +1,6 @@
 ---
 name: ui-audit
-description: Measure rendered UI defects when asked for visual QA or when completing a component or screen that needs rendered verification. Match the audit matrix to the requested surface. A selected-element-only fix belongs to dom-picker; static source review, content-only review, and backend work do not trigger a browser audit.
+description: Use when asked for visual QA of a rendered web UI, or when finishing a component or screen that needs rendered verification. Not for a single selected-element fix (dom-picker), static source or content-only review, or backend work.
 license: MIT
 compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium browser with rendered DOM access.
 ---
