@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: Use when work may depend on prior user preferences, repo-specific constraints, earlier decisions, verified procedures, recurring caveats, or handoff context; when the user asks to remember, forget, correct, review, or update memory (기억해줘, 잊어버려, 메모리 업데이트); when durable context must transfer across Codex, Claude, OpenCode, or another coding agent; or when existing memory should be brought in from CLAUDE.md, AGENTS.md, ~/.codex/memories, or a .remember directory (메모리 가져오기, import, adopt). Do not use for self-contained requests, ordinary progress, secrets or personal data, or facts cheaply derivable from code, docs, git, or current tool output.
+description: Use when work may depend on durable context from past sessions or other agents (preferences, repo rules, decisions, procedures, handoffs), or the user asks to remember, forget, review, import, or manage memory. Not for self-contained requests, secrets, or facts derivable from code, git, or tool output.
 license: MIT
 compatibility: Requires Python 3.11+, SQLite FTS5, and local filesystem access. sqlite-vec and model providers are optional.
 ---
