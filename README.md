@@ -15,8 +15,12 @@ Skills live under `skills/`, matching the convention of
 skills/
   <skill-name>/
     SKILL.md          # frontmatter + prompt body (required)
+    evals/            # trigger-evals.json + behavior-evals.json (required by CI)
+    tests/run.sh      # deterministic regression suite (required by CI)
+    .gitattributes    # copy of the root rules (required by CI; see below)
     scripts/          # supporting scripts (optional)
     references/       # agent-loaded reference docs (optional)
+    agents/openai.yaml  # display name and default prompt for Codex (optional)
     assets/           # static assets (optional)
     README.md         # human-facing maintainer notes (optional)
 ```
@@ -233,7 +237,12 @@ The `split/<skill-name>` branches are produced by
 [`.github/workflows/split.yml`](.github/workflows/split.yml) on every push
 to `main` that touches `skills/`, using `git subtree split`. Maintainers
 edit only `main` in this monorepo — the split branches are derived
-artifacts and must never be committed to directly.
+artifacts and must never be committed to directly. The same workflow runs on
+pull requests too: every skill's `tests/run.sh`, `tests/install.sh` and the
+validators on Ubuntu, plus the shell suites (`tests/install.sh`, worktree-cycle,
+peer-review, step-back) on Ubuntu, macOS (`/bin/bash` 3.2) and Windows (Git
+Bash). Only the split job has write access, and a pull request run can never
+cancel a split of `main`.
 
 The script is idempotent — safe to re-run after pulling new skills into
 the monorepo. If `~/.agents/skills/<name>/` is already a clone, it's
