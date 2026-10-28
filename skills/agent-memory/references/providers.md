@@ -46,6 +46,16 @@ export AGENT_MEMORY_PROVIDER_COMMAND='/absolute/path/to/provider --flag'
 export AGENT_MEMORY_PROVIDER_TIMEOUT=30
 ```
 
+The command is split into argv without a shell. On macOS and Linux it follows
+POSIX shell quoting. On Windows backslashes are kept literally, so
+`C:\tools\provider.exe --flag` works unquoted; wrap a path containing spaces in
+double quotes (`"C:\Program Files\provider\provider.exe" --flag`). For exact
+argv on any platform, give a JSON array instead:
+
+```bash
+export AGENT_MEMORY_PROVIDER_COMMAND='["C:\\Program Files\\provider\\provider.exe", "--flag"]'
+```
+
 The executable receives one JSON object on stdin. Both stdin and stdout are
 UTF-8 regardless of the system locale (the request is not ASCII-escaped, so
 Korean text or emoji arrive as raw UTF-8); `PYTHONIOENCODING=utf-8` is set for
