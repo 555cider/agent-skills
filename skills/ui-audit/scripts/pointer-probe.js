@@ -26,6 +26,10 @@
 
   function visible(el) {
     if (!el || el.nodeType !== 1) return false;
+    for (var details = el.closest('details:not([open])'); details; details = details.parentElement && details.parentElement.closest('details:not([open])')) {
+      var summary = details.querySelector(':scope > summary');
+      if (!summary || !summary.contains(el)) return false;
+    }
     var style = getComputedStyle(el);
     var rect = el.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' &&

@@ -28,8 +28,16 @@ Choose the smallest matrix that proves the requested result. For a selected elem
 alone, use dom-picker's target verification; do not expand it into a page audit.
 For a component, audit its real route/story and relevant interaction states and
 viewports. For a whole-screen audit, cover supported viewports, themes, density,
-and error/pending states that can change the result. Explicitly requested matrices
+and error/pending states that can change the result. Include the theme the user
+actually works in (a large-text or field theme often breaks rows the default passes),
+and the second language when labels are translated. Explicitly requested matrices
 remain required. Unrelated routes or unsupported themes are not extra gates.
+
+A change to shared chrome (navigation rail, header, page header, tab strip, drawer,
+tokens) is not scoped by the route in view. Search the code for every surface that
+renders it -- other app shells, an admin or settings shell, the mobile drawer that
+re-hosts the same controls -- and put each of those routes in the matrix. Auditing the
+one screen you were looking at misses the shell where the change breaks.
 
 The runner measures the configured page, not an arbitrary CSS subtree. Report the
 actual route and matrix inspected; a component-focused review must not claim the
@@ -52,7 +60,7 @@ and evidence gates. Do not remove a failed cell merely to make the report green.
    - `advisories.json`: `required` or `optional` review signals.
    - `coverage.json`: exact matrix, state proof, probe counts, rule coverage, suppression, and timings.
 4. Resolve Fail findings and required advisories. Apply `baseline` only to an intentionally accepted `rule + selector`; do not use it to hide unverified coverage.
-5. Apply `references/scrutiny-checklist.md` to composition, thumbnail/squint hierarchy, purposeful color, typography, microcopy, brand coherence, and other subjective residue.
+5. Apply `references/scrutiny-checklist.md` to composition, thumbnail/squint hierarchy, purposeful color, typography, microcopy, brand coherence, and other subjective residue. Judge composition on the full-height screenshot of the finished page, not a crop around the changed element: moving one block can strand a counter, collapse a grid, or make two cards touch elsewhere on the page.
 6. Report the verified matrix, findings, advisories, and any unverified cells.
 
 ## Matrix and deterministic state setup
@@ -90,6 +98,8 @@ Configured or fallback mocks count as coverage only when CDP Fetch actually inte
 
 Structured actions support `click`, `fill`, `press`, `hover`, `check`, `selectOption`, and `upload`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
 
+For local authenticated routes, a fresh browser context starts signed out in every cell. If the app exposes a local demo login, set each route to its login URL with `returnTo` pointing at the target, use `stateSetups.default.actions` to click the login control, and assert a selector unique to the destination page. `waitForSelector` must name an element visible before the setup runs (usually the login control). Confirm the screenshot shows the destination; the report's `route` still names the initial login URL.
+
 `upload` reaches a screen that sits behind a file picker. Its `selector` names the **trigger the user presses**, not the file input — a page commonly creates an `<input type=file>`, clicks it, and removes it again, so the input is never a stable single-match visible selector. The runner intercepts the chooser the press opens and feeds it `files` (paths, resolved against the working directory; a missing path fails the setup instead of timing out).
 
 ```jsonc
@@ -114,6 +124,8 @@ A populated fixture proves only that data reached the DOM. It does not prove a d
 
 Data presence also does not prove data density. For variable-length fields, lists, tables, and server messages, include a credible high-density fixture derived from the current API or domain contract: representative maximum item counts, longest supported localized strings, and meaningful null or mixed values. A short one-item fixture cannot verify wrapping, prioritization, disclosure, or action reachability for a dense state. Treat interaction reachability and content density as separate matrix requirements; prove both when the surface has both risks.
 
+Before counting a `bottom` screenshot as below-the-fold evidence, identify the actual scroll container. The runner's `scrollPositions` move `window`; an app can instead scroll a `main` or panel while the window stays at zero. If the requested content is inside such a container, scroll it in a real browser, confirm its `scrollTop` increased, and capture the target in view. A repeated top image is not bottom coverage. Keep the runner's measured cells and this manual scroller check distinct in the report.
+
 The final response also does not prove asynchronous mutation feedback. For an in-scope control that writes remotely or can remain pending beyond the next paint, audit the transition as separate states:
 
 - use `stateMocks` with `hold: true` on the exact mutation request and drive the real control through `stateSetups`;
@@ -135,7 +147,7 @@ Leave the pending cell unverified when the mutation cannot be held deterministic
 - Widget-contract rules that depend on screen size — `multiRowTabs` and `desktopHiddenNav` — are skipped on mobile cells and in `reflow-320`. Wrapped tabs and a hamburger are the correct answer on a narrow screen, not a defect.
 - `modalEscapeUnhandled` is proven with trusted `Escape` input and is the only widget-contract `Fail`. The probe closes dialogs, so it runs last in the cell; nothing reads the post-Escape DOM as evidence. Its result lives in `coverage.matrix[].escapeProbe`, and a probe error marks the cell unverified instead of passing. A dialog that genuinely must not be dismissible uses `data-ui-audit-escape-exempt="<reason>"`; an empty reason does not exempt it.
 - Other widget-contract exemptions are `data-ui-audit-toggle-exempt` (a switch that really is deferred by design) and `data-ui-audit-nav-exempt` (an app rail or canvas tool with no top-level navigation to show).
-- Copy-convention rules (`koreanButtonVerbForm`, `buttonLabelPunctuation`, `genericConfirmLabel`, `mixedSpeechLevel`, `mixedValueFormat`, `freeformValueBadge`) read wording, not pixels, and stay optional `Polish` — except `genericConfirmLabel` on a destructive dialog, which is `Risk`. Deliberate copy uses `data-ui-audit-copy-exempt="<reason>"`; a team that accepts specific Korean button words lists them in `auditConfig.copy.koButtonAllow`. Korean action-noun wording is opt-in through `auditConfig.copy.koButtonNounStyle: true`, never a universal requirement. Natural actions such as 더보기 and 닫기 remain accepted. Preserve the product language and terminology; never switch to English to satisfy a wording preference.
+- Copy-convention rules (`koreanButtonVerbForm`, `buttonLabelPunctuation`, `genericConfirmLabel`, `mixedSpeechLevel`, `mixedValueFormat`, `freeformValueBadge`) read wording, not pixels, and stay optional `Polish` — except `genericConfirmLabel` on a destructive dialog, which is `Risk`. Deliberate copy uses `data-ui-audit-copy-exempt="<reason>"`; a team that accepts specific Korean button words lists them in `auditConfig.copy.koButtonAllow`. Korean action-noun wording is opt-in through `auditConfig.copy.koButtonNounStyle: true`, never a universal requirement; turn it on when the user's instructions or memory state that convention (e.g. "수정·선택·업로드, not 고치기·고르기·올리기"). The rule reads buttons only, so under that convention also review dialog titles, tooltips, and notifications for the same `~기` forms by hand. Hangul loanwords that most readers know (업로드, 다운로드, 텍스트, 메타데이터) are still Korean product language, not a switch to English. Natural actions such as 더보기 and 닫기 remain accepted. Preserve the product language and terminology; never switch to English to satisfy a wording preference.
 
 Computed colours are read as `rgb()`/`rgba()`, `oklab()`, `oklch()`, and `color(srgb …)`. That list is not cosmetic: Chrome returns modern colour functions verbatim and Tailwind v4 emits `oklab()` for every palette entry, so a parser limited to `rgb()` returns "no colour" for such a build — contrast checks skip silently and a modal backdrop measures as absent while it paints correctly. Silence from the colour rules on a modern stack is a reason to check the parser, not evidence of a clean screen.
 
@@ -181,6 +193,9 @@ Not verified: <cells/rules, or none>
 - `scripts/rule-coverage.mjs`: per-report rule-manifest completeness validator.
 - `scripts/keyboard-probe.js`, `pointer-probe.js`: trusted-input planning and evidence helpers.
 - `scripts/audit-chrome.mjs`: canonical Node/CDP runner, network mocks, adaptations, concurrency, and v2 outputs.
+- `nonTextContrast` recognizes a transparent, borderless input whose immediate wrapper provides a measured 3:1 field boundary; check the wrapper before changing an intentional chip-input design.
+- The keyboard probe also measures a changed outline on the focused control's immediate wrapper, as used by `:focus-within` row links and selects; a distant ancestor highlight is not sufficient.
+- Keyboard traversal counts the summary of closed `<details>` and excludes its hidden descendants; counting those descendants makes a valid dialog focus trap look incomplete.
 - `references/audit-rules.md`: exact rules, thresholds, and false-positive guards.
 - `references/findings-schema.md`: configuration and schema-v2 contract.
 - `tests/fixtures/` and `tests/expected.json`: recall and precision regression corpus.

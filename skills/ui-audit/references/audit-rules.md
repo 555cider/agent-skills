@@ -591,6 +591,33 @@ A badge promises a category from a small closed set (status, grade, type).
   counters and signed deltas (`12`, `99+`, `+12%`), and siblings under one parent (a tag list
   is one record's multi-valued field) do not count as an open set.
 
+## invalidAriaState — `Risk` — auto-measured
+- **Method:** every visible `aria-pressed`, `aria-checked`, `aria-expanded`, `aria-selected`
+  attribute is compared against its token list (`true`/`false`, plus `mixed` for pressed and
+  checked, and `undefined`).
+- **Threshold:** any other value, including the empty string a template writes for a boolean
+  `false` or `null` (`aria-pressed="${on}"`).
+- **FP guards:** subtrees under `aria-hidden`, `inert`, or `hidden` are skipped.
+
+## controlCutByScroller — `Risk` — auto-measured
+- **Method:** for each visible control, the nearest ancestor with `overflow-x: auto|scroll` and
+  real horizontal overflow; reports the control when its box crosses the container's visible
+  width (`clientLeft` + `clientWidth`). Catches the fixed-width popover or panel whose last
+  button slid out of view without a page-level overflow.
+- **Threshold:** any part of the control past the visible edge (1px tolerance).
+- **FP guards:** deliberate horizontal rails — `tablist`/`toolbar`/`menubar`/`listbox`
+  containers, `scroll-snap-type`, content wider than 1.5× the box, and controls inside a table
+  in the scroller — are skipped.
+
+## readonlyLooksEditable — `Polish` — auto-measured
+- **Method:** each visible `readonly` text input or textarea is compared with the first
+  editable field of the same tag on the page: border width, style, color, and background.
+- **Threshold:** all four equal, so the value the user cannot change reads as an input.
+- **FP guards:** disabled fields, borderless transparent fields, and pages without an editable
+  peer are skipped.
+- **Suggested fix:** show the value as text (or a muted borderless field); if it is edited
+  elsewhere, link there; if it has no value, drop the row.
+
 ## koreanButtonVerbForm — `Polish` — auto-measured
 Optional team convention, enabled only by `auditConfig.copy.koButtonNounStyle: true`.
 Korean verbs and verbal nouns are valid labels; this rule checks an explicitly chosen style.
@@ -603,7 +630,8 @@ Korean verbs and verbal nouns are valid labels; this rule checks an explicitly c
   two-syllable 기 nouns (기기, 크기, 주기) pass; English labels are out of scope. Teams can allow
   specific words with `auditConfig.copy.koButtonAllow`. Natural standalone actions
   더보기, 닫기, 열기, 보기, 바로가기 always pass.
-- **Suggested fix:** consider a noun (저장하기 → 저장) only if it preserves the action and
+- **Suggested fix:** consider a noun (저장하기 → 저장, 서식 고치기 → 서식 수정, 고르기 → 선택,
+  올리기 → 업로드) only if it preserves the action and
   product terminology. Keep Korean labels in Korean; a grammatical preference never
   justifies switching the product language. This is optional Polish, not conformance.
 
