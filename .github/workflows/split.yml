@@ -29,12 +29,15 @@ on:
       - '.github/workflows/split.yml'
   workflow_dispatch:
 
+# Read-only by default. Only the split job, which force-pushes split/<name>, gets write access.
 permissions:
-  contents: write
+  contents: read
 
+# Runs are grouped per event and ref, so a pull request can never cancel or queue behind a
+# push to main. Superseded pull request runs are cancelled; main runs never are.
 concurrency:
-  group: split-skills
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
@@ -65,11 +68,95 @@ jobs:
             bash "$suite"
           done
           bash tests/install.sh
+      - name: Check shared copies are in sync
+        run: |
+          set -euo pipefail
+          if [ -f tests/check-shared-copies.sh ]; then
+            bash tests/check-shared-copies.sh
+          else
+            echo "tests/check-shared-copies.sh not present; skipping"
+          fi
+
+  # The shell tooling is used on every OS, and each one breaks it differently: macOS ships
+  # /bin/bash 3.2 (empty arrays under set -u, no GNU sed), Windows runs it through Git Bash
+  # (paths, file locking, the python3 Store stub). Run the shell suites everywhere.
+  portability:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Provide python3 on Windows
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          if ! python3 -c 'import sys' 2>/dev/null; then
+            shim="$RUNNER_TEMP/python3-shim"
+            mkdir -p "$shim"
+            {
+              echo '#!/usr/bin/env bash'
+              echo 'exec python "$@"'
+            } > "$shim/python3"
+            chmod +x "$shim/python3"
+            cygpath -w "$shim" >> "$GITHUB_PATH"
+          fi
+      - name: Configure git identity
+        run: |
+          git config --global user.name  "CI"
+          git config --global user.email "ci@example.com"
+      - name: Install and uninstall tests (macOS uses /bin/bash 3.2)
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # Put the system bash first so `#!/usr/bin/env bash` resolves to 3.2 as it does
+            # for most macOS users, even when the image also ships a newer bash.
+            mkdir -p "$RUNNER_TEMP/system-bash"
+            ln -sf /bin/bash "$RUNNER_TEMP/system-bash/bash"
+            export PATH="$RUNNER_TEMP/system-bash:$PATH"
+          fi
+          bash --version | head -n 1
+          bash tests/install.sh
+      - name: worktree-cycle and step-back suites (macOS uses /bin/bash 3.2)
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            mkdir -p "$RUNNER_TEMP/system-bash"
+            ln -sf /bin/bash "$RUNNER_TEMP/system-bash/bash"
+            export PATH="$RUNNER_TEMP/system-bash:$PATH"
+          fi
+          bash skills/worktree-cycle/tests/run.sh
+          bash skills/step-back/tests/run.sh
+      - name: Provide bash 4+ for peer-review on macOS
+        if: runner.os == 'macOS'
+        run: |
+          # run-peer-review.sh needs associative arrays and says so on bash 3.2.
+          if ! bash -c '[ "${BASH_VERSINFO[0]}" -ge 4 ]'; then
+            brew install bash
+            echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          fi
+      - name: peer-review suite
+        run: |
+          bash --version | head -n 1
+          bash skills/peer-review/tests/run.sh
 
   split:
     needs: quality
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # One split at a time across every trigger; a queued run is never cancelled mid-push.
+    concurrency:
+      group: split-skills-publish
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
