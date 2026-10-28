@@ -174,7 +174,7 @@ git clone https://github.com/555cider/agent-skills.git
 cd agent-skills
 ./install.sh                       # every skill
 ./install.sh peer-review           # one specific skill
-./install.sh peer-review other     # multiple specific skills
+./install.sh peer-review step-back # multiple specific skills
 ./install.sh --local peer-review   # apply this checkout's local skill files
 ./install.sh --local agent-memory --shadow   # install + shared recall, keep native memory
 ./install.sh --local agent-memory --primary  # install + make Agent Memory primary
@@ -258,7 +258,7 @@ clear error rather than silently degrading to a copy.
 
 ```bash
 ./uninstall.sh <name>              # remove one skill
-./uninstall.sh peer-review other   # remove several
+./uninstall.sh peer-review step-back   # remove several
 ./uninstall.sh --all               # remove every skill declared by this repo
 ./uninstall.sh --list              # print this monorepo's skill names
 ```
