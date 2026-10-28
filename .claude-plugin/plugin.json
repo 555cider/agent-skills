@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "agent-skills",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Every skill in the agent-skills collection at once: durable agent memory, plan graph, peer review, UI audit, DOM picker, screen map, worktree lifecycle, and step-back.",
   "author": {
     "name": "555cider"
