@@ -1,6 +1,6 @@
 ---
 name: screen-map
-description: Use when an agent needs to operate a local web app — reach a screen, run a flow, or write a browser test — and does not already know the click path; when asked to map, re-map, or check the freshness of an app's screens and transitions; or when a browser session driven by Playwright, CDP, dom-picker, or a person should be recorded into a reusable map so the next run does not rediscover it. Answers "how do I get to X" with an executable action sequence that was actually walked or actually watched. Does not cover fixing one pointed-at element, visual QA of a rendered screen, scraping third-party sites, non-browser work, or producing a sitemap.xml or information-architecture sitemap — this records executable actions between screens, not a URL hierarchy.
+description: Use to operate a local web app without a known click path (reach a screen, run a flow, write a browser test), to map it or check a map's freshness, or to record a driven browser session into a reusable map. Not for fixing one element, visual QA, scraping third-party sites, or sitemap.xml.
 license: MIT
 compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium. Crawling requires a disposable local environment; querying an existing map requires neither.
 ---
