@@ -3,7 +3,7 @@
 Invoke the entry point as:
 
 ```bash
-python3 <skill-dir>/scripts/plan-graph.py <command> [options]
+<skill-dir>/bin/plan-graph <command> [options]
 ```
 
 Every command accepts `--root <dir>` and `--json` after the command name.
