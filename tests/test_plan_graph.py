@@ -702,6 +702,16 @@ x
         self.run_cli("reopen", "base")
         self.assertEqual(load_store(self.root).plans["base"].status, "active")
 
+    def test_whitespace_only_list_values_are_rejected_before_writing(self) -> None:
+        # CLI values reach validation unstripped; a blank tag used to be written and then
+        # broke every later command on load.
+        failed, _ = self.run_cli("create", "a-plan", "--title", "A", "--tag", "   ", expect=1)
+        self.assertEqual(failed["diagnostics"][0]["code"], "invalid_metadata")
+        self.assertFalse(self.plan_file("a-plan").exists())
+        self.create("b-plan", tags=("b",))
+        failed, _ = self.run_cli("update", "b-plan", "--add-tag", "  ", expect=1)
+        self.assertEqual(failed["diagnostics"][0]["code"], "invalid_metadata")
+
     def test_close_on_done_plan_reports_no_changes(self) -> None:
         self.create("base", tags=("base",))
         self.create("child", tags=("child",), requires=("base",))
