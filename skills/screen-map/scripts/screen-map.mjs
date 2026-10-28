@@ -27,6 +27,9 @@ import {
   reachability, renderMarkdown, replayPathKey, routeTemplate, routeToMcpSteps, routeToSteps,
   shortestSafePath, stateById, stateKey, statesByRoute, statusCounts, transitionsFrom,
 } from './model.mjs';
+import { requireWebSocket } from './chrome-cdp.mjs';
+
+requireWebSocket('screen-map');
 
 const EXIT_OK = 0, EXIT_NO_ANSWER = 1, EXIT_ERROR = 2, EXIT_REFUSED = 3;
 
