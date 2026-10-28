@@ -19,7 +19,8 @@ directory and nothing above it — so the path only resolves for maintainers wor
 ```
 scripts/screen-map.mjs   CLI: crawl, record, route, state, actions, status, verify, report, invalidate
 scripts/model.mjs      pure logic — route templates, signatures, classification, registry, graph, rendering
-scripts/browser.mjs    Chrome launch or attach + minimal CDP client + page operations
+scripts/browser.mjs    Chrome launch or attach + page operations
+scripts/chrome-cdp.mjs Chrome launch, process-tree cleanup, CDP client; identical copy shared with ui-audit and dom-picker
 scripts/record.mjs     the recorder: watches a session it does not drive, and files what it sees
 scripts/harvest.js     injected into the page: describes the screen, resolves an action, reports clicks
 references/            action policy and the map.json schema
