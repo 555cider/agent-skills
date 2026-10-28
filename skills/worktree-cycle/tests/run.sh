@@ -341,10 +341,15 @@ run_in "$repo" "$START" feat1
 assert_eq "recreating the same worktree name restores the same block" \
   "$first" "$(port_base_of "$repo/.worktrees/feat1")"
 
+# A fixed number such as 24000 fails on any machine that happens to run a server in that block.
+# Borrow a block the allocator just proved bindable, release it, then ask for it explicitly.
 repo="$(new_repo ports-explicit)"
-run_in "$repo" "$START" feat1 --port-base 24000
+run_in "$repo" "$START" probe
+free_base="$(port_base_of "$repo/.worktrees/probe")"
+git -C "$repo" worktree remove --force "$repo/.worktrees/probe"
+run_in "$repo" "$START" feat1 --port-base "$free_base"
 assert_exit "start accepts an explicit --port-base" 0
-assert_eq "an explicit --port-base is used as given" "24000" \
+assert_eq "an explicit --port-base is used as given" "$free_base" \
   "$(port_base_of "$repo/.worktrees/feat1")"
 
 run_in "$repo" "$START" feat2 --port-base 3000
