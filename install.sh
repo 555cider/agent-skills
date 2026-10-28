@@ -84,7 +84,7 @@ report_ignored_skill_dirs() {
   local n
   [ ${#IGNORED_SKILL_DIRS[@]} -gt 0 ] || return 0
   printf 'note: ignoring directories under skills/ without SKILL.md:\n' >&2
-  for n in "${IGNORED_SKILL_DIRS[@]}"; do
+  for n in ${IGNORED_SKILL_DIRS[@]+"${IGNORED_SKILL_DIRS[@]}"}; do
     printf '        skills/%s\n' "$n" >&2
   done
   printf '      delete them yourself if they are leftovers; this script never touches the checkout.\n' >&2
@@ -96,7 +96,7 @@ if [ $# -gt 0 ] && [ "$1" = "--list" ]; then
   shift
   [ $# -eq 0 ] || { echo "error: '--list' takes no arguments" >&2; exit 2; }
   report_ignored_skill_dirs
-  [ ${#SKILL_NAMES[@]} -eq 0 ] || printf '%s\n' "${SKILL_NAMES[@]}"
+  [ ${#SKILL_NAMES[@]} -eq 0 ] || printf '%s\n' ${SKILL_NAMES[@]+"${SKILL_NAMES[@]}"}
   exit 0
 fi
 
@@ -135,20 +135,20 @@ done
 # one install instead of printing the same skill block twice.
 if [ ${#SELECTED[@]} -gt 1 ]; then
   DEDUPED_SELECTED=()
-  for name in "${SELECTED[@]}"; do
+  for name in ${SELECTED[@]+"${SELECTED[@]}"}; do
     duplicate=0
-    for existing in "${DEDUPED_SELECTED[@]}"; do
+    for existing in ${DEDUPED_SELECTED[@]+"${DEDUPED_SELECTED[@]}"}; do
       [ "$existing" = "$name" ] && { duplicate=1; break; }
     done
     [ "$duplicate" = "1" ] || DEDUPED_SELECTED+=("$name")
   done
-  SELECTED=("${DEDUPED_SELECTED[@]}")
+  SELECTED=(${DEDUPED_SELECTED[@]+"${DEDUPED_SELECTED[@]}"})
 fi
 
 # Validate selected names against skills/ — fail fast on typos rather than
 # silently installing nothing.
 if [ ${#SELECTED[@]} -gt 0 ]; then
-  for name in "${SELECTED[@]}"; do
+  for name in ${SELECTED[@]+"${SELECTED[@]}"}; do
     # Reject empty / path-traversal / nested names up front: `[ -d "$SKILLS_SRC/../x" ]`
     # can be true yet the install loop only matches basenames of skills/*/, so such
     # a name would pass validation and then silently install nothing.
@@ -159,7 +159,7 @@ if [ ${#SELECTED[@]} -gt 0 ]; then
         ;;
     esac
     known=0
-    for available in "${SKILL_NAMES[@]}"; do
+    for available in ${SKILL_NAMES[@]+"${SKILL_NAMES[@]}"}; do
       [ "$available" = "$name" ] && { known=1; break; }
     done
     if [ "$known" = "0" ]; then
@@ -171,7 +171,7 @@ if [ ${#SELECTED[@]} -gt 0 ]; then
         echo "error: skill not found: $name" >&2
       fi
       echo "       available:" >&2
-      for available in "${SKILL_NAMES[@]}"; do echo "         - $available" >&2; done
+      for available in ${SKILL_NAMES[@]+"${SKILL_NAMES[@]}"}; do echo "         - $available" >&2; done
       exit 2
     fi
   done
@@ -179,7 +179,7 @@ fi
 
 if [ -n "$INTEGRATION_MODE" ] && [ ${#SELECTED[@]} -gt 0 ]; then
   has_agent_memory=0
-  for name in "${SELECTED[@]}"; do
+  for name in ${SELECTED[@]+"${SELECTED[@]}"}; do
     [ "$name" = "agent-memory" ] && has_agent_memory=1
   done
   [ "$has_agent_memory" = "1" ] || {
@@ -509,10 +509,10 @@ warnings=0
 report_ignored_skill_dirs
 
 agent_memory_installed=0
-for name in "${SKILL_NAMES[@]}"; do
+for name in ${SKILL_NAMES[@]+"${SKILL_NAMES[@]}"}; do
   if [ ${#SELECTED[@]} -gt 0 ]; then
     skip=1
-    for sel in "${SELECTED[@]}"; do
+    for sel in ${SELECTED[@]+"${SELECTED[@]}"}; do
       [ "$sel" = "$name" ] && { skip=0; break; }
     done
     [ "$skip" -eq 0 ] || continue
@@ -543,7 +543,7 @@ for name in "${SKILL_NAMES[@]}"; do
   fi
 
   # Tier 2: per-harness link → ~/.agents/skills/<name>/
-  for harness in "${HARNESSES[@]}"; do
+  for harness in ${HARNESSES[@]+"${HARNESSES[@]}"}; do
     mkdir -p "$harness"
     ensure_link "$AGENTS_DIR/$name" "$harness/$name" || warnings=$((warnings + 1))
   done

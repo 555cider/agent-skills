@@ -35,7 +35,7 @@ set -euo pipefail
 
 AGENTS_ROOT="$HOME/.agents/skills"
 HARNESS_ROOTS=("$HOME/.claude/skills" "$HOME/.codex/skills")
-ROOTS=("${HARNESS_ROOTS[@]}" "$AGENTS_ROOT")
+ROOTS=(${HARNESS_ROOTS[@]+"${HARNESS_ROOTS[@]}"} "$AGENTS_ROOT")
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_SRC="$REPO_ROOT/skills"
 
@@ -152,7 +152,7 @@ fi
 remove_path() {
   local path="$1"
   local under=0 root
-  for root in "${ROOTS[@]}"; do
+  for root in ${ROOTS[@]+"${ROOTS[@]}"}; do
     case "$path" in
       "$root"/*) under=1; break ;;
     esac
@@ -228,7 +228,7 @@ plugin_conflict_ids() {
 }
 
 errors=0
-for name in "${SELECTED[@]}"; do
+for name in ${SELECTED[@]+"${SELECTED[@]}"}; do
   # Refuse empty / path-traversal names — defensive, never expected from
   # a well-formed CLI but the cost of the check is zero.
   case "$name" in
@@ -256,7 +256,7 @@ for name in "${SELECTED[@]}"; do
   if [ "$name" = "agent-memory" ]; then
     remove_agent_memory_launcher || errors=$((errors + 1))
   fi
-  for root in "${ROOTS[@]}"; do
+  for root in ${ROOTS[@]+"${ROOTS[@]}"}; do
     remove_path "$root/$name" || errors=$((errors + 1))
   done
 done

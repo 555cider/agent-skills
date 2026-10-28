@@ -468,6 +468,23 @@ JSON
     fail "expected the local install to be removed regardless"
 }
 
+# HOME with no ~/.claude or ~/.codex leaves HARNESSES empty, and duplicate
+# names start the de-duplication from an empty list. Both are empty-array
+# expansions that macOS /bin/bash 3.2 rejects under `set -u`.
+test_install_with_no_harness_dirs_and_duplicate_names() {
+  local home="$WORK/no-harness-home"
+
+  mkdir -p "$home"
+  HOME="$home" "$INSTALL" --local step-back step-back >"$WORK/no-harness.out" 2>"$WORK/no-harness.err" ||
+    fail "expected install without harness dirs to succeed: $(cat "$WORK/no-harness.err")"
+  [ -f "$home/.agents/skills/step-back/SKILL.md" ] || fail "expected step-back to install"
+  [ "$(grep -c '^skill: step-back$' "$WORK/no-harness.out")" = "1" ] ||
+    fail "expected a duplicated name to install once"
+  HOME="$home" "$UNINSTALL" step-back >"$WORK/no-harness-un.out" 2>"$WORK/no-harness-un.err" ||
+    fail "expected uninstall without harness dirs to succeed"
+  [ ! -e "$home/.claude" ] || fail "expected uninstall not to create ~/.claude"
+}
+
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
 test_default_fallback_does_not_overwrite_mismatched_plain_directory
 test_local_install_overwrites_dirty_managed_clone
@@ -481,5 +498,6 @@ test_agent_memory_shadow_one_command_setup
 test_agent_memory_shadow_requires_windows_launcher_on_path
 test_install_warns_when_the_skill_is_also_a_claude_code_plugin
 test_uninstall_reports_the_claude_code_plugin_copy_it_cannot_remove
+test_install_with_no_harness_dirs_and_duplicate_names
 
 echo "install tests passed"
