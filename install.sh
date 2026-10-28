@@ -110,7 +110,7 @@ for arg in "$@"; do
       # Extract from first comment after shebang up to the END USAGE sentinel.
       # Sentinel keeps the help output stable across header edits.
       sed -n '2,/^# --- END USAGE ---$/{/^# --- END USAGE ---$/d;p;}' "${BASH_SOURCE[0]}" \
-        | sed 's/^# \?//'
+        | sed -E 's/^# ?//'
       exit 0
       ;;
     --local)
