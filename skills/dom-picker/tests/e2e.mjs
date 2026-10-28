@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { findChrome as findInstalledChrome } from "../scripts/chrome-cdp.mjs";
+
 const DRIVER = fileURLToPath(new URL("../scripts/dom-picker.mjs", import.meta.url));
 const LOCATOR = fileURLToPath(new URL("../scripts/locate-source.mjs", import.meta.url));
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -45,20 +47,22 @@ async function waitUntil(check, message, timeout = 12_000) {
   throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`);
 }
 
+// The driver's own lookup: CHROME, PATH, and the Windows/macOS install paths. A `which`-only
+// search skipped this whole test on Windows.
 function findChrome() {
-  const names = [
-    process.env.CHROME,
-    "google-chrome",
-    "google-chrome-stable",
-    "chromium",
-    "chromium-browser",
-  ].filter(Boolean);
-  for (const name of names) {
-    if (name.includes("/") && existsSync(name)) return name;
-    const found = spawnSync("which", [name], { encoding: "utf8" });
-    if (found.status === 0) return found.stdout.trim();
+  return findInstalledChrome() ?? null;
+}
+
+// `stop --session` works on every OS; SIGINT runs the driver's handler only on POSIX, where
+// killing a Windows process skips it entirely.
+function stopDriver(child, sessionPath, { viaSignal = false } = {}) {
+  if (viaSignal && process.platform !== "win32") {
+    child.kill("SIGINT");
+    return;
   }
-  return null;
+  const result = spawnSync(process.execPath, [DRIVER, "stop", `--session=${sessionPath}`], { encoding: "utf8", timeout: 30_000 });
+  expect(result.status === 0, `stop command failed: ${result.stdout}\n${result.stderr}`);
+  expect(JSON.parse(result.stdout.trim()).event === "stop", "stop command did not report the stop");
 }
 
 function runProcess(command, args, timeout = 15_000) {
@@ -657,7 +661,10 @@ try {
   const requestEvent = await requestPromise;
   const requestPath = requestEvent.payload.requestPath;
   expect(requestPath.startsWith(artifacts) && existsSync(requestPath), "request artifact was not persisted under the private root");
-  expect((statSync(requestPath).mode & 0o777) === 0o600, "request artifact permissions were not private");
+  // POSIX modes only: Windows reports 0o666 for every writable file, whatever was requested.
+  if (process.platform !== "win32") {
+    expect((statSync(requestPath).mode & 0o777) === 0o600, "request artifact permissions were not private");
+  }
   const requestRecord = JSON.parse(readFileSync(requestPath, "utf8"));
   expect(requestRecord.protocolVersion === 2 && requestRecord.event === "request", "request artifact used the wrong protocol");
   expect(requestRecord.protocolRevision === 1 && requestRecord.payload.queueSequence === 1, "request did not enter the durable FIFO ledger");
@@ -889,7 +896,7 @@ try {
   expect(ambiguousSnapshot.status === 2 && `${ambiguousSnapshot.stdout}\n${ambiguousSnapshot.stderr}`.includes("must match exactly one"), "snapshot did not fail closed on an ambiguous selector");
 
   const stopped = driverEvents.waitFor("stopped", () => true, 8_000, false);
-  driverProcess.kill("SIGINT");
+  stopDriver(driverProcess, sessionReady.payload.sessionPath);
   await stopped;
   await waitUntil(async () => await mainEval("document.querySelectorAll('dom-picker-v2-host').length") === 0, "driver shutdown left the picker host behind");
   expect(await isolatedEval("typeof globalThis.__domPicker") === "undefined", "driver shutdown left the isolated API behind");
@@ -914,7 +921,7 @@ try {
     throw new Error(JSON.stringify(seen));
   }, "resume did not restore the isolated picker runtime");
   const resumedStopped = driverEvents.waitFor("stopped", () => true, 8_000, false);
-  driverProcess.kill("SIGINT");
+  stopDriver(driverProcess, sessionReady.payload.sessionPath, { viaSignal: true });
   await resumedStopped;
   await waitUntil(async () => await mainEval("document.querySelectorAll('dom-picker-v2-host').length") === 0, "resumed driver shutdown left the picker host behind");
 
@@ -932,14 +939,14 @@ try {
   const ownedArtifacts = join(temporaryRoot, "owned-artifacts");
   const ownedDriver = spawn(process.execPath, [DRIVER, "start", appUrl, "--headless", "--no-sandbox", "--arm", `--artifacts=${ownedArtifacts}`], { stdio: ["ignore", "pipe", "pipe"] });
   const ownedEvents = new JsonLineStream(ownedDriver);
-  await ownedEvents.waitFor("ready", (line) => line.target?.url?.startsWith(appUrl), 20_000);
+  const ownedReady = await ownedEvents.waitFor("ready", (line) => line.target?.url?.startsWith(appUrl), 20_000);
   await ownedEvents.waitFor("runtime_ready", (line) => line.payload?.isTop && line.payload?.url?.startsWith(appUrl), 12_000);
   const ownedProfile = await waitUntil(() => {
     const match = ownedEvents.stderr.match(/temporary Chrome profile at (.+); it will close/);
     return match?.[1] || null;
   }, "owned start session did not report its temporary profile");
   const ownedStopped = ownedEvents.waitFor("stopped", () => true, 10_000, false);
-  ownedDriver.kill("SIGINT");
+  stopDriver(ownedDriver, ownedReady.payload.sessionPath, { viaSignal: true });
   await ownedStopped;
   expect(!existsSync(ownedProfile), "owned start session did not remove its temporary Chrome profile");
 
