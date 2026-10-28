@@ -1,6 +1,6 @@
 ---
 name: plan-graph
-description: Use whenever a repository stores or should store persistent implementation or design plans that may overlap, depend on, replace, complete, or affect one another. Route the current task and changed code paths through `.agents/plans`, maintain plan lifecycle with the bundled CLI, surface stale, conflicting, or duplicate plans, and prune closed context. Do not use for chat-only one-off plans, checklists, package dependency diagrams, or repositories with another established planning system.
+description: Use when a repository stores or should store persistent plans in `.agents/plans` that may overlap, depend on, replace, or affect one another. Not for chat-only plans, checklists, package dependency diagrams, or repositories with another planning system.
 license: MIT
 compatibility: Requires Python 3.10 or newer, git for default repository-root discovery, and local filesystem access.
 ---
