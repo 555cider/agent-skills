@@ -1,6 +1,6 @@
 ---
 name: step-back
-description: "Reassess before declaring a task or plan complete, before the third repeated check, or after more than 15 tool calls on one subgoal. Check requested coverage, evidence, and whether the next action adds useful information. Do not use to narrow the user's requested scope or replace required verification."
+description: "Reassess before declaring a task or plan complete, before a third repeated check, or after 15+ tool calls on one subgoal: check requested coverage, evidence, and whether the next action adds information. Never use it to narrow the requested scope or skip required verification."
 license: MIT
 compatibility: Prompt only. No scripts, no dependencies, no network.
 ---
