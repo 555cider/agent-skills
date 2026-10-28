@@ -67,6 +67,14 @@ The audit sees boxes, not a workflow. Judge whether the screen reads as a compos
   stacked at ragged widths with no columns, gutters, or grouping. Left alignment is fine
   only inside a visible layout system (shared max-width, deliberate columns). `Polish`;
   `Risk` when the main work area feels accidentally pinned to one side.
+- **[visual]** A row whose only content is one small button or toggle ("show examples",
+  a lone filter switch). Move the control into the header it belongs to (right side of
+  the title row) and make secondary jumps text links rather than boxed buttons. `Polish`;
+  `Risk` in a dialog where the extra row pushes the primary content down. (`orphanedControlRow`
+  measures the case with a crowded neighbouring row; this is the general eye check.)
+- **[visual]** A floating toolbar over a canvas or document (zoom, insert row) must be an
+  overlay that takes no layout space; give it legibility with an opaque background and
+  shadow, not by turning it into a bar that pushes the content. `Polish`.
 - **[visual]** Where does the eye start, and is that the right place? Primary actions
   should sit where users expect them (top-right action row, form bottom, etc.), not
   scattered.
@@ -174,7 +182,9 @@ states are *meaningfully distinct* is judgment.
   don't say what the action does. The grammar is locale-specific: English buttons are verb
   phrases ("Save draft"); Korean labels may be natural nouns or verbs according to the
   product voice ("저장", "저장하기", "닫기"). Preserve the product language. An explicit
-  team noun convention enables `koreanButtonVerbForm`; otherwise do not apply it.
+  team noun convention enables `koreanButtonVerbForm`; otherwise do not apply it. Under that
+  convention apply it to titles, tooltips, and notifications too (서식 고치기 → 서식 수정,
+  서식을 고쳤습니다 → 서식을 수정했습니다); familiar Hangul loanwords (업로드, 텍스트) are fine.
   Whether the label names the *right* action is still yours. `Risk` on
   primary actions, else `Polish`.
 - **[auto]** Trailing `.`/`!`, over-long, or wrapped button labels → `buttonLabelPunctuation`.
@@ -205,6 +215,9 @@ states are *meaningfully distinct* is judgment.
 - **[visual]** Mixed filled and outlined icon families should not imply selection by
   accident. Use a consistent stroke/corner/visual-weight language; reserve fill changes
   for an explicit selected/current state. `Polish`; `Risk` when state is ambiguous.
+- **[hybrid]** Text glyphs standing in for icons (☰ ⇅ ⧩ ▸ ✕) beside a real icon set, or
+  in a mockup of a product that has one. Check which icon library the components import
+  and use it. `Polish`; `Risk` when the glyph renders differently per platform font.
 
 ## System & brand coherence  *([visual]/[hybrid])*
 
@@ -217,6 +230,18 @@ states are *meaningfully distinct* is judgment.
   the "does it belong" call on top.)
 - **[visual]** Repeated controls with the same role looking like they came from separate
   design systems. `Risk`.
+- **[hybrid]** The same data shown on two screens (a form tree in a picker dialog and in a
+  manager screen) should share grouping, order, and wording. Search the code for the other
+  place before judging one screen alone. `Risk` when they disagree.
+- **[hybrid]** The same shared element across routes (tab strip, list header, page bar,
+  pagination) measured, not eyeballed: read its rendered height and font size on every
+  route that has it and compare the numbers. A 52px strip on one screen and 44px on its
+  sibling is invisible one screen at a time. `Polish`; `Risk` when it shifts content on
+  navigation.
+- **[hybrid]** Capability parity among siblings: when one list offers selection, bulk
+  actions, sort, filters, search, or paging, check whether its sibling lists need the
+  same, and whether paging uses one style everywhere. `Risk` when a missing capability
+  forces a one-at-a-time workflow.
 
 ## Motion & affordance nuance  *([visual], not measured)*
 
@@ -233,8 +258,24 @@ states are *meaningfully distinct* is judgment.
 - **[hybrid]** Do not use color alone for selected/error/success/status meaning. Pair it
   with text, shape, icon, underline, or pattern. `inlineLinkAffordance` measures the
   common prose-link case; confirm other state semantics here.
+- **[visual]** An action whose only entry point is hidden — a hover-only pencil, a kebab-menu
+  item, the title text itself acting as a button — when the thing it acts on is right there.
+  Prefer an always-visible icon button next to the target (rename: pencil beside the title →
+  the line becomes an input; Enter/blur saves, Esc cancels). `Risk` for touch layouts.
+- **[hybrid]** Mode switches must not move the layout: entering inline edit, opening or
+  closing a side panel, or toggling a section should leave the row and screen height
+  unchanged. Measure the height before and after; the delta should be 0. `Polish`; `Risk`
+  when content jumps under the pointer.
+- **[visual]** Multi-line inputs that grow with their content read better than a fixed box
+  with a drag-resize handle. `Polish`.
+- **[visual]** A button whose effect is unclear or duplicated ("Check" when Save already
+  validates) — remove it rather than explain it. `Polish`.
 - **[visual]** Hover/focus/active/selected affordance that resizes the component or relies
   on a color-only shift that vanishes in one theme. `Polish`–`Risk`.
+- **[hybrid]** A hover-only swap or reveal (an icon replacing a logo, actions appearing on a
+  row) not gated by `@media (hover: hover)`. On touch, `:hover` sticks after a tap, so the
+  swapped state stays until the next tap elsewhere. Keep `:focus-visible` ungated. `Polish`;
+  `Risk` when the stuck state hides content or a label.
 
 ## Widget grammar & information scent  *([visual]/[hybrid])*
 

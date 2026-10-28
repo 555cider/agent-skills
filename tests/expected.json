@@ -332,7 +332,10 @@
       "mustAdvise": [
         { "rule": "focusIndicatorReview", "matches": "complex-focus", "review": "required" }
       ],
-      "mustNotHit": [{ "rule": "focusIndicatorMissing", "matches": "good-focus" }]
+      "mustNotHit": [
+        { "rule": "focusIndicatorMissing", "matches": "good-focus" },
+        { "rule": "focusIndicatorMissing", "matches": "parent-focus-link" }
+      ]
     },
     {
       "file": "target-size.html",
@@ -454,6 +457,26 @@
       "note": "The dialog keeps the backdrop and Escape contracts; only action reachability fails."
     },
     {
+      "file": "state-and-reach.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustHit": [
+        { "rule": "invalidAriaState", "matches": "bad-pressed", "severity": "Risk", "note": "boolean false rendered as an empty aria-pressed" },
+        { "rule": "controlCutByScroller", "matches": "bad-cut", "severity": "Risk", "note": "button pushed past a fixed-width overflow:auto popover" }
+      ],
+      "mustAdvise": [
+        { "rule": "readonlyLooksEditable", "matches": "bad-ro", "review": "optional" }
+      ],
+      "mustNotHit": [
+        { "rule": "invalidAriaState", "matches": "ok-" },
+        { "rule": "controlCutByScroller", "matches": "ok-rail" },
+        { "rule": "controlCutByScroller", "matches": "기타 서식" }
+      ],
+      "mustNotAdvise": [
+        { "rule": "readonlyLooksEditable", "matches": "ok-ro" }
+      ]
+    },
+    {
       "file": "copy-conventions.html",
       "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
       "theme": "light",
@@ -467,6 +490,7 @@
         { "rule": "koreanButtonVerbForm", "matches": "bad-formal", "review": "optional", "note": "합니다체 verb" },
         { "rule": "koreanButtonVerbForm", "matches": "bad-done", "review": "optional", "note": "-됨 nominal" },
         { "rule": "koreanButtonVerbForm", "matches": "공지사항", "review": "optional", "note": "opt-in convention preserves Korean terminology" },
+        { "rule": "koreanButtonVerbForm", "matches": "서식 수정", "review": "optional", "note": "prefixed native -기 verb maps to its action noun" },
         { "rule": "buttonLabelPunctuation", "matches": "bad-bang", "review": "optional" },
         { "rule": "buttonLabelPunctuation", "matches": "bad-dot", "review": "optional" },
         { "rule": "buttonLabelPunctuation", "matches": "long label", "review": "optional" },

@@ -43,6 +43,12 @@
 
   function isVisible(el) {
     if (!el || !el.isConnected) return false;
+    // Closed details renders its summary but removes the rest from sequential
+    // focus, even when descendant geometry is still reported by the browser.
+    for (var details = el.closest('details:not([open])'); details; details = details.parentElement && details.parentElement.closest('details:not([open])')) {
+      var summary = details.querySelector(':scope > summary');
+      if (!summary || !summary.contains(el)) return false;
+    }
     for (var cur = el; cur; cur = composedParent(cur)) {
       if (cur.nodeType !== 1) continue;
       var style = getComputedStyle(cur);
@@ -320,13 +326,29 @@
     if (shadowChanged || backgroundChanged || pseudoChanged) {
       return { status: 'review', method: shadowChanged ? 'box-shadow' : (pseudoChanged ? 'pseudo-element' : 'background'), reason: 'complex focus treatment needs pixel review' };
     }
+    var parent = el.parentElement;
+    var parentBaseline = focusBaselines[selector + '::parent'];
+    if (parent && parentBaseline && parent.matches(':focus-within')) {
+      var parentStyle = styleFingerprint(parent);
+      var parentOutlineWidth = Number.parseFloat(parentStyle.outlineWidth) || 0;
+      if (changed(parentStyle, parentBaseline, ['outlineStyle', 'outlineWidth', 'outlineColor', 'outlineOffset']) &&
+          parentStyle.outlineStyle !== 'none' && parentOutlineWidth > 0) {
+        var parentOutlineColor = parseColor(parentStyle.outlineColor);
+        var parentBg = adjacentBackground(parent);
+        if (!parentOutlineColor || parentBg.complex || !parentBg.color) return { status: 'review', method: 'parent-outline', reason: 'indicator contrast needs pixel review' };
+        var parentRatio = contrastRatio(parentOutlineColor, parentBg.color);
+        return { status: parentRatio >= 3 ? 'pass' : 'low-contrast', method: 'parent-outline', contrast: Math.round(parentRatio * 100) / 100 };
+      }
+    }
     return { status: 'missing', reason: 'no visible author or user-agent focus treatment was observed' };
   }
 
   function captureFocusBaselines() {
     focusBaselines = {};
     tabbables(topModal() || document).forEach(function (el) {
-      focusBaselines[cssPath(el)] = styleFingerprint(el);
+      var selector = cssPath(el);
+      focusBaselines[selector] = styleFingerprint(el);
+      if (el.parentElement) focusBaselines[selector + '::parent'] = styleFingerprint(el.parentElement);
     });
     return { captured: Object.keys(focusBaselines).length };
   }

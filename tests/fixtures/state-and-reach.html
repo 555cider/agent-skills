@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>서식 속성</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px;font:16px/1.6 system-ui,sans-serif;color:#111827;background:#fff}
+  h1{font-size:22px;margin:0 0 12px}
+  button{font:inherit;min-height:40px;padding:8px 16px;border:1px solid #374151;border-radius:8px;background:#fff;color:#111827;cursor:pointer;white-space:nowrap}
+  input{font:inherit;padding:8px 12px;border:1px solid #6b7280;border-radius:8px;background:#fff;color:#111827}
+  .muted{border-color:transparent;background:#f3f4f6}
+  .pop{width:300px;overflow:auto;border:1px solid #d1d5db;border-radius:8px;padding:12px;margin-bottom:16px}
+  .pop .row{display:flex;gap:8px}
+  .rail{width:300px;overflow-x:auto;scroll-snap-type:x mandatory;display:flex;gap:8px;margin-bottom:16px}
+  .rail button{scroll-snap-align:start}
+  label{display:block;margin:8px 0 4px;font-size:14px}
+</style></head><body>
+<main>
+  <h1>서식 속성</h1>
+  <button id="bad-pressed" aria-pressed="">예시 보기</button>
+  <button id="ok-pressed" aria-pressed="false">작성 안내</button>
+  <button id="ok-expanded" aria-expanded="true">버전 이력</button>
+
+  <div class="pop" id="bad-pop">
+    <label for="rename">서식 이름</label>
+    <div class="row"><input id="rename" value="공사감리일지" size="16"><button>저장</button><button id="bad-cut">취소</button></div>
+  </div>
+  <div class="rail" id="ok-rail"><button>법정 서식</button><button>사무소 서식</button><button>프로젝트 서식</button><button>기타 서식</button></div>
+
+  <label for="name">칸 이름</label>
+  <input id="name" value="작업사항">
+  <label for="bad-ro">칸 키</label>
+  <input id="bad-ro" value="t0_r8c7" readonly>
+  <label for="ok-ro">서식 코드</label>
+  <input id="ok-ro" class="muted" value="building-rule__form-21" readonly>
+</main>
+</body></html>

@@ -8,11 +8,15 @@
   #good-focus:focus-visible{outline:3px solid #111;outline-offset:2px}
   #low-focus:focus-visible{outline:3px solid #b5b5b5;outline-offset:2px}
   #complex-focus:focus-visible{outline:none;box-shadow:0 0 0 4px rgba(0,90,255,.55)}
+  #parent-focus-link:focus-visible{outline:none}
+  #parent-focus:has(> #parent-focus-link:focus-visible){outline:3px solid #111;outline-offset:2px}
 </style></head><body>
   <button id="entry">Entry</button>
   <button id="bad-focus">Missing focus indicator</button>
   <button id="good-focus">Strong focus indicator</button>
   <button id="low-focus">Low contrast focus indicator</button>
   <button id="complex-focus">Complex focus indicator</button>
+  <div id="parent-focus"><a id="parent-focus-link" href="#parent-focus">Parent focus indicator</a></div>
   <label for="caret">Caret field</label><input id="caret" value="editable">
+  <details><summary>Closed details</summary><button id="hidden-details-button">Not a tab stop until opened</button></details>
 </body></html>

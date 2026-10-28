@@ -182,6 +182,9 @@
     ruleDef('flagAsLanguageIndicator', ruleFlagAsLanguageIndicator, 'document', 'widget-contract'),
     ruleDef('accordionPanelScroll', ruleAccordionPanelScroll, 'document', 'widget-contract'),
     ruleDef('freeformValueBadge', ruleFreeformValueBadge, 'document', 'widget-contract'),
+    ruleDef('invalidAriaState', ruleInvalidAriaState, 'document', 'accessibility', 'WCAG 4.1.2'),
+    ruleDef('controlCutByScroller', ruleControlCutByScroller, 'document', 'layout'),
+    ruleDef('readonlyLooksEditable', ruleReadonlyLooksEditable, 'document', 'widget-contract'),
     // Copy conventions: wording read from rendered text, not geometry.
     ruleDef('koreanButtonVerbForm', ruleKoreanButtonVerbForm, 'document', 'microcopy'),
     ruleDef('buttonLabelPunctuation', ruleButtonLabelPunctuation, 'document', 'microcopy'),
@@ -447,6 +450,17 @@
 
       var adjacent = effectiveBg(el.parentElement || document.body);
       var cues = boundaryContrastCues(cs, adjacent.rgb);
+      // A transparent, borderless input can use its immediate wrapper as the
+      // visible field boundary (for example, an input inside a chip editor).
+      // Check that wrapper against its own adjacent surface before judging the input.
+      if (cs.backgroundColor === 'rgba(0, 0, 0, 0)' &&
+          parseFloat(cs.borderTopWidth) === 0 && parseFloat(cs.borderRightWidth) === 0 &&
+          parseFloat(cs.borderBottomWidth) === 0 && parseFloat(cs.borderLeftWidth) === 0 &&
+          el.parentElement) {
+        var wrapper = el.parentElement;
+        var wrapperCues = boundaryContrastCues(getComputedStyle(wrapper), effectiveBg(wrapper.parentElement || document.body).rgb);
+        if (wrapperCues.some(function (cue) { return cue.ratio >= min; })) return;
+      }
       var best = cues.reduce(function (current, cue) {
         return !current || cue.ratio > current.ratio ? cue : current;
       }, null);
@@ -2358,7 +2372,13 @@
   var KO_GI_STEM_LONG = '기이리치우르누꾸추루';
   var KO_BOX_NOUN = /(보관|편지|수신|발신|사서|우편|모금|투표|제안|건의|알림|쪽지|메일|메시지)함$/;
   var KO_NOUN_FIX = /^(.+?)(하기|되기|시키기|합니다|됩니다|하십시오|하세요|해요|돼요|되요|하다|되다|하자|할게요|할래요|함|됨)$/;
-  var KO_WORD_FIX = { '찾기': '검색', '내려받기': '다운로드', '글쓰기': '작성' };
+  // Native -기 verbs with a common Sino-Korean or loanword action noun. Looked up by the whole
+  // label first, then by its last word so "서식 고치기" suggests "서식 수정".
+  var KO_WORD_FIX = {
+    '찾기': '검색', '내려받기': '다운로드', '글쓰기': '작성', '고치기': '수정', '고르기': '선택',
+    '올리기': '업로드', '빼기': '제외', '되돌리기': '복원', '바꾸기': '변경', '지우기': '삭제',
+    '숨기기': '숨김', '보내기': '전송', '붙이기': '첨부'
+  };
   var KO_NATURAL_ACTIONS = ['더보기', '닫기', '열기', '보기', '바로가기'];
 
   function koreanVerbForm(word) {
@@ -2375,6 +2395,82 @@
     return null;
   }
 
+  // A template that writes `aria-pressed="${on}"` renders false as an empty attribute; an empty
+  // or misspelled state token is not "false", so assistive tech reports no state or the default.
+  var ARIA_STATE_TOKENS = {
+    'aria-pressed': ['true', 'false', 'mixed', 'undefined'],
+    'aria-checked': ['true', 'false', 'mixed', 'undefined'],
+    'aria-expanded': ['true', 'false', 'undefined'],
+    'aria-selected': ['true', 'false', 'undefined']
+  };
+  function ruleInvalidAriaState(ctx) {
+    Object.keys(ARIA_STATE_TOKENS).forEach(function (attr) {
+      qsa('[' + attr + ']').forEach(function (el) {
+        if (!isVisible(el) || el.closest('[aria-hidden=true],[inert],[hidden]')) return;
+        var value = el.getAttribute(attr);
+        if (ARIA_STATE_TOKENS[attr].indexOf(value.trim().toLowerCase()) >= 0) return;
+        ctx.findings.push(mk('invalidAriaState', 'Risk', 'auto-measured', cssPath(el),
+          attr + '="' + value + '" is not a valid state token, so assistive technology cannot announce the control\'s state.',
+          { attribute: attr, value: value }, { allowed: ARIA_STATE_TOKENS[attr] }, rectOf(el),
+          'Render the boolean as a string ("true"/"false"), e.g. String(on), instead of interpolating false or null.'));
+      });
+    });
+  }
+
+  // A control pushed past the visible width of an overflow:auto panel (a fixed-width popover, a
+  // side panel) is reachable only by a sideways scroll the panel does not look like it offers.
+  // Deliberate horizontal rails — tab strips, toolbars, snap carousels, wide tables, content far
+  // wider than the box — are left alone.
+  function ruleControlCutByScroller(ctx) {
+    qsa('button,[role=button],a[href],input:not([type=hidden]),select,textarea').forEach(function (el) {
+      if (!isVisible(el) || isExempt(el)) return;
+      var r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return;
+      for (var anc = el.parentElement; anc && anc !== document.body; anc = anc.parentElement) {
+        var cs = getComputedStyle(anc);
+        if (cs.overflowX !== 'auto' && cs.overflowX !== 'scroll') continue;
+        if (anc.scrollWidth <= anc.clientWidth + 1) return;
+        if (anc.matches('[role=tablist],[role=toolbar],[role=menubar],[role=listbox]')) return;
+        if (cs.scrollSnapType && cs.scrollSnapType !== 'none') return;
+        if (anc.scrollWidth > anc.clientWidth * 1.5) return;
+        var table = el.closest('table');
+        if (table && anc.contains(table)) return;
+        var a = anc.getBoundingClientRect();
+        var visLeft = a.left + anc.clientLeft;
+        var visRight = visLeft + anc.clientWidth;
+        if (r.right <= visRight + 1 && r.left >= visLeft - 1) return;
+        var hidden = Math.round(Math.max(r.right - visRight, visLeft - r.left));
+        ctx.findings.push(mk('controlCutByScroller', 'Risk', 'auto-measured', cssPath(el),
+          'Control extends ' + hidden + 'px past the visible width of its scroll container (' + anc.clientWidth + 'px wide, content ' + anc.scrollWidth + 'px); it is reachable only by scrolling sideways.',
+          { hiddenPx: hidden, containerWidth: anc.clientWidth, scrollWidth: anc.scrollWidth, container: cssPath(anc) }, { hiddenPx: 0 }, rectOf(el),
+          'Let the row wrap, shorten the label, or widen the container so every control fits its visible width.'));
+        return;
+      }
+    });
+  }
+
+  // A value the user cannot change, drawn exactly like an editable field, invites typing that does
+  // nothing. Compared with an editable field of the same tag on the same page.
+  function ruleReadonlyLooksEditable(ctx) {
+    var sel = 'input:not([type=checkbox]):not([type=radio]):not([type=hidden]):not([type=range]):not([type=color]):not([type=file]),textarea';
+    var editable = qsa(sel).filter(function (el) {
+      return !el.readOnly && !el.disabled && isVisible(el) && !isExempt(el);
+    });
+    qsa(sel).forEach(function (el) {
+      if (!el.readOnly || el.disabled || !isVisible(el) || isExempt(el)) return;
+      var peer = editable.filter(function (o) { return o.tagName === el.tagName; })[0];
+      if (!peer) return;
+      var a = getComputedStyle(el), b = getComputedStyle(peer);
+      if (a.borderTopWidth !== b.borderTopWidth || a.borderTopStyle !== b.borderTopStyle) return;
+      if (a.borderTopColor !== b.borderTopColor || a.backgroundColor !== b.backgroundColor) return;
+      if (parseFloat(a.borderTopWidth) === 0 && a.backgroundColor === 'rgba(0, 0, 0, 0)') return;
+      ctx.findings.push(mk('readonlyLooksEditable', 'Polish', 'auto-measured', cssPath(el),
+        'Read-only field is drawn with the same border and background as an editable field, so it looks like it accepts input.',
+        { border: a.borderTopWidth + ' ' + a.borderTopStyle + ' ' + a.borderTopColor, background: a.backgroundColor, peer: cssPath(peer) }, {}, rectOf(el),
+        'Show the value as plain text (or a muted, borderless field); if it is edited elsewhere, link there.'));
+    });
+  }
+
   function ruleKoreanButtonVerbForm(ctx) {
     if ((ctx.cfg.copy || {}).koButtonNounStyle !== true) return;
     var allow = (ctx.cfg.copy || {}).koButtonAllow || [];
@@ -2388,7 +2484,7 @@
       if (!form) return;
       var stem = word.match(KO_NOUN_FIX);
       var prefix = core.slice(0, core.length - word.length);
-      var mapped = KO_WORD_FIX[core.replace(/\s+/g, '')];
+      var mapped = KO_WORD_FIX[core.replace(/\s+/g, '')] || (KO_WORD_FIX[word] && prefix + KO_WORD_FIX[word]);
       var fix = stem ? prefix + stem[1]
         : mapped ? mapped
         // "공지사항 바로가기" is a link to 공지사항: the destination's name is the label.
