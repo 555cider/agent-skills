@@ -28,6 +28,7 @@
         "reloaded",
         "rejected",
         "destroyed",
+        "stop",
         "stopped",
         "error"
       ]
