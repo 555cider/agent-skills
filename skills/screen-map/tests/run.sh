@@ -559,6 +559,12 @@ record_session() { # app-dir, driver-args...
     fail "record opens a browser to watch" "$(head -c 400 "$WORK/record.err" 2>/dev/null)"
     return 1
   fi
+  # 9222 is the attach default; landing on it means `--port 0` was read as "no port".
+  if [ "${endpoint##*:}" = 9222 ]; then
+    fail "--port 0 lets the OS pick a free port" "endpoint $endpoint"
+  else
+    pass "--port 0 lets the OS pick a free port"
+  fi
   node "$HERE/drive.mjs" --port "${endpoint##*:}" "$@" > "$WORK/drive.log" 2>&1
   local driven=$?
   # The recording ends when the driver closes the tab. A driver that died never got there,
