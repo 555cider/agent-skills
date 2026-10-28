@@ -324,8 +324,10 @@ EOF
 
 # A PATH holding only core tool dirs — excludes wherever a real reviewer CLI
 # (agy/codex/...) might be installed, so "missing CLI" tests are deterministic
-# on machines that happen to have a reviewer CLI installed.
-CORE_PATH=""
+# on machines that happen to have a reviewer CLI installed. The bash running
+# this suite goes first: without it `#!/usr/bin/env bash` falls back to macOS
+# /bin/bash 3.2, which the script rejects with exit 2 before any CLI check.
+CORE_PATH="$(dirname "$BASH")"
 for _t in git mktemp python3 sed grep tr ls cat od date dirname basename head tail wc chmod mkdir rm sleep sort; do
   _d="$(command -v "$_t" 2>/dev/null)" || continue
   _d="$(dirname "$_d")"
