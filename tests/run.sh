@@ -690,6 +690,32 @@ assert_eq "the squash landed on integ" "$((before + 1))" "$(count_commits "$repo
 assert_eq "finish dropped the recorded base with the branch" "" \
   "$(git -C "$repo" config --get branch.worktree-feat1.worktreeCycleBase)"
 
+# A branch with no recorded base (older, or made by plain `git worktree add`) must not be
+# merged into whatever the main worktree happens to be on.
+repo="$(new_repo base-unrecorded)"
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+git -C "$repo" config --unset branch.worktree-feat1.worktreeCycleBase
+git -C "$repo" checkout -q -b feature-x
+before="$(count_commits "$repo" feature-x)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): unrecorded"
+assert_exit_nonzero "finish refuses a branch with no recorded base"
+assert_stderr_contains "the refusal asks for --base" "Pass --base"
+assert_eq "feature-x is untouched" "$before" "$(count_commits "$repo" feature-x)"
+git -C "$repo" checkout -q dev
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): unrecorded" --base dev
+assert_exit "finish merges once --base names it" 0
+
+# A recorded base that was deleted is named, not reported as a branch to switch to.
+repo="$(new_repo base-recorded-gone)"
+git -C "$repo" branch integ
+run_in "$repo" "$START" feat1 --base integ
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+git -C "$repo" branch -q -D integ
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): gone"
+assert_exit_nonzero "finish refuses a recorded base that no longer exists"
+assert_stderr_contains "the refusal says where the base came from" "recorded when worktree-feat1 was started"
+
 # A detached main worktree has no branch to default to.
 repo="$(new_repo base-detached)"
 git -C "$repo" checkout -q --detach
@@ -752,7 +778,7 @@ git -C "$repo" add -A
 git -C "$repo" commit -qm "orphan root"
 git -C "$repo" checkout -q -f dev
 head_before="$(head_of "$repo" dev)"
-run_in "$repo" "$FINISH" -b lonely -m "feat(x): unrelated"
+run_in "$repo" "$FINISH" -b lonely -m "feat(x): unrelated" --base dev
 assert_exit_nonzero "finish refuses a branch with no common ancestor"
 assert_stderr_contains "the refusal names the missing ancestor" "no common ancestor"
 assert_eq "the unrelated-history guard changes nothing" "$head_before" "$(head_of "$repo" dev)"
