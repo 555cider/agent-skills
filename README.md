@@ -65,7 +65,8 @@ directories yourself.
   [DOM Picker v2 guide](skills/dom-picker/README.md).
 - [`skills/worktree-cycle/`](skills/worktree-cycle/) — the git worktree
   lifecycle as two guarded scripts: **start** branches from the **local**
-  integration branch HEAD (never the remote default) and asserts that base right
+  integration branch HEAD (by default the branch checked out in the main worktree,
+  never the remote default) and asserts that base right
   after creation, so stale-base collisions surface at creation instead of at
   merge time; **finish** squash-merges back and removes the worktree and branch.
   Every guard runs before anything is modified, a merge conflict restores the

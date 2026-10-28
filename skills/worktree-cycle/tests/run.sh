@@ -633,6 +633,61 @@ assert_eq "exactly the untracked stash is left" "1" "$(stash_count "$repo")"
 assert_eq "and it holds the untracked draft" \
   "my draft" "$(git -C "$repo" show 'stash@{0}^3:new.txt' 2>/dev/null)"
 
+echo "== base selection =="
+
+# No --base: the default is the branch the main worktree has checked out, not a fixed "dev".
+repo="$(new_repo base-default-main)"
+git -C "$repo" branch -M main
+run_in "$repo" "$START" feat1
+assert_exit "start defaults to the main worktree's branch" 0
+assert_eq "the worktree branches from local main HEAD" \
+  "$(head_of "$repo" main)" "$(head_of "$repo/.worktrees/feat1" HEAD)"
+assert_stderr_not_contains "the default base raises no mismatch warning" "not the branch checked out"
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+before="$(count_commits "$repo" main)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): onto main"
+assert_exit "finish defaults to the same base" 0
+assert_eq "finish merged into main" "$((before + 1))" "$(count_commits "$repo" main)"
+
+# git config worktree-cycle.base overrides the default; differing from the main worktree warns.
+repo="$(new_repo base-config)"
+git -C "$repo" branch integ
+commit_in "$repo" file.txt "dev only" "dev moves on"
+git -C "$repo" config worktree-cycle.base integ
+run_in "$repo" "$START" feat1
+assert_exit "start honours git config worktree-cycle.base" 0
+assert_eq "the worktree branches from the configured base" \
+  "$(head_of "$repo" integ)" "$(head_of "$repo/.worktrees/feat1" HEAD)"
+assert_stderr_contains "start warns that the base is not the main worktree's branch" "not the branch checked out"
+
+# An explicit --base that differs from the main worktree's branch warns too.
+repo="$(new_repo base-explicit-other)"
+git -C "$repo" branch integ
+run_in "$repo" "$START" feat1 --base integ
+assert_exit "start accepts a --base other than the main worktree's branch" 0
+assert_stderr_contains "start warns about the differing --base" "not the branch checked out"
+# finish follows the base recorded at start, so it refuses rather than merging into dev.
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+head_before="$(head_of "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): recorded base"
+assert_exit_nonzero "finish refuses while the main worktree is not on the recorded base"
+assert_stderr_contains "the refusal names the recorded base" "not 'integ'"
+assert_eq "dev is untouched" "$head_before" "$(head_of "$repo" dev)"
+git -C "$repo" checkout -q integ
+before="$(count_commits "$repo" integ)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): recorded base"
+assert_exit "finish merges into the recorded base once the main worktree is on it" 0
+assert_eq "the squash landed on integ" "$((before + 1))" "$(count_commits "$repo" integ)"
+assert_eq "finish dropped the recorded base with the branch" "" \
+  "$(git -C "$repo" config --get branch.worktree-feat1.worktreeCycleBase)"
+
+# A detached main worktree has no branch to default to.
+repo="$(new_repo base-detached)"
+git -C "$repo" checkout -q --detach
+run_in "$repo" "$START" feat1
+assert_exit_nonzero "start refuses to guess a base from a detached HEAD"
+assert_stderr_contains "the refusal says how to choose one" "--base"
+
 echo "== base behind its remote counterpart =="
 
 repo="$(new_repo upstream-behind-start)"

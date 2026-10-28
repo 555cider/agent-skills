@@ -11,7 +11,9 @@
 #                            [--port-base <n>]
 #
 # Defaults:
-#   base   = HEAD of the LOCAL --base branch (default: dev)
+#   base   = HEAD of the LOCAL --base branch. Without --base: `git config worktree-cycle.base`,
+#            else the branch checked out in the main worktree. The base is recorded on the new
+#            branch so finish-worktree.sh merges back into the same one.
 #   branch = worktree-<name>    (symmetric with finish-worktree.sh, which takes this name)
 #   path   = <name> under an existing .worktrees/ or .claude/worktrees/, else .worktrees/<name>
 #   ports  = a free block of 10 in 20000-29999, derived from the branch name
@@ -35,7 +37,7 @@
 
 set -euo pipefail
 
-BASE="dev"; NAME=""; WTPATH=""; BR=""; PORT_BASE=""
+BASE=""; BASE_SRC=""; NAME=""; WTPATH=""; BR=""; PORT_BASE=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PWD0="$PWD"   # captured before we move to the main worktree; relative args resolve against it
 
@@ -48,6 +50,7 @@ PORT_BLOCKS=1000
 PORT_RANGE_END=$(( PORT_RANGE_START + PORT_BLOCKS * PORT_BLOCK - 1 ))
 
 die()   { echo "‼️  $*" >&2; exit 1; }
+warn()  { echo "⚠️  $*" >&2; }
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; }
 
 # Absolute already? Accept POSIX (/x), MSYS (/c/x) and Windows drive (C:/x, C:\x) forms.
@@ -84,7 +87,7 @@ warn_if_base_behind() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --base)    [ $# -ge 2 ] || die "--base requires a value";   BASE="$2";   shift 2;;
+    --base)    [ $# -ge 2 ] || die "--base requires a value";   BASE="$2"; BASE_SRC="--base"; shift 2;;
     --path)    [ $# -ge 2 ] || die "--path requires a value";   WTPATH="$2"; shift 2;;
     --branch)  [ $# -ge 2 ] || die "--branch requires a value"; BR="$2";     shift 2;;
     --port-base) [ $# -ge 2 ] || die "--port-base requires a value"; PORT_BASE="$2"; shift 2;;
@@ -95,7 +98,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$NAME" ] || die "worktree name required — e.g. start-worktree.sh fix-login"
-[ -n "$BASE" ] || die "--base requires a branch name"
+[ -n "$BASE_SRC" ] && [ -z "$BASE" ] && die "--base requires a branch name"
 [ -n "$BR" ] || BR="worktree-$NAME"
 if [ -n "$WTPATH" ]; then WTPATH="$(abspath "$WTPATH")"; fi
 
@@ -117,6 +120,24 @@ WT_LIST="$(git worktree list --porcelain)" || die "not a git repository"
 MAIN="$(printf '%s\n' "$WT_LIST" | awk 'NR==1 && /^worktree /{print substr($0,10)}')"
 [ -n "$MAIN" ] || die "could not locate the main worktree"
 cd "$MAIN"
+
+# Which branch is the base: --base, then `git config worktree-cycle.base`, then whatever the main
+# worktree has checked out. The last one is the branch finish-worktree.sh will merge into, so it is
+# the only default that cannot disagree with finish; a hard-coded name breaks every repository
+# that integrates on something else.
+MAIN_BRANCH="$(git symbolic-ref --short -q HEAD 2>/dev/null)" || MAIN_BRANCH=""
+if [ -z "$BASE" ]; then
+  BASE="$(git config --get worktree-cycle.base 2>/dev/null)" || BASE=""
+  [ -z "$BASE" ] || BASE_SRC="git config worktree-cycle.base"
+fi
+if [ -z "$BASE" ]; then
+  [ -n "$MAIN_BRANCH" ] \
+    || die "the main worktree ($MAIN) is on a detached HEAD, so there is no default base. Pass --base <branch> or set: git config worktree-cycle.base <branch>"
+  BASE="$MAIN_BRANCH"
+elif [ -n "$MAIN_BRANCH" ] && [ "$BASE" != "$MAIN_BRANCH" ]; then
+  warn "base '$BASE' (from $BASE_SRC) is not the branch checked out in the main worktree ('$MAIN_BRANCH')."
+  echo "    finish-worktree.sh merges in the main worktree, so switch it to '$BASE' before finishing." >&2
+fi
 
 # base = HEAD of the LOCAL integration branch. If that branch does not exist locally, stop.
 # Falling back to the remote is exactly the accident this script exists to prevent.
@@ -159,6 +180,11 @@ NEW_SHA="$(git -C "$WTPATH" rev-parse HEAD)"
 [ "$NEW_SHA" = "$BASE_SHA" ] \
   || die "base mismatch: worktree $NEW_SHA != $BASE $BASE_SHA (unexpected — investigate before working)"
 
+# Record the base on the branch so finish-worktree.sh merges back into the same branch even when
+# the main worktree has since moved. git drops this with the branch's config on `branch -D`.
+git config "branch.$BR.worktreeCycleBase" "$BASE" \
+  || warn "could not record the base on '$BR'; pass --base $BASE to finish-worktree.sh"
+
 # Reserve a port block for this worktree. The record goes in the worktree's git directory, NOT
 # in the worktree itself: finish-worktree.sh requires `git status --porcelain` to be completely
 # empty there (untracked included), so a file in the tree would block every finish for the life
@@ -196,4 +222,4 @@ if [ -n "$PORT_BASE" ]; then
   echo "          instances and never restart a server you did not start."
 fi
 echo "   start working: cd \"$WTPATH\""
-echo "   when done:     finish-worktree.sh -b $BR -m \"<conventional commit>\""
+echo "   when done:     finish-worktree.sh -b $BR -m \"<conventional commit>\"   (merges into $BASE)"

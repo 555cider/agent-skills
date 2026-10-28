@@ -32,6 +32,10 @@
     "should_trigger": true
   },
   {
+    "query": "main 에서 워크트리 하나 따서 작업하고, 끝나면 main 으로 squash merge 해줘",
+    "should_trigger": true
+  },
+  {
     "query": "worktree-feat-login 머지하고 정리해줘",
     "should_trigger": true
   },

@@ -1,6 +1,6 @@
 ---
 name: worktree-cycle
-description: Use for the git worktree lifecycle — starting isolated work and folding it back. START creates a worktree branched from the LOCAL integration branch HEAD (default dev), not the remote default, and asserts the base, and reserves a dev-server port block for it so parallel worktrees do not fight over the same ports. FINISH squash-merges the worktree branch into the local integration branch and cleans up the branch and worktree. Triggers include "워크트리 시작/생성", "워크트리 정리", "dev 로 머지", "squash merge 후 브랜치·워크트리 정리", starting or closing out worktree work. Never pushes.
+description: Use for the git worktree lifecycle — starting isolated work and folding it back. START creates a worktree branched from the LOCAL integration branch HEAD (default: the branch checked out in the main worktree), not the remote default, and asserts the base, and reserves a dev-server port block for it so parallel worktrees do not fight over the same ports. FINISH squash-merges the worktree branch into the local integration branch and cleans up the branch and worktree. Triggers include "워크트리 시작/생성", "워크트리 정리", "dev/main 으로 머지", "squash merge 후 브랜치·워크트리 정리", starting or closing out worktree work. Never pushes.
 license: MIT
 compatibility: Bash, git, and Python 3.10+ for coordinated port allocation. Works on Windows through Git Bash. No network access, no push.
 ---
@@ -44,12 +44,17 @@ result, not a success.
 ## Start
 
 ```bash
-<skill-dir>/scripts/start-worktree.sh <name> [--base dev] [--path <dir>] [--branch <branch>]
+<skill-dir>/scripts/start-worktree.sh <name> [--base <branch>] [--path <dir>] [--branch <branch>]
                                              [--port-base <n>]
 ```
 
-- Base is the **local** `<base>` branch HEAD (default `dev`). If that local branch is missing,
+- Base is the **local** `<base>` branch HEAD. Without `--base` it is `git config
+  worktree-cycle.base` if set, else the branch checked out in the main worktree — the branch
+  finish merges into. A base that differs from the main worktree's branch is warned about, and
+  a detached main worktree with no `--base` stops the run. If the local base branch is missing,
   the script stops — it does not fall back to the remote, because that fallback is the accident.
+- The base is recorded on the new branch (`branch.<branch>.worktreeCycleBase`), so finish merges
+  back into the same branch without `--base`.
 - Default path: under an existing `.worktrees/` or `.claude/worktrees/`; warns when that
   directory is not gitignored.
 - An **empty** directory already sitting at the target path is reclaimed, because that is the
@@ -120,7 +125,9 @@ yours:
 
 ```bash
 <skill-dir>/scripts/finish-worktree.sh -b <worktree-branch> -m "feat(scope): summary"
-# preview: --dry-run  |  integration branch: --base dev  |  explicit worktree path: -w <path>
+# preview: --dry-run  |  explicit worktree path: -w <path>
+# integration branch: --base <branch> (default: the base recorded at start, then
+#   git config worktree-cycle.base, then the main worktree's branch)
 # refuse instead of stashing colliding untracked files: --no-autostash
 # park the main worktree's tracked changes across the merge: --autostash-tracked
 ```

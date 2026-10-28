@@ -28,6 +28,10 @@
 #
 # A relative -w resolves against the directory you invoked the script from.
 #
+# Base (the branch merged into), first match wins: --base; the base start-worktree.sh recorded on
+# the branch (git config branch.<branch>.worktreeCycleBase); git config worktree-cycle.base; the
+# branch checked out in the main worktree.
+#
 # Typical flow:
 #   1) implement and commit inside the worktree (tests green)
 #   2) return to the main worktree, keeping the worktree on disk
@@ -36,7 +40,8 @@
 
 set -euo pipefail
 
-BASE="dev"
+BASE=""
+BASE_SET=0
 BRANCH=""
 MSG=""
 WT=""
@@ -97,7 +102,7 @@ while [ $# -gt 0 ]; do
     -b|--branch)   [ $# -ge 2 ] || die "-b/--branch requires a value";   BRANCH="$2"; shift 2;;
     -m|--message)  [ $# -ge 2 ] || die "-m/--message requires a value";  MSG="$2";    shift 2;;
     -w|--worktree) [ $# -ge 2 ] || die "-w/--worktree requires a value"; WT="$2";     shift 2;;
-    --base)        [ $# -ge 2 ] || die "--base requires a value";        BASE="$2";   shift 2;;
+    --base)        [ $# -ge 2 ] || die "--base requires a value";        BASE="$2"; BASE_SET=1; shift 2;;
     --dry-run)     DRY=1; shift;;
     --autostash)          AUTOSTASH=1; shift;;
     --no-autostash)       AUTOSTASH=0; shift;;
@@ -109,7 +114,7 @@ done
 
 [ -n "$BRANCH" ] || die "-b/--branch required"
 [ -n "$MSG" ]    || die "-m/--message required (Conventional Commits: 'feat(scope): …')"
-[ -n "$BASE" ]   || die "--base requires a branch name"
+[ "$BASE_SET" = "0" ] || [ -n "$BASE" ] || die "--base requires a branch name"
 if [ -n "$WT" ]; then WT="$(abspath "$WT")"; fi
 
 # Move to the main worktree so this works from inside any worktree. The list is captured
@@ -118,6 +123,17 @@ WT_LIST="$(git worktree list --porcelain)" || die "not a git repository"
 MAIN="$(printf '%s\n' "$WT_LIST" | awk 'NR==1 && /^worktree /{print substr($0,10)}')"
 [ -n "$MAIN" ] || die "could not locate the main worktree (is this a git repository?)"
 cd "$MAIN"
+
+if [ -z "$BASE" ]; then
+  BASE="$(git config --get "branch.$BRANCH.worktreeCycleBase" 2>/dev/null)" || BASE=""
+fi
+if [ -z "$BASE" ]; then
+  BASE="$(git config --get worktree-cycle.base 2>/dev/null)" || BASE=""
+fi
+if [ -z "$BASE" ]; then
+  BASE="$(git symbolic-ref --short -q HEAD 2>/dev/null)" \
+    || die "the main worktree is on a detached HEAD, so there is no default base. Pass --base <branch>"
+fi
 
 [ "$BRANCH" != "$BASE" ] || die "the target branch is the same as base ($BASE)"
 
