@@ -54,7 +54,8 @@ result, not a success.
   a detached main worktree with no `--base` stops the run. If the local base branch is missing,
   the script stops — it does not fall back to the remote, because that fallback is the accident.
 - The base is recorded on the new branch (`branch.<branch>.worktreeCycleBase`), so finish merges
-  back into the same branch without `--base`.
+  back into the same branch without `--base`. A branch with no recorded base (started before
+  this, or by a plain `git worktree add`) needs `--base` or `worktree-cycle.base` at finish.
 - Default path: under an existing `.worktrees/` or `.claude/worktrees/`; warns when that
   directory is not gitignored.
 - An **empty** directory already sitting at the target path is reclaimed, because that is the
@@ -127,7 +128,7 @@ yours:
 <skill-dir>/scripts/finish-worktree.sh -b <worktree-branch> -m "feat(scope): summary"
 # preview: --dry-run  |  explicit worktree path: -w <path>
 # integration branch: --base <branch> (default: the base recorded at start, then
-#   git config worktree-cycle.base, then the main worktree's branch)
+#   git config worktree-cycle.base; with neither, --base is required)
 # refuse instead of stashing colliding untracked files: --no-autostash
 # park the main worktree's tracked changes across the merge: --autostash-tracked
 ```

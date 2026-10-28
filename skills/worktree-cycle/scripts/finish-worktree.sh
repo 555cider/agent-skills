@@ -70,7 +70,14 @@ abspath() {
 # announce "you are inside the worktree being removed ()" for any branch that has no worktree.
 realdir() {
   [ -n "${1:-}" ] || { printf '%s\n' ""; return 0; }
-  (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' ""
+  local dir
+  dir="$( (cd "$1" 2>/dev/null && pwd -P) )" || { printf '%s\n' ""; return 0; }
+  # Git Bash maps %TEMP% to /tmp for one spelling of a path and not the other, so two
+  # names for one directory compared unequal there. cygpath -m gives both one form.
+  if command -v cygpath >/dev/null 2>&1; then
+    dir="$(cygpath -m "$dir" 2>/dev/null)" || true
+  fi
+  printf '%s\n' "$dir"
 }
 
 # upstream_counterpart <branch> — print a remote-tracking ref worth comparing against, or
@@ -124,16 +131,24 @@ MAIN="$(printf '%s\n' "$WT_LIST" | awk 'NR==1 && /^worktree /{print substr($0,10
 [ -n "$MAIN" ] || die "could not locate the main worktree (is this a git repository?)"
 cd "$MAIN"
 
+BASE_SOURCE="--base"
 if [ -z "$BASE" ]; then
   BASE="$(git config --get "branch.$BRANCH.worktreeCycleBase" 2>/dev/null)" || BASE=""
+  BASE_SOURCE="the base recorded when $BRANCH was started (branch.$BRANCH.worktreeCycleBase)"
 fi
 if [ -z "$BASE" ]; then
   BASE="$(git config --get worktree-cycle.base 2>/dev/null)" || BASE=""
+  BASE_SOURCE="git config worktree-cycle.base"
 fi
 if [ -z "$BASE" ]; then
-  BASE="$(git symbolic-ref --short -q HEAD 2>/dev/null)" \
-    || die "the main worktree is on a detached HEAD, so there is no default base. Pass --base <branch>"
+  # No record: the branch predates recorded bases or was made by a plain `git worktree add`.
+  # Merging into whatever the main worktree happens to be on could land it on the wrong
+  # branch, so the caller names the base.
+  cur_branch="$(git symbolic-ref --short -q HEAD 2>/dev/null)" || cur_branch=""
+  die "no base is recorded for $BRANCH and worktree-cycle.base is unset. Pass --base <branch>${cur_branch:+ (the main worktree is on '$cur_branch')}"
 fi
+git show-ref --verify --quiet "refs/heads/$BASE" \
+  || die "base '$BASE' from $BASE_SOURCE does not exist as a local branch. Pass --base <branch> to choose another"
 
 [ "$BRANCH" != "$BASE" ] || die "the target branch is the same as base ($BASE)"
 
