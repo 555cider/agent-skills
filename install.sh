@@ -473,13 +473,28 @@ install_agent_memory_launcher() {
   esac
 }
 
+# system_python: print a Python 3.11+ interpreter. A bare `command -v` is not
+# enough on Windows, where python3 can be the Microsoft Store stub; same check
+# as uninstall.sh.
+system_python() {
+  local candidate
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+       && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 install_agent_memory_venv() {
   local skill_root="$AGENTS_DIR/agent-memory"
   local requirements="$skill_root/requirements.txt"
   local venv="$skill_root/.venv"
-  local python_bin
+  local python_bin system
 
-  if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+  if ! system="$(system_python)"; then
     printf '  WARN Agent Memory v2 requires Python 3.11 or newer\n' >&2
     return 1
   fi
@@ -488,7 +503,7 @@ install_agent_memory_venv() {
     return 1
   }
   if [ ! -x "$venv/bin/python" ] && [ ! -x "$venv/Scripts/python.exe" ]; then
-    if ! python3 -m venv "$venv"; then
+    if ! "$system" -m venv "$venv"; then
       printf '  WARN could not create Agent Memory private venv: %s\n' "$venv" >&2
       return 1
     fi
@@ -561,7 +576,7 @@ if [ -n "$INTEGRATION_MODE" ]; then
     integration_failed=1
   else
     printf '\nagent-memory integration: %s\n' "$INTEGRATION_MODE"
-    agent_memory_python="python3"
+    agent_memory_python="$(system_python || echo python3)"
     if [ -x "$AGENTS_DIR/agent-memory/.venv/bin/python" ]; then
       agent_memory_python="$AGENTS_DIR/agent-memory/.venv/bin/python"
     elif [ -x "$AGENTS_DIR/agent-memory/.venv/Scripts/python.exe" ]; then
