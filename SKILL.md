@@ -184,8 +184,9 @@ Resolve paths relative to this skill directory.
 
    Then claim the next FIFO item, if any.
 
-12. Keep the picker available for follow-up picks. At session end stop the long-running driver; a
-   `start` session closes only the temporary Chrome it owns. For an attached browser, optionally run
+12. Keep the picker available for follow-up picks. At session end stop the long-running driver with
+   `stop --session=PATH`, not by killing it (on Windows a kill skips all cleanup); a `start`
+   session closes only the temporary Chrome it owns. For an attached browser, optionally run
    `destroy` to remove the transient runtime.
 
 ## Evidence-only fallback

@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -27,6 +29,12 @@ import {
   writeUiState,
 } from "./session-ledger.mjs";
 import { CDP, closeChrome, launchChrome, requireWebSocket } from "./chrome-cdp.mjs";
+
+/* `stop --session` asks the long-running driver to shut down through files beside the session
+   manifest. A signal cannot do it everywhere: on Windows killing the process runs no handler,
+   so the page runtime and an owned Chrome with its profile were left behind. */
+const stopRequestPath = (sessionPath) => join(dirname(sessionPath), "stop-request");
+const stoppedMarkerPath = (sessionPath) => join(dirname(sessionPath), "driver-stopped.json");
 
 requireWebSocket("dom-picker");
 
@@ -535,6 +543,8 @@ class PickerSession {
       this.sessionPath = session.sessionPath;
     }
     this.persistUiState();
+    rmSync(stopRequestPath(this.sessionPath), { force: true });
+    rmSync(stoppedMarkerPath(this.sessionPath), { force: true });
     await this.attach();
     this.heartbeatTimer = setInterval(() => { void this.tickHeartbeat(); }, 1500);
     this.line("ready", {
@@ -552,9 +562,14 @@ class PickerSession {
       try { await this.destroyRuntime(); } catch { /* page may already be closed */ }
       this.connection?.close();
       await cleanupOwnedChrome(this.owned);
+      if (this.sessionPath) {
+        rmSync(stopRequestPath(this.sessionPath), { force: true });
+        writeFileSync(stoppedMarkerPath(this.sessionPath), JSON.stringify({ signal, at: new Date().toISOString() }));
+      }
       this.line("stopped", { signal });
       process.exit(0);
     };
+    this.stop = stop;
     process.once("SIGINT", () => { void stop("SIGINT"); });
     process.once("SIGTERM", () => { void stop("SIGTERM"); });
     await new Promise(() => {});
@@ -679,6 +694,10 @@ class PickerSession {
 
   async tickHeartbeat() {
     if (this.heartbeatRunning || this.stopping) return;
+    if (this.sessionPath && this.stop && existsSync(stopRequestPath(this.sessionPath))) {
+      void this.stop("stop-command");
+      return;
+    }
     this.heartbeatRunning = true;
     try { await this.heartbeat(); }
     finally { this.heartbeatRunning = false; }
@@ -1127,10 +1146,11 @@ async function reloadTarget(target) {
 async function main() {
   if (!command || command === "help" || hasFlag("help")) {
     process.stdout.write(
-      "usage: node dom-picker.mjs <start <url> | attach | resume | queue | claim | status | cancel | targets | find | snapshot <selector> | reload | verify | destroy>\n" +
+      "usage: node dom-picker.mjs <start <url> | attach | resume | stop | queue | claim | status | cancel | targets | find | snapshot <selector> | reload | verify | destroy>\n" +
       "  start <url> [--arm] [--headless] [--no-sandbox] [--port=0] [--user-data-dir=PATH] [--artifacts=DIR]\n" +
       "  attach [--target=ID|--match=TEXT] [--port=9222] [--arm] [--artifacts=DIR]\n" +
       "  resume --session=PATH\n" +
+      "  stop --session=PATH [--timeout-ms=20000]\n" +
       "  queue --session=PATH\n" +
       "  claim --session=PATH --consumer=ID\n" +
       "  status --request=PATH --input=PATH|-\n" +
@@ -1143,6 +1163,25 @@ async function main() {
       "  destroy [--target=ID|--match=TEXT] [--port=9222]\n"
     );
     process.exit(0);
+  }
+  if (command === "stop") {
+    const sessionPath = option("session", null);
+    if (!sessionPath) fail("stop requires --session=<session.json>");
+    loadSessionManifest(sessionPath);
+    const timeoutMs = Number(option("timeout-ms", "20000"));
+    const marker = stoppedMarkerPath(sessionPath);
+    rmSync(marker, { force: true });
+    writeFileSync(stopRequestPath(sessionPath), new Date().toISOString());
+    const deadline = Date.now() + timeoutMs;
+    while (!existsSync(marker)) {
+      if (Date.now() >= deadline) {
+        rmSync(stopRequestPath(sessionPath), { force: true });
+        fail(`driver did not stop within ${timeoutMs}ms; is it still running for this session?`);
+      }
+      await new Promise((done) => setTimeout(done, 200));
+    }
+    emit("stop", { sessionPath, ...JSON.parse(readFileSync(marker, "utf8")) });
+    return;
   }
   if (command === "queue") {
     const sessionPath = option("session", null);
