@@ -321,7 +321,7 @@ def scope_overlaps(plans: dict[str, Plan], index: dict[str, set[str]]) -> list[D
                     "scope_overlap",
                     f"shares {len(shared)} file(s) with {second} (e.g. {samples});"
                     " read that plan before editing shared files, add requires only"
-                    " for a genuine ordering, or narrow one scope",
+                    " for a genuine ordering, otherwise record the coordination decision",
                     first,
                 )
             )
