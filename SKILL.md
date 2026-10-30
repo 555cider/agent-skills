@@ -60,7 +60,7 @@ and evidence gates. Do not remove a failed cell merely to make the report green.
    - `advisories.json`: `required` or `optional` review signals.
    - `coverage.json`: exact matrix, state proof, probe counts, rule coverage, suppression, and timings.
 4. Resolve Fail findings and required advisories. Apply `baseline` only to an intentionally accepted `rule + selector`; do not use it to hide unverified coverage.
-5. Apply `references/scrutiny-checklist.md` to composition, thumbnail/squint hierarchy, purposeful color, typography, microcopy, brand coherence, and other subjective residue. Judge composition on the full-height screenshot of the finished page, not a crop around the changed element: moving one block can strand a counter, collapse a grid, or make two cards touch elsewhere on the page.
+5. Apply `references/scrutiny-checklist.md` to composition, thumbnail/squint hierarchy, purposeful color, typography, microcopy, brand coherence, key/value sheets (inspectors and property panels), and other subjective residue. Judge composition on the full-height screenshot of the finished page, not a crop around the changed element: moving one block can strand a counter, collapse a grid, or make two cards touch elsewhere on the page.
 6. Report the verified matrix, findings, advisories, and any unverified cells.
 
 ## Matrix and state proof
