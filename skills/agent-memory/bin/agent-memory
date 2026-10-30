@@ -2,7 +2,87 @@
 # agent-memory-managed-launcher-v2
 set -euo pipefail
 
-skill_root="$HOME/.agents/skills/agent-memory"
+# Find the skill, first match wins:
+# 1. the skill this launcher ships in, when that is a plugin install (plugin
+#    hooks run the launcher in place from the host's plugin cache);
+# 2. the install.sh copy under ~/.agents/skills;
+# 3. the skill beside this launcher (a checkout run directly);
+# 4. a Claude Code or Codex plugin install. Their paths carry the plugin version
+#    and change on every update, so a copy of this launcher on PATH looks them up
+#    on each run instead of remembering one.
+find_plugin_root() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CODEX_HOME:-$HOME/.codex}" <<'PY' 2>/dev/null
+import json, os, re, sys
+
+MARKET = "555cider-agent-skills"
+# (plugin name, skill path inside that plugin)
+PLUGINS = (("agent-memory", ""), ("agent-skills", "skills/agent-memory"))
+
+
+def usable(root):
+    return os.path.isfile(os.path.join(root, "scripts", "memory.py"))
+
+
+def claude_roots(config_dir):
+    try:
+        with open(os.path.join(config_dir, "plugins", "installed_plugins.json"), encoding="utf-8") as handle:
+            plugins = json.load(handle).get("plugins", {})
+    except (OSError, ValueError, AttributeError):
+        return
+    for name, subdir in PLUGINS:
+        entries = [entry for entry in plugins.get(f"{name}@{MARKET}") or [] if isinstance(entry, dict)]
+        # A project-scoped install belongs to one repository; prefer the user's.
+        entries.sort(key=lambda entry: entry.get("scope") != "user")
+        for entry in entries:
+            yield os.path.join(str(entry.get("installPath", "")), subdir)
+
+
+def version_key(name):
+    return [int(part) if part.isdigit() else -1 for part in re.split(r"[.+-]", name)]
+
+
+def codex_roots(codex_home):
+    for name, subdir in PLUGINS:
+        base = os.path.join(codex_home, "plugins", "cache", MARKET, name)
+        try:
+            versions = sorted(os.listdir(base), key=version_key, reverse=True)
+        except OSError:
+            continue
+        for version in versions:
+            yield os.path.join(base, version, subdir)
+
+
+for root in (*claude_roots(sys.argv[1]), *codex_roots(sys.argv[2])):
+    if usable(root):
+        print(os.path.normpath(root))
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+skill_root=""
+self_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || self_root=""
+[ -n "$self_root" ] && [ -f "$self_root/scripts/memory.py" ] || self_root=""
+case "$self_root" in
+  */plugins/cache/*) skill_root="$self_root" ;;
+esac
+if [ -z "$skill_root" ] && [ -f "$HOME/.agents/skills/agent-memory/scripts/memory.py" ]; then
+  skill_root="$HOME/.agents/skills/agent-memory"
+fi
+[ -n "$skill_root" ] || skill_root="$self_root"
+[ -n "$skill_root" ] || skill_root="$(find_plugin_root)" || skill_root=""
+
+if [ -z "$skill_root" ]; then
+  # Hooks fail open: a missing skill must never block the host's prompt.
+  if [ "${1:-}" = "hook" ]; then
+    printf '{}\n'
+    exit 0
+  fi
+  echo "agent-memory: skill not found in a plugin cache, in ~/.agents/skills/agent-memory, beside this launcher, or in a Claude Code/Codex plugin install" >&2
+  exit 127
+fi
+
 if [ -x "$skill_root/.venv/bin/python" ]; then
   python_bin="$skill_root/.venv/bin/python"
 elif [ -x "$skill_root/.venv/Scripts/python.exe" ]; then

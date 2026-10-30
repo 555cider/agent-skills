@@ -10,7 +10,8 @@ compatibility: Requires Python 3.11+, SQLite FTS5, and local filesystem access. 
 Use Agent Memory as evidence-aware durable work memory, not as project search or
 a transcript archive. SQLite at `~/.agents/memory/agent-memory.sqlite3` is the
 only source of truth; Claude, Codex, and OpenCode hooks share it. Run the
-installed `agent-memory` launcher (`agent-memory <command> --help` for flags).
+installed `agent-memory` launcher (`agent-memory <command> --help` for flags);
+inside a plugin install it is `bin/agent-memory` beside this file.
 Set `AGENT_MEMORY_HOME` only when an isolated store is required.
 
 ## Decide whether memory matters

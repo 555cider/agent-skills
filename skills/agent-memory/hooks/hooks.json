@@ -1,0 +1,41 @@
+{
+  "description": "agent-memory recall and capture; Claude Code and Codex both load this file",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/bin/agent-memory\" hook --harness auto --event user_prompt",
+            "timeout": 5,
+            "statusMessage": "Agent Memory user_prompt"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/bin/agent-memory\" hook --harness auto --event assistant_stop",
+            "timeout": 15,
+            "statusMessage": "Agent Memory assistant_stop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/bin/agent-memory\" hook --harness auto --event session_end",
+            "timeout": 15,
+            "statusMessage": "Agent Memory session_end"
+          }
+        ]
+      }
+    ]
+  }
+}

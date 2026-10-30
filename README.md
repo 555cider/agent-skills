@@ -138,8 +138,8 @@ other channel's copy of a skill they are about to touch.
 
 | | Claude Code plugin | `install.sh` |
 | --- | --- | --- |
-| Harnesses | Claude Code only | Claude Code, Codex, anything reading `~/.agents/skills/` |
-| Installs into | `~/.claude/plugins/` | `~/.agents/skills/` + per-harness links |
+| Harnesses | Claude Code, Codex 0.166+ | Claude Code, Codex, anything reading `~/.agents/skills/` |
+| Installs into | `~/.claude/plugins/`, `~/.codex/plugins/` | `~/.agents/skills/` + per-harness links |
 | Needs a checkout | no | yes (for `install.sh` itself) |
 | Update | `/plugin update <name>` | `git pull` in `~/.agents/skills/<name>/` |
 
@@ -164,8 +164,10 @@ that directory's root. The bundle is the repository root itself, described by
 [`.claude-plugin/plugin.json`](.claude-plugin/plugin.json), where `skills/` is
 auto-loaded.
 
-Codex reads none of this. If you use Codex — or any harness other than Claude
-Code — use `install.sh` below.
+Codex 0.166+ installs plugins from this same marketplace into
+`~/.codex/plugins/cache/` and loads their `hooks/hooks.json`, so the plugin also
+works there (agent-memory's hooks need a one-time trust in the Codex TUI). Other
+harnesses use `install.sh` below.
 
 ### install.sh — every harness
 

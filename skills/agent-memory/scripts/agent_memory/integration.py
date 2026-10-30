@@ -47,6 +47,70 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def running_from_plugin(skill_root: Path | None = None) -> bool:
+    """True when this copy was installed by Claude Code or Codex as a plugin.
+
+    The plugin ships its own hooks/hooks.json, which both hosts load from their
+    plugin cache, so settings-file hooks would only duplicate them — and would
+    pin a versioned cache path that the next plugin update deletes.
+    """
+
+    root = (skill_root or Path(__file__).resolve().parents[2]).resolve()
+    parts = root.parts
+    return any(
+        parts[index : index + 2] == ("plugins", "cache")
+        for index in range(len(parts) - 1)
+    )
+
+
+PLUGIN_IDS = tuple(
+    f"{name}@555cider-agent-skills" for name in ("agent-memory", "agent-skills")
+)
+
+
+def _toml_plugin_enabled(text: str, plugin_id: str) -> bool:
+    header = f'[plugins."{plugin_id}"]'
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != header:
+            continue
+        for following in lines[index + 1 :]:
+            if re.fullmatch(r"\s*\[[^]]+\]\s*", following):
+                break
+            match = re.fullmatch(r"\s*enabled\s*=\s*(true|false)\s*(?:#.*)?", following, re.I)
+            if match:
+                return match.group(1).lower() == "true"
+        return True
+    return False
+
+
+def plugin_hosts(user_home: Path | None = None) -> set[str]:
+    """Hosts that have this skill installed and enabled as a plugin."""
+
+    home = user_home or default_user_home()
+    hosts: set[str] = set()
+    try:
+        registry = json.loads(
+            (home / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")
+        ).get("plugins", {})
+        settings_path = home / ".claude" / "settings.json"
+        enabled = (
+            json.loads(settings_path.read_text(encoding="utf-8")).get("enabledPlugins", {})
+            if settings_path.exists()
+            else {}
+        )
+        if any(registry.get(key) and enabled.get(key) is not False for key in PLUGIN_IDS):
+            hosts.add("claude")
+    except (OSError, ValueError, AttributeError):
+        pass
+    config = home / ".codex" / "config.toml"
+    if config.exists():
+        text = config.read_text(encoding="utf-8", errors="replace")
+        if any(_toml_plugin_enabled(text, key) for key in PLUGIN_IDS):
+            hosts.add("codex")
+    return hosts
+
+
 def _hook_command(harness: str, event: str) -> str:
     if sys.platform == "win32":
         return f"agent-memory hook --harness {harness} --event {event}"
@@ -61,7 +125,10 @@ def _hook_command(harness: str, event: str) -> str:
         str(item)
         for item in (python, script, "hook", "--harness", harness, "--event", event)
     ]
-    return shlex.join(args)
+    # A deleted or moved skill makes python exit 2, which Claude Code and Codex
+    # treat as "block this prompt". The hook itself always exits 0, so `|| true`
+    # only changes that failure into the fail-open the hook promises.
+    return shlex.join(args) + " || true"
 
 
 # Tool capture only learns from shell commands, and every matched call starts a
@@ -354,11 +421,36 @@ def integrate(
         raise MemoryError(f"invalid integration mode: {mode}")
     if harness not in {"all", "claude", "codex", "opencode"}:
         raise MemoryError(f"invalid harness: {harness}")
-    selected = ["claude", "codex", "opencode"] if harness == "all" else [harness]
+    plugin = running_from_plugin()
+    if plugin and harness == "opencode" and mode != "off":
+        raise MemoryError(
+            "the OpenCode adapter needs the install.sh copy under ~/.agents/skills; "
+            "the plugin covers Claude Code and Codex only"
+        )
+    selected = (
+        (["claude", "codex"] if plugin else ["claude", "codex", "opencode"])
+        if harness == "all"
+        else [harness]
+    )
+    skipped: list[str] = []
+    if plugin:
+        # Only a host that loads the plugin gets its hooks; turning off native
+        # memory or hooks anywhere else would leave that host with no memory.
+        hosts = plugin_hosts(user_home)
+        skipped = [name for name in selected if name not in hosts]
+        if skipped and harness != "all" and mode != "off":
+            raise MemoryError(
+                f"{harness} does not have the agent-memory plugin installed and enabled; "
+                "install it there or use the install.sh copy"
+            )
+        if mode != "off":
+            selected = [name for name in selected if name in hosts]
     enabled = mode != "off"
+    # From a plugin copy, settings-file hooks are only ever removed.
+    write_hooks = enabled and not plugin
     if (
         apply
-        and enabled
+        and write_hooks
         and sys.platform == "win32"
         and "codex" in selected
         and _managed_launcher_path() is None
@@ -381,7 +473,7 @@ def integrate(
         )
     planned: dict[Path, str | None] = {}
     if "claude" in selected:
-        value = merge_hooks(_read_json(paths["claude"]), "claude", enabled, capture_tools=capture_tools)
+        value = merge_hooks(_read_json(paths["claude"]), "claude", write_hooks, capture_tools=capture_tools)
         if mode == "primary":
             value["autoMemoryEnabled"] = False
             plugins = value.get("enabledPlugins")
@@ -390,7 +482,7 @@ def integrate(
                     plugins[key] = False
         planned[paths["claude"]] = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
     if "codex" in selected:
-        value = merge_hooks(_read_json(paths["codex_hooks"]), "codex", enabled, capture_tools=capture_tools)
+        value = merge_hooks(_read_json(paths["codex_hooks"]), "codex", write_hooks, capture_tools=capture_tools)
         planned[paths["codex_hooks"]] = (
             json.dumps(value, indent=2, ensure_ascii=False) + "\n" if value else None
         )
@@ -426,6 +518,8 @@ def integrate(
     return {
         "mode": mode,
         "harnesses": selected,
+        "plugin_hooks": plugin,
+        "skipped": skipped if mode != "off" else [],
         "changes": changes,
         # What remains once the planned writes land, so a flag that resolved a
         # conflict does not report it as still present.
@@ -492,4 +586,8 @@ def integration_status(user_home: Path | None = None) -> dict[str, Any]:
             "managed": managed,
             "stale": stale,
         }
-    return {"adapters": status, "conflicts": known_conflicts(list(paths.values()))}
+    return {
+        "adapters": status,
+        "plugin_hooks": running_from_plugin(),
+        "conflicts": known_conflicts(list(paths.values())),
+    }
