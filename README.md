@@ -141,7 +141,7 @@ other channel's copy of a skill they are about to touch.
 | Harnesses | Claude Code, Codex 0.166+ | Claude Code, Codex, anything reading `~/.agents/skills/` |
 | Installs into | `~/.claude/plugins/`, `~/.codex/plugins/` | `~/.agents/skills/` + per-harness links |
 | Needs a checkout | no | yes (for `install.sh` itself) |
-| Update | `/plugin update <name>` | `git pull` in `~/.agents/skills/<name>/` |
+| Update | `/plugin update <name>`; Codex: `codex plugin marketplace upgrade 555cider-agent-skills` | `git pull` in `~/.agents/skills/<name>/` |
 
 ### Claude Code plugin
 
