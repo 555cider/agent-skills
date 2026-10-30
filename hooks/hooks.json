@@ -31,7 +31,7 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/skills/agent-memory/bin/agent-memory\" hook --harness auto --event session_end",
-            "timeout": 15,
+            "timeout": 3,
             "statusMessage": "Agent Memory session_end"
           }
         ]
