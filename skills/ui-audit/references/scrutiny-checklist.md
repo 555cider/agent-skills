@@ -398,6 +398,49 @@ predict what happens next. Do not re-eyeball the measured ones.
 - **[hybrid]** Proportions hold across zero / one / many / filtered / selected / expanded
   rows. (Render those states; the audit only sees the rows present.)
 
+## Key/value sheets: inspectors, property panels, detail views  *([visual]/[hybrid])*
+
+A sheet of names and values (an object inspector, a settings detail, a record view) is read
+down the value column with the name column as the index. Judge it as a table with two columns,
+not as a list of labelled fields.
+
+- **[visual]** What separates a name from its value should be a surface, not a line. A tinted
+  name column (one muted fill, a hairline to its right) lets the eye find values without
+  reading names; the same rows drawn as two-tone text with a hairline *between rows* read as
+  one undifferentiated list, because the strongest line is now the one that separates
+  neighbours, not the one that separates key from value. `Polish`; `Risk` when the sheet is
+  the primary place values are read.
+- **[hybrid]** The value stays on the name's row. A long name wraps inside its column (give it
+  break opportunities at `_`, `.` and camelCase boundaries so `ThermalTransmittance` or
+  `Fire_Rating_Reference` does not force a horizontal overflow); it does not push the value
+  under it. A sheet that decides per set "names this long go stacked, shorter ones go beside"
+  by counting characters makes two sets of the same object look like two different widgets.
+  Measure: every row's name box and value box share the same top within a few px. `Risk`.
+- **[hybrid]** One split for the whole panel. Size the name column once for the sheet (a fixed
+  ratio or a shared grid), not per set to that set's longest name; the panel otherwise has a
+  ragged seam that moves between sections. Measure the name-column right edge across sections
+  and compare the numbers. `Polish`; `Risk` when a resizable panel re-splits each set differently.
+- **[visual]** Group headings as dividers, not cards. A set title with its count
+  (`Pset_DoorCommon · 3`) on a divider line costs one row; a framed card around every set spends
+  a frame on each and makes seven sets read as seven panels. `Polish`.
+- **[visual]** Per-row actions (remove, reset, link) sit at the end of the value cell and reveal
+  on hover or focus for fine pointers, always visible for coarse pointers; a permanent column of
+  bins makes a sheet read as a list of delete buttons. The add action lives at the group heading
+  on hover, never as its own full-width row. `Polish`; `Risk` when the hover-only action is the
+  only route on touch.
+- **[visual]** Units and types belong in the value cell, after the number, in the muted tone
+  (`3.70 W/(m²·K)`); a unit in the name column makes the name column the thing the eye has to
+  read. `Polish`.
+- **[hybrid]** Volume honesty. Count rows and sections at a realistic object: a sheet past
+  roughly three screens with every section open has no outline the user can hold, and the
+  sections the user can actually change sit wherever the data model put them. Put editable
+  sections first, collapse tool-generated or rarely read sets by default (remember the choice per
+  set), and give a panel past ~2 screens an outline or jump strip. Do not keep controls open
+  that cannot act on this object (a type picker for a file-drawn shape that the lock banner says
+  will not change): collapse them under what would unlock them. `Risk` when the first viewport
+  is spent on sections that do not apply. (`accordionPanelScroll` measures the inner-scroll
+  case; the ordering and default-open choice is yours.)
+
 ## Responsive / i18n / zoom judgment  *([hybrid])*
 
 - **[hybrid]** Does the mobile layout preserve **task order** and not just shrink — primary
