@@ -546,10 +546,31 @@ def _launch_worker(args: argparse.Namespace) -> None:
     subprocess.Popen(command, **kwargs)
 
 
+def detect_hook_harness(data: dict[str, Any]) -> str:
+    """Name the host that fired a plugin hook, from its payload first.
+
+    The environment alone is not enough: a Codex started from a Claude Code shell
+    inherits CLAUDECODE. Each host writes its transcript under its own home.
+    """
+
+    transcript = str(data.get("transcript_path") or "").replace("\\", "/")
+    codex_home = os.environ.get("CODEX_HOME", "").replace("\\", "/").rstrip("/")
+    if transcript:
+        if (codex_home and transcript.startswith(codex_home + "/")) or "/.codex/" in transcript:
+            return "codex"
+        if "/.claude/" in transcript or "/.config/claude/" in transcript:
+            return "claude"
+    if "turn_id" in data:
+        return "codex"
+    return "claude"
+
+
 def command_hook(args: argparse.Namespace) -> int:
     # Hooks are a fail-open isolation boundary. Never block a host prompt.
     try:
         data = _read_hook_input(args)
+        if args.harness == "auto":
+            args.harness = detect_hook_harness(data)
         event_name = args.event or str(data.get("hook_event_name") or data.get("event") or "")
         kind = MemoryService.normalize_hook_kind(event_name)
         cwd = resolve_cwd(str(data.get("cwd") or args.cwd or os.getcwd()))
@@ -664,7 +685,9 @@ def command_reindex(args: argparse.Namespace) -> int:
 
 def _add_hook_parser(sub: Any) -> None:
     hook = sub.add_parser("hook", help="Process a fail-open host hook event")
-    hook.add_argument("--harness", choices=sorted(HARNESSES), required=True)
+    # Plugin hooks ship one hooks.json that Claude Code and Codex both load, so
+    # they pass `auto` and the event payload names the host.
+    hook.add_argument("--harness", choices=sorted(HARNESSES | {"auto"}), required=True)
     hook.add_argument("--event")
     hook.add_argument("--cwd")
     hook.add_argument("--input")

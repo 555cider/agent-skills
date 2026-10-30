@@ -50,6 +50,33 @@ The installer creates a private Python 3.11+ venv in the installed skill and
 pins `openai` and `sqlite-vec`. If optional dependency installation fails, the
 deterministic SQLite/FTS core remains available.
 
+## Plugin install (Claude Code and Codex)
+
+Installed as the `agent-memory` or `agent-skills` plugin, the skill carries its
+own `hooks/hooks.json` (prompt recall, stop and session-end capture). Claude Code
+and Codex both load it from their own plugin cache, so nothing is written to
+`~/.claude/settings.json` or `~/.codex/hooks.json`, and plugin updates cannot
+leave a hook pointing at a deleted version. The hook passes `--harness auto`; the
+event's `transcript_path` tells Codex and Claude apart. Codex runs a plugin hook
+only after you trust it once in the TUI (again whenever the hook file changes).
+
+The plugin needs no venv: the core runs on the system `python3` (3.11+; older
+interpreters make the hooks no-ops). For the CLI on your PATH, copy the launcher
+once; it finds the current plugin install on every run, so it survives updates.
+It sits at `bin/agent-memory` in the `agent-memory` plugin and at
+`skills/agent-memory/bin/agent-memory` in the `agent-skills` bundle:
+
+```bash
+install -m 755 "<plugin dir>/skills/agent-memory/bin/agent-memory" ~/.local/bin/agent-memory
+agent-memory integrate --mode primary --harness all --apply   # optional
+```
+
+From a plugin copy, `integrate` only touches hosts that have the plugin enabled:
+it removes their settings-file hooks and, in primary mode, turns off their native
+memory. Opt-in tool capture and the OpenCode adapter need the `install.sh` copy,
+and the plugin hooks are POSIX `bash` commands. Do not install both channels for
+the same host: Claude Code or Codex would then run the hooks twice.
+
 ## Storage
 
 ```text
