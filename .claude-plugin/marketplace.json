@@ -36,7 +36,7 @@
       "name": "peer-review",
       "source": "./skills/peer-review",
       "skills": ["."],
-      "version": "1.2.0",
+      "version": "1.2.1",
       "author": { "name": "555cider" },
       "license": "MIT",
       "description": "Second opinion on a plan, spec, or option set from other reviewer CLIs (codex, claude, opencode, agy) run in parallel and saved to the repository.",
