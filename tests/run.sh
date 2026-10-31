@@ -427,5 +427,41 @@ fi
 assert_file_contains "concurrent run 1 produced review" "$WORK/cout1" "REVIEW=codex"
 assert_file_contains "concurrent run 2 produced review" "$WORK/cout2" "REVIEW=codex"
 
+# --- without timeout/gtimeout (stock macOS) the shell fallback must still feed the prompt on stdin ---
+# Skipped on Git Bash: it always ships timeout, and its ln -s copies whole files.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) ;;
+  *)
+  D6="$WORK/no-timeout"
+  mkdir -p "$D6/bin" "$D6/sysbin"
+  git -C "$D6" init -q
+  make_stub_cli "$D6/bin/codex"
+  printf '# Plan\n\nNo timeout binary.\n' >"$D6/plan.md"
+  # Mirror every PATH command except timeout/gtimeout so the script takes its fallback.
+  IFS=: read -r -a path_dirs <<<"$PATH"
+  for dir in "${path_dirs[@]}"; do
+    [ -d "$dir" ] || continue
+    for cmd in "$dir"/*; do
+      name="${cmd##*/}"
+      case "$name" in timeout|gtimeout|timeout.exe|gtimeout.exe) continue ;; esac
+      [ -x "$cmd" ] && [ ! -e "$D6/sysbin/$name" ] && ln -s "$cmd" "$D6/sysbin/$name" 2>/dev/null
+    done
+  done
+
+  set +e
+  (
+    cd "$D6" &&
+    PATH="$D6/bin:$D6/sysbin" PEER_REVIEW_STUB_ARGS="$D6/args.txt" \
+      PEER_REVIEW_STUB_STDIN="$D6/prompt.md" \
+      "$PR" plan.md --reviewer=codex --host=claude --timeout=5
+  ) >"$WORK/out" 2>"$WORK/err"
+  EC=$?
+  set -e
+
+  assert_exit "fallback timeout run" 0
+  assert_file_contains "fallback timeout passes prompt on stdin" "$D6/prompt.md" "No timeout binary."
+  ;;
+esac
+
 printf '\n=== %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
