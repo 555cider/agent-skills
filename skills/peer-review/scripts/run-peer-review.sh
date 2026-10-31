@@ -197,7 +197,7 @@ create_stdin_plan_file() {
     exit 2
   fi
   dir="$(stdin_tmp_dir)"
-  STDIN_PLAN_FILE="$(mktemp "$dir/peer-review-input-XXXXXX.md")" || {
+  STDIN_PLAN_FILE="$(mktemp "$dir/peer-review-input-XXXXXX")" || {
     echo "could not create stdin plan temp file" >&2
     exit 2
   }
@@ -746,11 +746,13 @@ for p in "${REVIEWERS_LIST[@]}"; do
   done
   [ -n "$CLAIMED" ] || { echo "could not claim review filename for $p after 5 attempts" >&2; exit 4; }
   OUT_FILES[$p]="$CLAIMED"
-  TMP_OUTS[$p]="$(mktemp "$OUT_DIR/.peer-review-out-${pslug}-XXXXXX.md")"
-  TMP_ERRS[$p]="$(mktemp "$OUT_DIR/.peer-review-err-${pslug}-XXXXXX.log")"
+  TMP_OUTS[$p]="$(mktemp "$OUT_DIR/.peer-review-out-${pslug}-XXXXXX")"
+  TMP_ERRS[$p]="$(mktemp "$OUT_DIR/.peer-review-err-${pslug}-XXXXXX")"
 done
 
-PROMPT_FILE="$(mktemp "$OUT_DIR/.peer-review-prompt-XXXXXX.md")"
+# Keep the XXXXXX at the end of every mktemp template: BSD/macOS mktemp only
+# randomizes trailing Xs, so a suffix like XXXXXX.md becomes a fixed name.
+PROMPT_FILE="$(mktemp "$OUT_DIR/.peer-review-prompt-XXXXXX")"
 OPENCODE_AGENT_FILE=""
 OPENCODE_AGENT_NAME=""
 OPENCODE_AGENT_DIR_CREATED=0
@@ -926,7 +928,9 @@ run_with_timeout() {
   marker="$(mktemp "$OUT_DIR/.peer-review-timeout-XXXXXX")" || return 2
   rm -f "$marker"
 
-  "$@" &
+  # Without job control, bash gives a background command /dev/null as stdin.
+  # Pass the caller's stdin (the prompt) through explicitly.
+  "$@" <&0 &
   cmd_pid=$!
   (
     trap 'kill $sleep_pid 2>/dev/null; exit 0' TERM INT HUP
@@ -1039,7 +1043,7 @@ build_cmd() {
         }
       done
       if [ -z "$CLAUDE_MCP_CONFIG" ]; then
-        CLAUDE_MCP_CONFIG="$(mktemp "$OUT_DIR/.peer-review-empty-mcp-XXXXXX.json")"
+        CLAUDE_MCP_CONFIG="$(mktemp "$OUT_DIR/.peer-review-empty-mcp-XXXXXX")"
         printf '{"mcpServers":{}}\n' >"$CLAUDE_MCP_CONFIG"
       fi
       CMD=(claude -p --permission-mode plan --tools Read,Glob,Grep \
