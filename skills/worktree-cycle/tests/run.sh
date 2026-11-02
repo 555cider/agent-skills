@@ -393,6 +393,15 @@ else
   pass "finish deletes the branch"
 fi
 
+# Repeated -m are paragraphs, as with git commit: the first stays the subject.
+repo="$(new_repo finish-multi-message)"
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): title" -m "body line"
+assert_exit "finish accepts repeated -m" 0
+assert_eq "the first -m is the subject" "feat(x): title" "$(git -C "$repo" log -1 --format=%s dev)"
+assert_eq "a later -m becomes the body" "body line" "$(git -C "$repo" log -1 --format=%b dev | tr -d '\r')"
+
 # Untracked scratch files in the main tree are explicitly allowed by the guard.
 repo="$(new_repo finish-untracked-ok)"
 run_in "$repo" "$START" feat1

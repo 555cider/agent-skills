@@ -22,7 +22,7 @@
 #     off the LOCAL branch by design. Nothing here touches the network.
 #
 # Usage (from the MAIN worktree — never from inside the worktree being removed):
-#   finish-worktree.sh -b <branch> -m "<conventional commit message>"
+#   finish-worktree.sh -b <branch> -m "<conventional commit message>" [-m "<body>" ...]
 #                      [-w <worktree-path>] [--base <branch>] [--dry-run]
 #                      [--no-autostash] [--autostash-tracked]
 #
@@ -107,7 +107,9 @@ warn_if_base_behind() {
 while [ $# -gt 0 ]; do
   case "$1" in
     -b|--branch)   [ $# -ge 2 ] || die "-b/--branch requires a value";   BRANCH="$2"; shift 2;;
-    -m|--message)  [ $# -ge 2 ] || die "-m/--message requires a value";  MSG="$2";    shift 2;;
+    # Repeated -m become paragraphs, as with `git commit -m title -m body`.
+    -m|--message)  [ $# -ge 2 ] || die "-m/--message requires a value"
+                   if [ -n "$MSG" ]; then MSG="$MSG"$'\n\n'"$2"; else MSG="$2"; fi; shift 2;;
     -w|--worktree) [ $# -ge 2 ] || die "-w/--worktree requires a value"; WT="$2";     shift 2;;
     --base)        [ $# -ge 2 ] || die "--base requires a value";        BASE="$2"; BASE_SET=1; shift 2;;
     --dry-run)     DRY=1; shift;;

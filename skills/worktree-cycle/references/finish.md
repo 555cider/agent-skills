@@ -68,6 +68,11 @@ Two different leftovers get two different remedies:
   locked while a process holds it open) → `git worktree remove` now answers "is not a working
   tree"; the directory itself has to go. Finish handles the common form of this itself: if the
   leftover is empty it is simply `rmdir`-ed and the run succeeds.
+- **git deregistered it but reports `Directory not empty`** → ignored content survived, usually
+  the worktree's own `node_modules`. Confirm every reparse point in it targets a path inside the
+  worktree (`Get-ChildItem -Force <path> -Recurse -Depth 2 -Attributes ReparsePoint | % Target`),
+  stop anything you started there, then delete it once from outside with
+  `cmd //c "rmdir /s /q <path>"`, which does not follow junctions, and `git worktree prune`.
 - **even the empty directory refuses to go** → this is **not** a failed cleanup and the run
   **exits zero**. See the cwd trap in [traps.md](traps.md) for why nothing in the run can
   clear it, and why the residue blocks nothing.

@@ -125,7 +125,8 @@ yours:
 ## Finish
 
 ```bash
-<skill-dir>/scripts/finish-worktree.sh -b <worktree-branch> -m "feat(scope): summary"
+<skill-dir>/scripts/finish-worktree.sh -b <worktree-branch> -m "feat(scope): summary" [-m "body"]
+# repeated -m become paragraphs, as with git commit
 # preview: --dry-run  |  explicit worktree path: -w <path>
 # integration branch: --base <branch> (default: the base recorded at start, then
 #   git config worktree-cycle.base; with neither, --base is required)
@@ -163,10 +164,13 @@ Details and the reasoning behind each: [references/finish.md](references/finish.
 
 ## Traps
 
-- **Windows: a cwd inside the worktree locks its directory** for that process's lifetime, so
-  leave the worktree in a separate step before finishing.
-- **junction/symlink `node_modules`**: unlink it first; never `rm -rf` / `Remove-Item -Recurse`
-  through the link.
+- **Windows: any live process holding the worktree locks its directory** — a shell whose cwd is
+  inside, or a dev server the harness "stopped" but whose child still runs. Leave in a separate
+  step; find leftover servers by port.
+- **junction/symlink `node_modules`**: never delete through the link; an own `pnpm install` is
+  the cleaner choice.
+- **The base can move or be rewritten while you work** — check `HEAD..<base>` before the final
+  review; colliding migration numbers merge without conflict.
 - **Never write per-worktree state into the worktree itself**; finish needs an empty status.
 - **Branch deletion uses `-D`** (a squash is not recorded as a merge); publishing is never
   automatic.
