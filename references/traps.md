@@ -2,30 +2,57 @@
 
 Platform and workflow traps behind the guards in the scripts.
 
-- **Windows: a cwd inside the worktree locks its directory.** Windows holds a handle on a
-  process's current directory, so while any process stands inside the worktree — the agent's own
-  persistent shell after a `cd`, a test runner, an editor — the directory itself cannot be
-  deleted. Its *contents* still go, so `git worktree remove` empties and deregisters the
-  worktree, then fails with `Permission denied` and leaves an empty directory.
+## Windows: what keeps a worktree from being deleted
 
-  The lock is bound to that process's lifetime, not to elapsed time. Retrying `rmdir` and
-  renaming the directory both fail while the holder is alive, and both succeed once it exits —
-  measured, not assumed. **Nothing finish can do during its own run clears it**, which is why
-  finish reports the residue and exits zero instead of calling it a failed cleanup, and why
-  `start` reclaims an empty directory at the target path rather than refusing it.
+Windows will not delete a directory that a live process holds — as its cwd or through an open
+file. `git worktree remove` then empties and deregisters the worktree but fails on the directory
+itself. The lock lasts as long as the holder process, not a set time: retrying or renaming fails
+while it lives and succeeds once it exits. Nothing finish does during its own run can clear it,
+which is why finish reports an empty residue and exits zero, and `start` reclaims an empty
+directory at the target path.
 
-  To avoid it entirely: leave the worktree in a **separate step** before running finish, so the
-  shell that invokes finish never had its cwd inside. Working with absolute paths instead of
-  `cd`-ing in avoids it too.
-- **junction/symlink `node_modules`**: frontend worktrees often link it. When
-  `git worktree remove` fails, finish stops and reports it. Unlink first
-  (`cmd //c rmdir <junction>` on Windows), then `git worktree prune`. Never delete with
-  `Remove-Item -Recurse` / `rm -rf`, which deletes through the link and destroys the original.
+The usual holders:
+
+- **A shell whose cwd is inside**, including the agent's own persistent shell after a `cd`.
+  Leave the worktree in a separate step before finish, or work with absolute paths throughout.
+- **A dev server you "stopped".** Stopping a backgrounded server through the agent harness kills
+  the shell, not its node child, which keeps the port (a relaunch fails with `EADDRINUSE` and the
+  old code keeps answering) and the directory. Find the PID by port
+  (`Get-NetTCPConnection -LocalPort <p>`, then `Win32_Process` `CommandLine`), confirm you started
+  it from this worktree, and stop it.
+- **A Gradle daemon** started from the worktree holds `gradle-wrapper.jar`. Kill only the
+  `java.exe` processes whose command line contains the worktree path; `gradlew --stop` stops
+  every worktree's daemons, including the shared instance.
+
+## `node_modules` links
+
+A frontend worktree often links `node_modules` to the main tree's. Never delete through the link
+(`Remove-Item -Recurse`, `rm -rf`) — that destroys the original; unlink first
+(`cmd //c rmdir <junction>`), then `git worktree prune`. With the link in place, `pnpm run` may
+also decide to reinstall and purge the shared directory, so call binaries from `node_modules/.bin`.
+
+An own `pnpm install` in the worktree avoids both: it costs little (hardlinks into the global
+store) and its leftovers are cleaned as described in [finish.md](finish.md).
+
+## The base changes while you work
+
+- **It moves.** Another session lands overlapping changes, and finish stops on a conflict with the
+  main worktree restored. Merge the base into the branch
+  (`git -C <worktree> merge <base> --no-commit --no-ff`), resolve, retest, commit, finish again.
+  On a long branch check `git log --oneline HEAD..<base> --stat` before the final review: a
+  numbered migration with the same number as yours (Flyway `V<n>__`, drizzle `NNNN_*.sql`) merges
+  without a textual conflict, and a review of the branch's own diff cannot see it.
+- **It is rewritten.** An amend or re-squash of the base tip drops the commit you branched from
+  out of its history, and finish conflicts everywhere although nothing diverged. If
+  `git diff --stat <commit-you-branched-from> <base>` is empty, merge the base in, keep the
+  branch's side of every conflict (`git checkout --ours -- <file>`), and confirm
+  `git diff HEAD --stat` is empty before committing.
+
+## Bookkeeping
+
 - **Never write per-worktree state into the worktree itself.** `finish` requires a completely
-  empty `git status --porcelain` there, untracked included, so a bookkeeping file dropped in
-  the tree turns into "the worktree has uncommitted changes" on every finish from then on.
-  That is why the port reservation goes in the worktree's git directory — where git also
-  deletes it for you.
-- **Branch deletion uses `-D`**: a squash is not recorded as a merge, so `-d` refuses it as
-  "not merged". Finish only reaches `-D` after the merge commit succeeded.
-- **Publishing is never automatic**: the finish script prints the push command and stops.
+  empty `git status --porcelain` there, untracked included. That is why the port reservation lives
+  in the worktree's git directory, where git also deletes it.
+- **Branch deletion uses `-D`**: a squash is not recorded as a merge, so `-d` refuses it. Finish
+  reaches `-D` only after the merge commit succeeded.
+- **Publishing is never automatic**: finish prints the push command and stops.
