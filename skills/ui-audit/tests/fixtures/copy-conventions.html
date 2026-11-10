@@ -12,6 +12,8 @@
   button{font:inherit;min-height:40px;padding:8px 16px;border:1px solid #374151;border-radius:8px;background:#fff;color:#111827;cursor:pointer}
   button:hover{background:#e5e7eb}
   .narrow{width:96px}
+  .record{display:flex;flex-direction:column;align-items:flex-start;width:280px;text-align:left;margin-bottom:12px}
+  .record span{display:block}
   .badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#e0e7ff;color:#1e3a8a;font-size:14px;line-height:1.4}
   .count{display:inline-block;min-width:24px;padding:0 6px;border-radius:999px;background:#b91c1c;color:#fff;font-size:14px;text-align:center}
   .chip{display:inline-flex;align-items:center;gap:4px;padding:2px 4px 2px 10px;border-radius:999px;background:#f3f4f6;color:#111827;margin-right:8px}
@@ -66,6 +68,8 @@
     <button id="bad-long">이번 달 청구서와 지난 석 달 사용 내역 전체 다운로드</button>
     <button id="bad-wrap" class="narrow">상세 조건 설정 초기화</button>
   </div>
+  <!-- 통과: 목록 행 전체를 여는 단추 — 제목 줄과 아래 줄을 품은 자료이지 동작 이름이 아님 -->
+  <button id="ok-row-open" class="record"><span>2026-11-10 08:30</span><span>별지 제21호 공사감리일지 오전 작성분 · 김현수 · 수정하기</span></button>
 
   <h2>확인 창</h2>
   <!-- 결함(Risk): 되돌릴 수 없는 삭제를 "확인"으로 받는다 -->

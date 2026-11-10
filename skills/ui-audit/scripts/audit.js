@@ -2671,6 +2671,7 @@
       if ((el.getAttribute('role') || 'button').toLowerCase() !== 'button') return;
       if (el.parentElement && el.parentElement.closest('button,[role=button]')) return;
       if (copyHidden(el) || copyExempt(el)) return;
+      if (recordOpener(el)) return;
       var text = (el.tagName === 'INPUT' ? (el.value || '') : (el.innerText || el.textContent || '')).trim().replace(/\s+/g, ' ');
       if (!/\p{L}/u.test(text)) return;   // icon-only controls are named by aria-label, not copy
       if (!groups[text]) { groups[text] = { el: el, text: text, count: 0 }; order.push(text); }
@@ -2678,6 +2679,24 @@
     });
     ctx.buttonCopy = order.map(function (text) { return groups[text]; });
     return ctx.buttonCopy;
+  }
+  // A button that wraps a whole list row or card opens a record. It has two or more
+  // block-level children with text, stacked on separate lines (a title over a meta line).
+  // Its text is the record's data, not an action label, so copy rules skip it.
+  function recordOpener(el) {
+    var tops = [];
+    Array.prototype.forEach.call(el.children || [], function (child) {
+      var cs = getComputedStyle(child);
+      if (cs.display === 'none' || /^inline/.test(cs.display) || cs.display === 'contents') return;
+      // Any visible text counts: a record title is often a date or a number with no letters.
+      if (!(child.textContent || '').trim()) return;
+      var r = child.getBoundingClientRect();
+      if (r.width >= 1 && r.height >= 1) tops.push(r);
+    });
+    for (var i = 1; i < tops.length; i++) {
+      if (tops[i].top >= tops[i - 1].bottom - 1) return true;
+    }
+    return false;
   }
   // Line boxes of an element's own text, ignoring icons: a new line starts when a text
   // fragment's top sits more than half a line below the current line's top.
