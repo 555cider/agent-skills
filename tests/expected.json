@@ -510,6 +510,7 @@
         { "rule": "koreanButtonVerbForm", "matches": "ok-" },
         { "rule": "koreanButtonVerbForm", "matches": "tab-browse" },
         { "rule": "buttonLabelPunctuation", "matches": "ok-ellipsis" },
+        { "rule": "buttonLabelPunctuation", "matches": "ok-row-open", "note": "a row opener holds the record title and meta line, not an action label" },
         { "rule": "genericConfirmLabel", "matches": "dlg-outcome" },
         { "rule": "genericConfirmLabel", "matches": "dlg-ack" },
         { "rule": "freeformValueBadge", "matches": "\"진행\"", "note": "quoted so it matches a sample value, not the rule message's own example" },
