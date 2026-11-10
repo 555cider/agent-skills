@@ -319,6 +319,18 @@
         "Does not claim whole-application coverage from a component audit."
       ],
       "files": []
+    },
+    {
+      "id": "harness-for-shell-route",
+      "prompt": "The report list only renders after login inside the app shell, and our dev data has two rows. Audit the new list layout across the field theme and narrow widths.",
+      "expected_output": "Builds or reuses a harness page that mounts the list module with dense fixtures, injects the app entry head at serve time, drives themes through themeInitScripts, adds content-width viewports, and reports the harness as the audited route.",
+      "files": [],
+      "assertions": [
+        "Does not hand-copy the app stylesheet list into the harness.",
+        "Includes a viewport for the content width left after the shell rail, not only window widths.",
+        "Fixtures include every status variant, long strings, and an empty route.",
+        "States that the harness, not the shell or live data path, was audited."
+      ]
     }
   ]
 }
