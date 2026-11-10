@@ -46,7 +46,7 @@ and evidence gates. Do not remove a failed cell merely to make the report green.
 
 ## Workflow
 
-1. Render the real route, story, or preview. Configure mobile and desktop viewports, supported themes, meaningful data states, and interaction states.
+1. Render the real route, story, or preview. Configure mobile and desktop viewports, supported themes, meaningful data states, and interaction states. When the real route sits behind login, an app shell, or a backend you cannot seed, build a harness page instead (see "Harness pages" below).
 2. Run the canonical Node/CDP runner:
 
    ```bash
@@ -74,6 +74,16 @@ A populated fixture proves only that data reached the DOM:
 - The final response also does not prove asynchronous mutation feedback. Hold the exact mutation request, drive the real control, and require visible progress plus a single-flight control state; add a functional interaction test for request count when repeated activation could duplicate work.
 
 Leave a cell unverified when no deterministic action can reach its state.
+
+## Harness pages
+
+Use a harness page when the real route cannot be reached or seeded per cell. A harness page mounts the screen's own module with fixture data, and the runner audits it like any route. Such a page is only evidence while it renders the way the app does:
+
+- **Take the head from the app entry when the page is served.** The server copies the app entry's stylesheet and classic-script tags, in order, into a marker in the harness. Do not copy the head into each harness by hand. A hand copy drifts: one stylesheet goes missing (a base widget sheet, so button heights differ), or a theme sheet moves ahead of the component sheets (so other rules win). Either way the harness measures a screen the app never draws.
+- **Use the width the module gets, not the window width.** Inside the shell, a rail or sidebar takes part of the window, so a 1000 px window leaves the content roughly 760 px. Add those content widths as viewports, alongside the window widths.
+- **Make fixtures cover the states and the density at once.** Include every status chip and badge. Include the longest names, the second language, and an empty variant as its own route.
+- **Drive a data-attribute theme with `themeInitScripts`.** Examples are `data-style="field"` or `data-theme="dark"`. Do not drive it with a query parameter the harness reads by itself. That way the theme stays a matrix axis, and `coverage.json` records which theme driver ran.
+- **Name the harness as the route.** The report must say the harness was audited. It does not cover the shell itself or the live data path. Keep the harness pages and fixtures in a project-specific skill or test folder, outside the module's source.
 
 ## Adaptations, exemptions, and rule cautions
 
