@@ -1,10 +1,5 @@
 # JSON contracts
 
-`forget` retains `removed`, `total`, and `tombstone_days` and adds `deletion_scope`:
-`structured_memory` is `deleted` or `no_matches`; `events` is `retained_until_ttl`;
-`managed_backups` and `external_exports` are `not_modified`; `rehydration_block_days`
-is 7. These describe the command boundary, not a claim that a particular backup exists.
-
 All public JSON objects use explicit v2 schema names. Additive fields may be
 introduced, but consumers must reject a different major schema.
 
@@ -76,14 +71,31 @@ confidence, revision, evidence, retrieval score, `stale`, `truncated`, and
 statement alone exceeds the budget is injected as a truncated head with
 `truncated=true` and a `review show` pointer instead of being dropped.
 
+A prompt hook that itself stored, superseded, or forgot memory for this prompt
+puts `Stored from this prompt: [id | kind] …` (`Already stored, confirmed by
+this prompt: …` when the statement existed), `Superseded by this prompt
+(retracted): [id] …`, and `Forgotten by this prompt: N record(s) hard-deleted`
+lines right after the opening tag; such a packet is `material` even with no
+items. After a successful forget its leftover maintenance matches are dropped.
+
 Every exposed item creates a feedback target keyed by `query_id` and memory id.
 Exposure does not set `used`; only `feedback --used` does. A recall that shows
 nothing is not logged, so its `query_id` has no feedback targets.
 
 ## Other command results
 
-- `remember`: one complete `memory.record.v2`.
-- `forget`: `removed`, `total`, and `tombstone_days`.
+- `remember`: one complete `memory.record.v2` plus `superseded`, the records
+  this call retracted: `id`, `statement`, and `reason` (`replaces` for the
+  `--replaces` target, `contradiction` for an older record it contradicts).
+- `forget`: `removed`, `total`, `tombstone_days`, and `deletion_scope`:
+  `structured_memory` is `deleted` or `no_matches`; `events` is
+  `retained_until_ttl`; `managed_backups` and `external_exports` are
+  `not_modified`; `rehydration_block_days` is 7. These describe the command
+  boundary, not a claim that a particular backup exists.
+- `feedback`: `query_id`, `memory_ids` (with `memory_id`, the first of them),
+  `used`, and `outcome`.
+- `gc`: deleted `events`, `tombstones`, `jobs`, and `queries` (recall logs past
+  the 60-day feedback window), and `expired` records.
 - `review list`: an array of records; `show` also includes immutable revisions
   and relations.
 - `policy trust list`: `repo_key`, `memory_kind`, `granted_at` rows.
@@ -105,6 +117,8 @@ nothing is not logged, so its `query_id` has no feedback targets.
   reviewer should be shown so one question resolves the whole adoption. Its
   `skipped` list merges converter drops (`unsafe`, `unknown-project`) with the
   import's own, so a `--dry-run` reports the same outcome the real run produces.
+- `review approve ID`: the approved record as `review show` prints it;
+  `review reject ID`: `{"removed": [ID]}`.
 - `review approve --batch` / `reject --batch`: `batch`, `decision`, `count`, and
   the `resolved` memory ids.
 

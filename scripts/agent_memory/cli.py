@@ -245,13 +245,13 @@ def command_review(args: argparse.Namespace) -> int:
             result = (
                 service.resolve_batch(batch=args.batch, decision="approve", **_batch_filters(args))
                 if args.batch
-                else service.approve(_one_id(args))
+                else service.approve(_one_id(args), force=args.force)
             )
         else:
             result = (
                 service.resolve_batch(batch=args.batch, decision="reject", **_batch_filters(args))
                 if args.batch
-                else {"removed": service.reject(_one_id(args))}
+                else {"removed": service.reject(_one_id(args), force=args.force)}
             )
         _emit(result, args.format)
         return 0
@@ -467,12 +467,13 @@ def command_doctor(args: argparse.Namespace) -> int:
             db.home / "global" / "MEMORY.md",
             db.home / "projects",
         ]
+        integrity = db.integrity()
         output = {
-            "healthy": db.integrity() == "ok",
+            "healthy": integrity == "ok",
             "version": __version__,
             "database": {
                 "path": str(db.path),
-                "integrity": db.integrity(),
+                "integrity": integrity,
                 "schema_version": db.get_meta("schema_version"),
                 "wal": db.conn.execute("PRAGMA journal_mode").fetchone()[0],
             },
@@ -565,6 +566,29 @@ def detect_hook_harness(data: dict[str, Any]) -> str:
     return "claude"
 
 
+def hook_change_lines(capture: dict[str, Any]) -> list[str]:
+    """What the prompt hook itself already did, so the agent does not redo it."""
+
+    lines = [
+        f"{'Already stored, confirmed by this prompt' if item.get('existing') else 'Stored from this prompt'}: "
+        f"[{item['id']} | {item['kind']}] {item['statement']}"
+        for item in capture.get("stored") or []
+    ]
+    lines.extend(
+        f"Superseded by this prompt (retracted): [{item['id']}] {item['statement']}"
+        for item in capture.get("superseded") or []
+    )
+    forgotten = capture.get("forgotten") or []
+    if forgotten:
+        lines.append(f"Forgotten by this prompt: {len(forgotten)} record(s) hard-deleted")
+    elif capture.get("forget_skipped"):
+        lines.append(
+            f"Forget not applied: {capture['forget_skipped']} records matched; "
+            "confirm with the user, then agent-memory forget --id <memory-id>"
+        )
+    return lines
+
+
 def command_hook(args: argparse.Namespace) -> int:
     # Hooks are a fail-open isolation boundary. Never block a host prompt.
     try:
@@ -595,6 +619,8 @@ def command_hook(args: argparse.Namespace) -> int:
                     exclude_ids=set(capture.get("immediate_memories") or []),
                     session_id=capture.get("session_id"),
                     loaded_rules=loaded_rules(args.harness, cwd),
+                    changes=hook_change_lines(capture),
+                    suppress_maintenance=bool(capture.get("forgotten")),
                 )
                 context = packet["context"]
                 if context:
@@ -790,6 +816,11 @@ def build_parser(*, hook_only: bool = False) -> argparse.ArgumentParser:
         # everything in the queue.
         target.add_argument("id", nargs="?")
         target.add_argument("--cwd")
+        target.add_argument(
+            "--force",
+            action="store_true",
+            help="Resolve one id even when it is not provisional or disputed",
+        )
         _review_filters(target)
         _format(target)
         target.set_defaults(func=command_review)
@@ -840,7 +871,7 @@ def build_parser(*, hook_only: bool = False) -> argparse.ArgumentParser:
 
     feedback = sub.add_parser("feedback", help="Record whether exposed memory actually influenced work")
     feedback.add_argument("query_id")
-    feedback.add_argument("memory_id")
+    feedback.add_argument("memory_id", nargs="+", help="One or more ids from that packet")
     used = feedback.add_mutually_exclusive_group(required=True)
     used.add_argument("--used", action="store_true", dest="used")
     used.add_argument("--unused", action="store_false", dest="used")

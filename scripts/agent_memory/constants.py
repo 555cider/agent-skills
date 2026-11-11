@@ -42,6 +42,8 @@ ADOPT_SOURCES = ("claude-md", "codex-agents", "codex-memory", "remember")
 IMPORT_EVIDENCE_PREFIX = "import."
 IMPORT_BATCH_EVIDENCE = "import.batch"
 
+# The review queue: the only states `review approve|reject` resolve unforced.
+REVIEW_STATES = ("provisional", "disputed")
 RAW_CHAT_TTL_DAYS = 7
 HANDOFF_TTL_DAYS = 14
 TOMBSTONE_TTL_DAYS = 7
@@ -49,6 +51,9 @@ TOMBSTONE_TTL_DAYS = 7
 # by then the host may have compacted the earlier injection away.
 REEXPOSE_AFTER_MINUTES = 120
 PROCEDURE_STALE_DAYS = 90
+# Only explicit `feedback --unused` within this window counts against a record;
+# query logs older than it are deleted (with their feedback rows) by retention.
+FEEDBACK_WINDOW_DAYS = 60
 TOOL_OUTPUT_LIMIT_BYTES = 8 * 1024
 MAX_EVENT_TEXT = 32 * 1024
 DEFAULT_LIMIT = 8

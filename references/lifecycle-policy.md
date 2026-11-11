@@ -29,7 +29,8 @@ demoted before writing.
 
 `memories` contains current state. Every create or state transition writes a
 complete immutable `memory_revisions` snapshot. An explicit correction retracts
-the old record and adds a `supersedes` edge. Ambiguous inferred conflicts make
+the old record and adds a `supersedes` edge; `remember` lists every record it
+retracted this way in `superseded`. Ambiguous inferred conflicts make
 both sides disputed. Neither retracted nor disputed state is actionable.
 
 Current prompts always outrank stored memory. Negation, replacement, and forget
@@ -57,6 +58,8 @@ as permanent erasure or automatic scrubbing of backups.
 - session-end/handoff events: 14 days;
 - forget tombstones: 7 days;
 - completed job metadata: 30 days;
+- recall query logs and their feedback votes: 60 days (the feedback window;
+  deleted by `gc` and the Stop/session-end cleanup);
 - procedure/caveat verification horizon: 90 days.
 
 Structured memory has no arbitrary TTL unless `valid_until` is set. `gc` marks
@@ -72,10 +75,16 @@ memory, and one set of `trust_grants`. Bare repositories and submodules keep the
 toplevel. Global memory is denied by default. `trust_grants` records explicit
 repo+kind grants.
 
-`.agent-memory.json` is read from the checkout's own toplevel (a subdirectory
-does not escape it), so two
-worktrees on different commits can hold different ceilings over the same shared
-grants; each applies its own.
+A repo `.agent-memory.json` is an additional ceiling:
+
+```json
+{"global_memory": {"allow": ["preference"], "deny": ["handoff"]}}
+```
+
+It can intersect or remove user grants. It cannot add one. A malformed policy
+fails closed for global memory. It is read from the checkout's own toplevel (a
+subdirectory does not escape it), so two worktrees on different commits can
+hold different ceilings over the same shared grants; each applies its own.
 
 `rekey` moves keys the checkout no longer computes onto the current one: keys
 minted by the per-worktree rule, and the path key a checkout had before its
@@ -105,31 +114,6 @@ worktree of a repository with an origin, or a separate clone — are listed as
 `unmatched_same_hash` and left alone until named with `--map OLD=NEW`. Records that
 become identical under one key keep the most actionable copy and retract the rest;
 pairs that will read as contradictory are listed, not resolved.
-
-For complete contracts, read only the reference needed:
-
-- [references/cli.md](references/cli.md) — command and exit contract
-- [references/event-protocol.md](references/event-protocol.md) — normalized events and adapters
-- [references/lifecycle-policy.md](references/lifecycle-policy.md) — activation, revisions, TTL, trust
-- [references/providers.md](references/providers.md) — OpenAI and command provider boundary
-- [references/json-output.md](references/json-output.md) — v2 record and packet schemas
-- [references/architecture.md](references/architecture.md) — DB, worker, retrieval, failure model
-
-Verify the implementation with:
-
-```bash
-bash skills/agent-memory/tests/run.sh
-python3 skills/agent-memory/tests/benchmark.py
-```
-
-A repo `.agent-memory.json` is an additional ceiling:
-
-```json
-{"global_memory": {"allow": ["preference"], "deny": ["handoff"]}}
-```
-
-It can intersect or remove user grants. It cannot add one. A malformed policy
-fails closed for global memory.
 
 ## Import
 
@@ -198,7 +182,8 @@ Bulk resolution requires `--batch`. There is deliberately no bare `--all`:
 rejection is a hard delete, and the queue is the only thing between an external
 file and the store. `--source`, `--scope` and `--kind` narrow within a batch.
 Only `provisional` and `disputed` records are touched, so a batch that merged
-onto memory already active can neither re-approve nor delete it.
+onto memory already active can neither re-approve nor delete it. A single id
+in any other state is refused unless `--force`.
 
 Rejecting tombstones the statement like any other forget. That is the intended
 asymmetry: a rule turned down stays out of the next adoption instead of

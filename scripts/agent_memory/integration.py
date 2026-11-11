@@ -84,16 +84,32 @@ def _toml_plugin_enabled(text: str, plugin_id: str) -> bool:
     return False
 
 
+def harness_dirs(user_home: Path | None = None) -> tuple[Path, Path]:
+    """Claude's and Codex's config dirs. An explicit `user_home` (tests, tools acting
+    for another home) ignores the environment; otherwise CLAUDE_CONFIG_DIR and
+    CODEX_HOME win, as they do for the harnesses themselves."""
+
+    home = user_home or default_user_home()
+    claude = home / ".claude"
+    codex = home / ".codex"
+    if user_home is None:
+        if os.environ.get("CLAUDE_CONFIG_DIR"):
+            claude = Path(os.environ["CLAUDE_CONFIG_DIR"]).expanduser()
+        if os.environ.get("CODEX_HOME"):
+            codex = Path(os.environ["CODEX_HOME"]).expanduser()
+    return claude, codex
+
+
 def plugin_hosts(user_home: Path | None = None) -> set[str]:
     """Hosts that have this skill installed and enabled as a plugin."""
 
-    home = user_home or default_user_home()
+    claude_dir, codex_dir = harness_dirs(user_home)
     hosts: set[str] = set()
     try:
         registry = json.loads(
-            (home / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")
+            (claude_dir / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")
         ).get("plugins", {})
-        settings_path = home / ".claude" / "settings.json"
+        settings_path = claude_dir / "settings.json"
         enabled = (
             json.loads(settings_path.read_text(encoding="utf-8")).get("enabledPlugins", {})
             if settings_path.exists()
@@ -103,7 +119,7 @@ def plugin_hosts(user_home: Path | None = None) -> set[str]:
             hosts.add("claude")
     except (OSError, ValueError, AttributeError):
         pass
-    config = home / ".codex" / "config.toml"
+    config = codex_dir / "config.toml"
     if config.exists():
         text = config.read_text(encoding="utf-8", errors="replace")
         if any(_toml_plugin_enabled(text, key) for key in PLUGIN_IDS):
@@ -375,10 +391,11 @@ def _backup_files(memory_home: Path, paths: Sequence[Path]) -> Path:
 
 def integration_paths(user_home: Path | None = None) -> dict[str, Path]:
     home = user_home or default_user_home()
+    claude_dir, codex_dir = harness_dirs(user_home)
     return {
-        "claude": home / ".claude" / "settings.json",
-        "codex_hooks": home / ".codex" / "hooks.json",
-        "codex_config": home / ".codex" / "config.toml",
+        "claude": claude_dir / "settings.json",
+        "codex_hooks": codex_dir / "hooks.json",
+        "codex_config": codex_dir / "config.toml",
         "opencode": home / ".config" / "opencode" / "plugins" / "agent-memory.js",
     }
 

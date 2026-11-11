@@ -71,6 +71,11 @@ install -m 755 "<plugin dir>/skills/agent-memory/bin/agent-memory" ~/.local/bin/
 agent-memory integrate --mode primary --harness all --apply   # optional
 ```
 
+On Windows copy `bin/agent-memory.cmd` beside it for PowerShell and cmd. Run in
+place, the shim uses the skill it ships in; copied elsewhere, it uses the
+`~/.agents/skills` install, then hands off to the bash launcher beside it
+(through Git Bash) for the plugin lookup.
+
 From a plugin copy, `integrate` only touches hosts that have the plugin enabled:
 it removes their settings-file hooks and, in primary mode, turns off their native
 memory. Opt-in tool capture and the OpenCode adapter need the `install.sh` copy,
@@ -104,7 +109,7 @@ without verification and are downranked, not deleted.
 ## Everyday commands
 
 ```bash
-agent-memory recall --cwd "$PWD" --prompt "current request" --format json
+agent-memory recall --cwd "$PWD" --harness codex --prompt "current request" --format json
 
 agent-memory remember --cwd "$PWD" --kind preference \
   --statement "Prefer targeted verification for small changes"

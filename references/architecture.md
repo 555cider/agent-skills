@@ -20,8 +20,9 @@ current prompt
   -> relevance floor (see below)
   -> scope/state/trust/condition filter, minus records this session saw
      in the last 2 hours, minus records restating a rule the host already
-     loads (CLAUDE.md for Claude, AGENTS.md for Codex/OpenCode; home file and
-     every directory up from cwd; instructions.py)
+     loads (CLAUDE.md for Claude, AGENTS.md for Codex/OpenCode; home file —
+     under CLAUDE_CONFIG_DIR / CODEX_HOME when set — and every directory up
+     from cwd; instructions.py)
   -> reciprocal-rank fusion and bounded boosts
   -> <=8 record / ~1200 token packet
 
@@ -64,7 +65,8 @@ and vector tables are indexes, not alternate stores.
 - `relations`: `supersedes` and `conflicts_with` graph edges.
 - `jobs`: pending/leased/done/dead work with retry metadata.
 - `retrieval_queries` and `retrieval_feedback`: exposure and actual-use signals,
-  written only for a recall that showed something.
+  written only for a recall that showed something and pruned after the 60-day
+  feedback window (feedback rows cascade with their query).
 - `session_exposures`: what each session was shown, so a long conversation is
   not re-sent the same records on every prompt.
 - `trust_grants`: repo+kind global-memory grants.

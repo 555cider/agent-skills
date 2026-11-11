@@ -58,7 +58,9 @@ events expire after fourteen days.
 
 Prompt hooks emit `{}` when no material memory exists. Otherwise they emit
 `hookSpecificOutput.additionalContext`, plus the same `context`, `query_id`,
-and visibility fields for OpenCode and diagnostics.
+and visibility fields for OpenCode and diagnostics. A prompt the hook itself
+acted on ("remember …", "forget …") is always material: the context says what
+was stored, superseded, or forgotten (json-output.md).
 
 Other hooks emit `{}`. Stop/session-end hooks enqueue work and launch a detached
 `worker --once`; the host does not wait for model consolidation. Set

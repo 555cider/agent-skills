@@ -11,7 +11,13 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any, Iterable, Sequence
 
-from .constants import DEFAULT_LIMIT, DEFAULT_TOKEN_BUDGET, PACKET_SCHEMA, REEXPOSE_AFTER_MINUTES
+from .constants import (
+    DEFAULT_LIMIT,
+    DEFAULT_TOKEN_BUDGET,
+    FEEDBACK_WINDOW_DAYS,
+    PACKET_SCHEMA,
+    REEXPOSE_AFTER_MINUTES,
+)
 from .db import Database
 from .instructions import mirrored
 from .providers import NullProvider, Provider, ProviderError
@@ -78,8 +84,7 @@ CONCEPT_WEIGHT = 0.3
 TRANSLATION_WEIGHT = 0.6
 # Only explicit `feedback --unused` counts: exposure without feedback says
 # nothing. A record with enough votes that is rarely used must match twice as
-# strongly to be shown.
-FEEDBACK_WINDOW_DAYS = 60
+# strongly to be shown. The window is FEEDBACK_WINDOW_DAYS (constants.py).
 UNUSED_MIN_VOTES = 3
 UNUSED_MAX_USED_SHARE = 1 / 3
 UNUSED_FLOOR_FACTOR = 2.0
@@ -405,7 +410,16 @@ class Retriever:
         exclude_ids: set[str] | None = None,
         session_id: str | None = None,
         loaded_rules: Sequence[str] = (),
+        changes: Sequence[str] = (),
+        suppress_maintenance: bool = False,
     ) -> dict[str, Any]:
+        """Build the packet.
+
+        `changes` are lines the caller already applied for this prompt (the hook's
+        own remember/forget); they are rendered even when nothing else matches.
+        `suppress_maintenance` drops maintenance matches once the prompt's forget
+        was carried out, so leftovers are not presented as the records being changed.
+        """
         started = datetime.now(UTC)
         mode = "maintenance" if is_maintenance_prompt(prompt) and not is_harness_message(prompt) else "recall"
         query_id = f"qry_{uuid.uuid4().hex[:24]}"
@@ -516,6 +530,8 @@ class Retriever:
                     "actionable": record["state"] == "active" and mode == "recall",
                 }
             )
+            if mode == "maintenance" and suppress_maintenance:
+                continue
             if mode == "maintenance" or record["state"] == "disputed":
                 view["actionable"] = False
                 view["reason"] = (
@@ -555,8 +571,15 @@ class Retriever:
             if len(items) >= limit:
                 break
 
-        material = bool(items or conflicts)
-        context = self.render_context(mode, items, conflicts, query_id) if material else ""
+        shown = bool(items or conflicts)
+        # A change the hook made for this prompt is worth saying even when
+        # nothing else matched: it is the answer to "did you remember that?".
+        material = shown or bool(changes)
+        context = (
+            self.render_context(mode, items, conflicts, query_id if shown else "", changes)
+            if material
+            else ""
+        )
         elapsed_ms = (datetime.now(UTC) - started).total_seconds() * 1000
         packet = {
             "schema": PACKET_SCHEMA,
@@ -570,7 +593,13 @@ class Retriever:
             },
             "visibility": {
                 "material": material,
-                "reason": "memory changes the action or exposes a conflict" if material else "no relevant actionable memory",
+                "reason": (
+                    "memory changes the action or exposes a conflict"
+                    if shown
+                    else "the current prompt changed memory"
+                    if material
+                    else "no relevant actionable memory"
+                ),
             },
             "context": context,
             "trust": {
@@ -586,7 +615,7 @@ class Retriever:
             "elapsed_ms": round(elapsed_ms, 3),
             "token_estimate": consumed,
         }
-        if not material:
+        if not shown:
             # Nothing was shown, so there is nothing to give feedback on.
             return packet
         # One lock acquisition, not 1+N. The connection is in autocommit mode
@@ -632,11 +661,15 @@ class Retriever:
         items: Sequence[dict[str, Any]],
         conflicts: Sequence[dict[str, Any]],
         query_id: str = "",
+        changes: Sequence[str] = (),
     ) -> str:
         opening = f'<agent-memory schema="{PACKET_SCHEMA}" mode="{mode}"'
         if query_id:
             opening += f' query-id="{query_id}"'
-        lines = [opening + ">"]
+        lines = [opening + ">", *changes]
+        if not items and not conflicts:
+            lines.append("</agent-memory>")
+            return "\n".join(lines)
         if mode == "maintenance":
             lines.append(
                 "The current prompt changes or removes prior memory. Treat the current prompt as authoritative; the records below are non-actionable maintenance matches."
@@ -661,6 +694,8 @@ class Retriever:
         lines.append("Mention memory only if it materially changes your action or decision.")
         if query_id and items:
             # Explicit --unused raises the bar a record must clear next time.
-            lines.append(f"Feedback: agent-memory feedback {query_id} <memory-id> --used|--unused")
+            lines.append(
+                f"Feedback: agent-memory feedback {query_id} <memory-id> [<memory-id> ...] --used|--unused"
+            )
         lines.append("</agent-memory>")
         return "\n".join(lines)
