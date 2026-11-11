@@ -2,7 +2,7 @@
 
 import {
   SCHEMA_VERSION, VERIFIED_OR_OBSERVED,
-  authTarget, classifyAction, countsTowardSettle, createRegistry, fingerprintSignature,
+  authTarget, carryRecorded, classifyAction, countsTowardSettle, createRegistry, fingerprintSignature,
   globalNavigationKeys, migrateMap,
   normalizePath, observeTarget, pathFromEntrypoints,
   playwrightExpr, reachability, renderMarkdown, renderMermaid, renderTiming, replayPathKey,
@@ -605,6 +605,69 @@ eq('a history step is walked, not clicked',
 const historyMcp = routeToMcpSteps(historyMap, historyResolved, 'http://localhost:1');
 eq('and needs no snapshot, because it addresses no element',
   historyMcp.map(step => step.tool), ['browser_navigate', 'browser_navigate_back']);
+
+// ---------- a re-crawl keeps what was recorded ----------
+{
+  const st = (id, route, extra = {}) => ({ id, source: 'crawl', route, signature: 'h:' + route, kind: 'page', title: route, evidence: { urlSample: route }, ...extra });
+  const tr = (id, from, to, key, extra = {}) => ({
+    id, source: 'crawl', from, to, class: 'safe', status: 'verified',
+    action: { kind: 'click', key, name: key }, blockedReason: null, ...extra,
+  });
+  const previous = {
+    states: [st('s0', '/'), st('s1', '/new'), st('s2', '/done', { source: 'record' }), st('s3', '/typed', { source: 'record', reachable: 'direct-url' })],
+    transitions: [
+      tr('t0', 's0', 's1', 'click:link:new'),
+      tr('t1', 's1', 's2', 'submit:button:save', { class: 'mutating', status: 'observed' }),
+      tr('t2', 's2', null, 'click:link:again', { source: 'record', status: 'unexplored' }),
+      tr('t3', 's0', null, 'click:button:gone', { source: 'record', status: 'unexplored' }),
+      tr('t4', 's0', 's1', 'click:link:wobble', { status: 'observed' }),
+      tr('t5', 's0', 's2', 'click:link:old', { source: 'record', status: 'observed' }),
+      { ...tr('t6', 's1', 's0', 'history:back', { source: 'record', status: 'observed' }), action: { kind: 'history', key: 'history:back', name: 'back' } },
+    ],
+    entrypoints: ['s0', 's3'],
+    recordings: [{ startedAt: 'x', edges: 1 }],
+  };
+  // The new crawl numbers its screens differently and refused the mutating submit again.
+  const crawl = {
+    schema: 2,
+    states: [st('s0', '/new'), st('s1', '/')],
+    transitions: [
+      tr('t0', 's1', 's0', 'click:link:new'),
+      tr('t1', 's0', null, 'submit:button:save', { class: 'mutating', status: 'unexplored', blockedReason: 'mutating: needs --allow-mutating' }),
+      tr('t2', 's1', 's0', 'click:link:wobble'),
+    ],
+    entrypoints: ['s1'],
+  };
+  const frozen = JSON.stringify(crawl);
+  const { map: merged, carried } = carryRecorded(crawl, previous);
+  const route = id => merged.states.find(state => state.id === id)?.route;
+  const submit = merged.transitions.find(t => t.action.key === 'submit:button:save');
+  check('a re-crawl keeps the recorded edge past a step it refused',
+    submit?.status === 'observed' && route(submit.to) === '/done' && submit.blockedReason === null,
+    JSON.stringify(submit));
+  check('a recording-only screen is carried with a fresh id, matched by route',
+    merged.states.filter(state => state.route === '/done').length === 1
+      && new Set(merged.states.map(state => state.id)).size === merged.states.length,
+    JSON.stringify(merged.states.map(state => [state.id, state.route])));
+  check('its controls come along, still unexplored',
+    merged.transitions.some(t => t.action.key === 'click:link:again' && route(t.from) === '/done' && t.status === 'unexplored'));
+  check('a recorded control the new crawl no longer lists on a crawled screen is dropped',
+    !merged.transitions.some(t => t.action.key === 'click:button:gone'));
+  check('an observed edge whose control the crawl no longer lists on its screen is dropped',
+    !merged.transitions.some(t => t.action.key === 'click:link:old'));
+  check('a recorded back navigation survives, since a crawl never lists it',
+    merged.transitions.some(t => t.action.key === 'history:back' && route(t.from) === '/new' && route(t.to) === '/'));
+  const wobble = merged.transitions.find(t => t.action.key === 'click:link:wobble');
+  check('a crawl-proved edge keeps its proof when a carried observation agrees',
+    wobble?.status === 'verified' && route(wobble.to) === '/new' && !wobble.nondeterministic, JSON.stringify(wobble));
+  check('a screen a recording reached by URL stays an entrypoint',
+    merged.entrypoints.some(id => route(id) === '/typed') && merged.entrypoints.includes('s1'),
+    JSON.stringify(merged.entrypoints));
+  check('the recordings history survives the re-crawl', merged.recordings?.length === 1);
+  check('the crawl snapshot itself is not mutated', JSON.stringify(crawl) === frozen);
+  check('carried counts what was kept', carried === 4, String(carried));
+  eq('no previous map carries nothing', carryRecorded(crawl, null).carried, 0);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

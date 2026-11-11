@@ -13,7 +13,7 @@ Without `--root`, the CLI uses `git rev-parse --show-toplevel`.
 
 | Command | Purpose |
 |---|---|
-| `context [--plan ID] [--path PATH] [--query TEXT] [--worktree]` | Select context and produce a decision pack. No selectors means current Git changes. Explicit selectors include Git changes only with `--worktree`. |
+| `context [--plan ID] [--path PATH] [--query TEXT] [--worktree]` | Select context and produce a decision pack. No selectors means current Git changes. Explicit selectors include Git changes only with `--worktree`. A relative `--path` is read from the working directory when that is inside the root, else from the root; a directory (existing, or written with a trailing `/`) selects every scope that reaches into it. |
 | `status` | List ready, waiting, retained-done plans, `requires` edges, and the longest active chain. |
 | `why ID` | Aggregate every signal about one plan: readiness, blockers, dependents, staleness, overlaps, lineage, prunability, unfilled sections. |
 | `doctor [--stale-after N] [--structural-only]` | Return all format, graph, safety, nested-store, legacy-store, and pruning diagnostics plus advisory warnings. `--stale-after` sets the stale commit threshold (default 5); `--structural-only` skips git/filesystem-backed advisory checks. |
@@ -50,8 +50,11 @@ and returns the exact change list without creating the store, lock, or files.
 
 ## Output
 
-Default output is compact text for direct agent or human reading. `--json`
-emits exactly one object on stdout:
+Default output is compact text for direct agent or human reading. In `context`
+text, a pack item whose staleness is `aging` or `stale` prints a `Staleness:`
+line with the anchor to diff from, and a replacement prints one `Replaced:` line
+per `replaces` entry with its recovery command. `--json` emits exactly one
+object on stdout:
 
 ```json
 {
@@ -94,7 +97,8 @@ keys and the exit codes are stable.
 
 | Code | Severity | Meaning |
 |---|---|---|
-| `stale_plan` | warning | Scope changed in ≥ threshold commits since the plan file last changed. |
+| `stale_plan` | warning | An active plan's scope changed in ≥ threshold commits since the plan file last changed. Done plans never warn; `context`/`why` still show their staleness. |
+| `id_history_unchecked` | warning | `create`, `rename`, or `replace` could not finish the Git history ID check within 10 s; the command proceeded. |
 | `scope_overlap` | warning | Two unordered active plans currently match the same concrete files. |
 | `possible_duplicate` | warning | Two active plans share a tag and files or near-identical titles. |
 | `tbd_sections` | warning | Sections still hold the `TBD` template (on close, or on a done plan). |
@@ -111,7 +115,7 @@ error becomes the command's error).
 |---|---|
 | `legacy_store` | The unsupported v1 `.agents/plan/graph.yaml` exists at the root. |
 | `nested_legacy_store` | A v1 graph exists below the root. |
-| `nested_store` | A `.agents/plans` store exists below the Git root. |
+| `nested_store` | A `.agents/plans` store exists below the Git root. Found from `git ls-files --cached --others --exclude-standard` (ignored trees and nested repositories are skipped); without Git, a walk that does not follow links or junctions. |
 | `invalid_store` | `.agents` or `.agents/plans` exists but is not a directory. |
 | `symlink_store` | `.agents`, `.agents/plans`, or the recovery directory is a symlink. |
 | `nested_plan` | A directory sits inside `.agents/plans`; plans must be flat files. |
@@ -159,6 +163,7 @@ error becomes the command's error).
 | `root_not_found` | No `--root` and the working directory is not inside a Git worktree. |
 | `root_not_toplevel` | `--root` points inside a Git worktree but not at its toplevel. |
 | `git_failed` | Git could not be run or printed non-UTF-8 output. |
+| `git_timeout` | A required Git call did not answer within 10 s. |
 | `store_locked` | Another live process holds the store lock. |
 | `concurrent_change` | The store changed between read and write; retry the command. |
 | `recovery_failed` | Deleted plans could not be preserved first; nothing was changed. |
@@ -177,8 +182,9 @@ atomic replacements. A failed multi-file operation restores every touched
 file from its captured bytes. Plan files, `.agents`, and `.agents/plans` may not
 be symlinks, and no write may resolve outside the repository store.
 
-Before deleting any plan, preserve its current bytes under the worktree git dir's
-`plan-graph-recovery/<unique-id>/`, or `.agents/plan-recovery/<unique-id>/` in deliberate
+Before deleting any plan, preserve its current bytes under the common git dir's
+(`git rev-parse --git-common-dir`, so a linked worktree's copies survive
+`git worktree remove`) `plan-graph-recovery/<unique-id>/`, or `.agents/plan-recovery/<unique-id>/` in deliberate
 non-Git use. Backup failure aborts before mutation. Successful deletion does not
 remove these copies; there is no automatic retention cleanup. Copy the named Markdown
 file back only after checking for a conflicting live plan and run `doctor` afterwards.

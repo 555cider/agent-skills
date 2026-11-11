@@ -39,7 +39,7 @@ files and both harnesses pick up the change immediately.
    `~/.agents/skills/peer-review/` (symlink, or `mklink /J` junction on
    Windows). `install.sh` does this automatically for detected harnesses.
 3. If the harness has its own behavioral policy (e.g. allows proactive
-   self-invocation), add a paragraph for it under "When to self-invoke" in
+   self-invocation), add a paragraph for it under "Invocation policy" in
    the canonical SKILL.md — the model picks the branch matching its harness.
 
 ## Usage & reference
@@ -74,15 +74,22 @@ profiles with the team, or keep it local / `.gitignore`d for personal prefs.
   first heading.
 - **Reviewer sandboxing / headless mode:**
   - codex: `codex exec --sandbox read-only` (read-only sandbox)
-  - claude: `claude -p` (relies on claude's permission system)
+  - claude: `claude -p --permission-mode plan` with only `Read,Glob,Grep`
+    tools and an empty `--strict-mcp-config` (no edits, shell, or MCP servers)
   - opencode: creates a temporary repo-local `peer-review-readonly-*` agent
     that denies edit/shell/network/delegation tools, then runs
     `opencode run --agent <agent>`; model names without a provider prefix are
     sent as `opencode/<model>`; ANSI color codes are stripped from saved output.
-  - agy: `agy -p "<prompt>" --sandbox`; model is forwarded when configured.
+  - agy: `agy -p "<prompt>" --sandbox --mode plan`; model is forwarded when
+    configured.
   The wrapper feeds the prompt over stdin where the CLI supports it; `agy`
   receives the prompt through `-p` because that is its headless prompt
-  interface.
+  interface. On Windows that argument must fit the 32,767-character command
+  line; a larger one is reported as `ERROR=<reviewer> prompt too large` before
+  anything starts.
+- **Command build:** every reviewer's command (including the `--help` flag
+  probe, run once per CLI) is built before any reviewer starts. A reviewer
+  whose build fails gets an `ERROR=` line and the rest still run.
 - **Parallel execution:** multiple reviewers spawn as background subprocesses,
   each with its own temp files and claimed `OUT_FILE`. The script waits for
   all, emits one `REVIEW=` per success and one `ERROR=` per failure. Wall
@@ -93,8 +100,10 @@ profiles with the team, or keep it local / `.gitignore`d for personal prefs.
 - **Timeout:** each reviewer call is bounded by a configurable timeout. Default
   is 300s, override with `--timeout=<seconds>` or
   `PEER_REVIEW_TIMEOUT_SECONDS`. Uses `timeout` / `gtimeout` when available
-  and falls back to a shell watchdog otherwise. Timed-out reviewers report
-  `timed out after Ns` instead of silently waiting for the old long cap.
+  and falls back to a shell watchdog otherwise. Git Bash always uses the
+  watchdog: its `timeout` signals only the MSYS process, so the watchdog walks
+  the process tree and kills each member with `taskkill /T /F`. Timed-out
+  reviewers report `timed out after Ns`.
 - **Path migration:** earlier versions wrote to `<repo>/docs/reviews/` or
   `<repo>/reviews/`. Those paths are no longer used. Existing files and any
   stale `.git/info/exclude` entries can be removed manually if desired.
@@ -108,6 +117,9 @@ profiles with the team, or keep it local / `.gitignore`d for personal prefs.
   `mktemp "$dir/..."` so paths stay under the chosen review/temp tree. Config
   parsing uses `mktemp -t` only for files consumed by the same shell process,
   not for paths passed between harness tools.
+- **Config parsing:** the first `python3`/`python` that actually runs Python
+  3.7+ (a Windows Store stub on PATH is skipped). Records are written with
+  `\n` line endings so no CR reaches a reviewer flag on Windows.
 
 ## Why `.agents/`
 

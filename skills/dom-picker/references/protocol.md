@@ -28,19 +28,22 @@ attach [--target=ID|--match=TEXT] [--port=9222] [--arm] [--artifacts=DIR]
 resume --session=PATH
 stop --session=PATH [--timeout-ms=20000]
 queue --session=PATH
-claim --session=PATH --consumer=ID
+claim --session=PATH --consumer=ID [--wait-ms=N]
 status --request=PATH --input=PATH|-
 cancel --request=PATH --channel=trusted-chat
 targets [--port=9222]
 find --text=TEXT [--limit=20] [--session=PATH] [target options]
 snapshot <unique-selector> [--instruction-file=PATH|-] [--session=PATH|--artifacts=DIR] [target options]
-reload [--ignore-cache] [target options]
+reload [--ignore-cache] [--session=PATH|--request=PATH|target options]
 verify --request=PATH --assertions=PATH|-
-destroy [target options]
+destroy [--session=PATH|--request=PATH|target options]
 ```
 
-Target resolution is fail-closed: an explicit id must match once; `--match`, or no selector, must
-resolve to exactly one page. Never fall back to the first tab.
+Target options are `--target=ID|--match=TEXT` with `--port=9222`. Every option takes `--name=value`
+or `--name value`; an option the command does not list exits 2. Target resolution is fail-closed:
+an explicit id must match once; `--match`, or no selector, must resolve to exactly one page. Never
+fall back to the first tab. `--session` takes the target from the manifest and `--request` from the
+request's connection; either one refuses target options and a target whose origin changed.
 
 `start` and `attach` emit continuously. Keep that process running while editing so reloads,
 additional requests, iframe picks, and acknowledgements have no watcher gap. Stop it once at the
@@ -53,18 +56,25 @@ SIGINT/SIGTERM does the same on POSIX; killing the process on Windows runs no cl
 `resume` reopens the exact `session.json`, target id, debug port, binding, artifact root, and pinned
 origin. It fails closed if the target disappeared or its top origin changed. `queue` is a read-only
 snapshot. `claim` assigns the oldest queued item and is idempotent for the same consumer; another
-consumer receives `busy` while any request is active. There is no `serve` command.
+consumer receives `busy` while any request is active. `claim --wait-ms=N` repeats the claim in
+process until a request is claimed (including the consumer's own active one) or N ms pass, then
+emits the last result with `timedOut`. There is no `serve` command.
 
 `queue.recovery` is null when no request is active. Otherwise it reports `consumer`,
 `requestPath`, `state`, `repositoryReviewRequired`, and `previousConsumerMustBeStopped`.
 This is read-only handoff information, not a takeover grant. Once the prior worker has
 stopped, inspect its edits and cancellation state and reuse the existing consumer with
-`claim`; the phase and FIFO position stay unchanged. Never clear claims to evade `busy`.
+`claim`; the phase and FIFO position stay unchanged. Never clear claims to evade `busy`. If the
+prior worker may still be running, wait or coordinate its stop. Driver `resume` restores the
+browser connection, not edit ownership.
 
 `status` accepts only valid transitions and a single-line message of at most 240 characters. The
 message is rendered in the browser, so it must be a coarse user-facing reason without paths, diffs,
-secrets, or logs. `resultPath`, when supplied, must resolve inside that request directory;
-`applied_verified` requires it. When the exact live session is reachable, `status` and trusted-chat
+secrets, or logs. `resultPath`, when supplied, must resolve inside that request directory.
+`applied_verified` requires it to name `fix-result.json` (the file `locator-report.mjs` reads) with
+every field `fix-result.schema.json` requires, `status: "applied_verified"`, and
+`verification.passed: true`. Once `cancel.json` exists, only `cancel_requested`, `cancelled`,
+`review_required`, and `blocked` are accepted. When the exact live session is reachable, `status` and trusted-chat
 `cancel` synchronously project the new ledger state and report `browserSynced: true`; the running
 driver heartbeat retries after navigation or transient unavailability. The durable lifecycle is:
 

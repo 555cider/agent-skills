@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The scripts link into $CLAUDE_CONFIG_DIR and $CODEX_HOME when set. Tests run
+# against a fake HOME, so drop the caller's values; they would point the
+# installs at real config dirs.
+unset CLAUDE_CONFIG_DIR CODEX_HOME
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL="$ROOT/install.sh"
 UNINSTALL="$ROOT/uninstall.sh"
@@ -129,7 +134,7 @@ test_local_install_overwrites_dirty_managed_clone() {
 
   HOME="$home" "$INSTALL" --local peer-review >"$WORK/local-dirty.out" 2>"$WORK/local-dirty.err"
 
-  diff -qr --exclude=.git "$ROOT/skills/peer-review" "$dest" >/dev/null ||
+  diff -qr --exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache --exclude=node_modules "$ROOT/skills/peer-review" "$dest" >/dev/null ||
     fail "expected --local to replace a dirty installed clone from the checkout"
   [ -d "$dest/.git" ] || fail "expected --local to preserve installed clone metadata"
   [ -L "$home/.codex/skills/peer-review" ] ||
@@ -523,6 +528,238 @@ test_install_with_no_harness_dirs_and_duplicate_names() {
   [ ! -e "$home/.claude" ] || fail "expected uninstall not to create ~/.claude"
 }
 
+
+# make_skill_repo <repo> <name>...: a git checkout holding install.sh and one
+# minimal skill per name, with an origin remote at <repo>.remote.git.
+make_skill_repo() {
+  local repo="$1" name
+  shift
+  mkdir -p "$repo/skills"
+  cp "$INSTALL" "$repo/install.sh"
+  chmod +x "$repo/install.sh"
+  for name in "$@"; do
+    mkdir -p "$repo/skills/$name"
+    printf -- '---\nname: %s\ndescription: Test skill %s.\n---\n' "$name" "$name" >"$repo/skills/$name/SKILL.md"
+  done
+  git init -q "$repo"
+  git -C "$repo" config user.email "test@example.com"
+  git -C "$repo" config user.name "Test"
+  git -C "$repo" add install.sh skills
+  git -C "$repo" commit -qm init
+  git init --bare -q "$repo.remote.git"
+  git -C "$repo" remote add origin "$repo.remote.git"
+}
+
+# A resync used to delete everything but .git and copy every file in the
+# checkout, so agent-memory lost its private .venv (and pip reinstalled it) on
+# each --local run, while gitignored caches were shipped.
+test_local_resync_keeps_venv_and_copies_only_unignored_files() {
+  local repo="$WORK/resync-repo"
+  local home="$WORK/resync-home"
+  local src="$repo/skills/sync-me"
+  local dest="$home/.agents/skills/sync-me"
+
+  make_skill_repo "$repo" sync-me
+  mkdir -p "$src/scripts/__pycache__" "$src/.venv/bin" "$src/node_modules/pkg" "$src/gone" "$home"
+  printf '__pycache__/\n*.log\n' >"$src/.gitignore"
+  printf 'tracked\n' >"$src/scripts/tool.py"
+  printf 'non-ascii\n' >"$src/scripts/café.txt"
+  printf 'old\n' >"$src/gone/stale.txt"
+  git -C "$repo" add skills
+  git -C "$repo" commit -qm files
+  printf 'new, not ignored\n' >"$src/scripts/untracked.txt"
+  printf 'bytecode\n' >"$src/scripts/__pycache__/tool.cpython-312.pyc"
+  printf 'log\n' >"$src/debug.log"
+  printf 'dev venv\n' >"$src/.venv/bin/marker"
+  printf 'dep\n' >"$src/node_modules/pkg/index.js"
+
+  HOME="$home" "$repo/install.sh" --local sync-me >"$WORK/resync1.out" 2>"$WORK/resync1.err" ||
+    fail "expected first local sync to succeed: $(cat "$WORK/resync1.err")"
+  [ -f "$dest/scripts/tool.py" ] || fail "expected tracked files to be synced"
+  [ -f "$dest/scripts/café.txt" ] || fail "expected a non-ASCII file name to be synced"
+  [ -f "$dest/scripts/untracked.txt" ] || fail "expected untracked, non-ignored files to be synced"
+  [ -f "$dest/.gitignore" ] || fail "expected the skill's .gitignore to be synced"
+  [ ! -e "$dest/scripts/__pycache__" ] || fail "expected gitignored caches not to be synced"
+  [ ! -e "$dest/debug.log" ] || fail "expected gitignored files not to be synced"
+  [ ! -e "$dest/.venv" ] || fail "expected the checkout's dev .venv not to be synced"
+  [ ! -e "$dest/node_modules" ] || fail "expected node_modules not to be synced"
+
+  mkdir -p "$dest/.venv/bin" "$dest/scripts/__pycache__"
+  printf 'installed venv\n' >"$dest/.venv/bin/python-marker"
+  printf 'old cache\n' >"$dest/scripts/__pycache__/old.pyc"
+  git -C "$repo" rm -q -r skills/sync-me/gone
+  git -C "$repo" commit -qm "drop gone"
+  rm -f "$src/scripts/untracked.txt"
+  printf 'changed\n' >"$src/scripts/tool.py"
+
+  HOME="$home" "$repo/install.sh" --local sync-me >"$WORK/resync2.out" 2>"$WORK/resync2.err" ||
+    fail "expected local resync to succeed: $(cat "$WORK/resync2.err")"
+  grep -Fx "installed venv" "$dest/.venv/bin/python-marker" >/dev/null ||
+    fail "expected the installed .venv to survive a resync"
+  grep -Fx "changed" "$dest/scripts/tool.py" >/dev/null || fail "expected resync to refresh changed files"
+  [ ! -e "$dest/gone" ] || fail "expected resync to remove files and directories no longer in the checkout"
+  [ ! -e "$dest/scripts/untracked.txt" ] || fail "expected resync to remove a deleted untracked file"
+  [ ! -e "$dest/scripts/__pycache__" ] || fail "expected resync to remove caches an older sync left behind"
+  [ -f "$dest/SKILL.md" ] || fail "expected SKILL.md to remain"
+}
+
+# Outside a git checkout there is no ignore list; the sync falls back to every
+# file except the well-known caches and the venv.
+test_local_sync_without_git_skips_caches() {
+  local repo="$WORK/plain-sync-repo"
+  local home="$WORK/plain-sync-home"
+
+  mkdir -p "$repo/skills/plain/scripts/__pycache__" "$repo/skills/plain/.venv" "$home"
+  if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "SKIP ${FUNCNAME[0]}: $repo is inside a git work tree"
+    return 0
+  fi
+  cp "$INSTALL" "$repo/install.sh"
+  printf -- '---\nname: plain\ndescription: Plain test skill.\n---\n' >"$repo/skills/plain/SKILL.md"
+  printf 'x\n' >"$repo/skills/plain/scripts/run.sh"
+  printf 'x\n' >"$repo/skills/plain/scripts/__pycache__/run.pyc"
+  printf 'x\n' >"$repo/skills/plain/.venv/pyvenv.cfg"
+
+  HOME="$home" bash "$repo/install.sh" --local plain >"$WORK/plain-sync.out" 2>"$WORK/plain-sync.err" ||
+    fail "expected plain sync to succeed: $(cat "$WORK/plain-sync.err")"
+  [ -f "$home/.agents/skills/plain/scripts/run.sh" ] || fail "expected plain sync to copy files"
+  [ ! -e "$home/.agents/skills/plain/scripts/__pycache__" ] || fail "expected plain sync to skip __pycache__"
+  [ ! -e "$home/.agents/skills/plain/.venv" ] || fail "expected plain sync to skip .venv"
+}
+
+# A checkout cloned at ~/.agents is its own sync destination; syncing it would
+# delete whatever the file listing leaves out (caches, ignored state).
+test_local_sync_refuses_the_checkout_itself() {
+  local home="$WORK/self-sync-home"
+  local repo="$home/.agents"
+
+  mkdir -p "$repo/skills/plain/scripts/__pycache__"
+  if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "SKIP ${FUNCNAME[0]}: $repo is inside a git work tree"
+    return 0
+  fi
+  cp "$INSTALL" "$repo/install.sh"
+  printf -- '---\nname: plain\ndescription: Plain test skill.\n---\n' >"$repo/skills/plain/SKILL.md"
+  printf 'x\n' >"$repo/skills/plain/scripts/__pycache__/keep.pyc"
+
+  HOME="$home" bash "$repo/install.sh" --local plain >"$WORK/self-sync.out" 2>"$WORK/self-sync.err" || true
+  grep -q 'is the checkout itself' "$WORK/self-sync.err" ||
+    fail "expected self-sync to be refused: $(cat "$WORK/self-sync.err")"
+  [ -f "$repo/skills/plain/scripts/__pycache__/keep.pyc" ] || fail "expected self-sync to delete nothing"
+  [ -f "$repo/skills/plain/SKILL.md" ] || fail "expected self-sync to keep SKILL.md"
+}
+
+# git_counting_shim <dir> <log>: put a `git` on PATH that logs each ls-remote.
+git_counting_shim() {
+  local dir="$1" log="$2" real
+  real="$(command -v git)"
+  mkdir -p "$dir"
+  {
+    echo '#!/usr/bin/env bash'
+    echo "[ \"\$1\" = ls-remote ] && echo ls-remote >>'$log'"
+    echo "exec '$real' \"\$@\""
+  } >"$dir/git"
+  chmod +x "$dir/git"
+  : >"$log"
+}
+
+count_lines() {
+  wc -l <"$1" | tr -d ' '
+}
+
+test_install_reads_split_branches_with_one_ls_remote() {
+  local repo="$WORK/split-lookup-repo"
+  local home="$WORK/split-lookup-home"
+  local shim="$WORK/split-lookup-shim"
+  local log="$WORK/split-lookup.log"
+  local publish="$WORK/split-lookup-publish"
+
+  make_skill_repo "$repo" published unpublished other
+  mkdir -p "$publish" "$home/.codex"
+  git init -q "$publish"
+  git -C "$publish" config user.email "test@example.com"
+  git -C "$publish" config user.name "Test"
+  cp "$repo/skills/published/SKILL.md" "$publish/SKILL.md"
+  git -C "$publish" add SKILL.md
+  git -C "$publish" commit -qm split
+  git -C "$publish" push -q "$repo.remote.git" HEAD:refs/heads/split/published
+  git_counting_shim "$shim" "$log"
+
+  PATH="$shim:$PATH" HOME="$home" "$repo/install.sh" >"$WORK/split-lookup.out" 2>"$WORK/split-lookup.err" ||
+    fail "expected default install to succeed: $(cat "$WORK/split-lookup.err")"
+  [ "$(count_lines "$log")" = "1" ] ||
+    fail "expected one git ls-remote for three skills, got $(count_lines "$log")"
+  [ -d "$home/.agents/skills/published/.git" ] || fail "expected the published split branch to be cloned"
+  grep -F "split/unpublished is not published" "$WORK/split-lookup.out" >/dev/null ||
+    fail "expected an unpublished skill to fall back to the checkout"
+  [ -f "$home/.agents/skills/other/SKILL.md" ] || fail "expected the other unpublished skill to sync"
+
+  # Existing fallback installs need the lookup too; still one call.
+  : >"$log"
+  PATH="$shim:$PATH" HOME="$home" "$repo/install.sh" >"$WORK/split-lookup2.out" 2>"$WORK/split-lookup2.err" ||
+    fail "expected repeated default install to succeed: $(cat "$WORK/split-lookup2.err")"
+  [ "$(count_lines "$log")" = "1" ] ||
+    fail "expected one git ls-remote on a repeated install, got $(count_lines "$log")"
+  grep -F "already cloned" "$WORK/split-lookup2.out" >/dev/null || fail "expected the clone to be left alone"
+
+  # Unreachable origin: reported per skill, never treated as unpublished.
+  git -C "$repo" remote set-url origin "$WORK/no-such-remote.git"
+  : >"$log"
+  PATH="$shim:$PATH" HOME="$WORK/split-offline-home" "$repo/install.sh" unpublished other \
+    >"$WORK/split-offline.out" 2>"$WORK/split-offline.err" || true
+  [ "$(count_lines "$log")" = "1" ] || fail "expected one git ls-remote while offline"
+  [ "$(grep -c "could not reach" "$WORK/split-offline.err")" = "2" ] ||
+    fail "expected each skill to report the unreachable origin"
+  [ ! -e "$WORK/split-offline-home/.agents/skills/other" ] ||
+    fail "expected no local fallback when the origin cannot be reached"
+}
+
+# Claude Code run with CLAUDE_CONFIG_DIR reads skills from that dir, and Codex
+# from $CODEX_HOME; a profile setup often points both at one dir.
+test_install_links_into_claude_config_dir_and_codex_home() {
+  local home="$WORK/env-dirs-home"
+  local profile="$WORK/env-dirs-profile"
+  local codex="$WORK/env-dirs-codex"
+  local profile_env="$profile/" codex_env="$codex" link
+
+  mkdir -p "$home/.claude" "$profile" "$codex"
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      # Windows shells hand these over as native paths.
+      profile_env="$(cygpath -w "$profile")\\"
+      codex_env="$(cygpath -w "$codex")"
+      ;;
+  esac
+
+  CLAUDE_CONFIG_DIR="$profile_env" CODEX_HOME="$codex_env" HOME="$home" "$INSTALL" --local step-back \
+    >"$WORK/env-dirs.out" 2>"$WORK/env-dirs.err" ||
+    fail "expected install with CLAUDE_CONFIG_DIR/CODEX_HOME to succeed: $(cat "$WORK/env-dirs.err")"
+  [ -f "$home/.claude/skills/step-back/SKILL.md" ] || fail "expected ~/.claude to stay linked"
+  [ -f "$profile/skills/step-back/SKILL.md" ] || fail "expected a link in \$CLAUDE_CONFIG_DIR/skills"
+  [ -f "$codex/skills/step-back/SKILL.md" ] || fail "expected a link in \$CODEX_HOME/skills"
+  [ ! -e "$home/.codex" ] || fail "expected ~/.codex not to be used when CODEX_HOME is set"
+
+  CLAUDE_CONFIG_DIR="$profile_env" CODEX_HOME="$codex_env" HOME="$home" "$UNINSTALL" step-back \
+    >"$WORK/env-dirs-un.out" 2>"$WORK/env-dirs-un.err" ||
+    fail "expected uninstall with CLAUDE_CONFIG_DIR/CODEX_HOME to succeed: $(cat "$WORK/env-dirs-un.err")"
+  for link in "$home/.claude/skills/step-back" "$profile/skills/step-back" "$codex/skills/step-back"; do
+    [ ! -e "$link" ] && [ ! -L "$link" ] || fail "expected uninstall to remove $link"
+  done
+
+  # One dir named by both variables gets one link and no warning.
+  CLAUDE_CONFIG_DIR="$profile_env" CODEX_HOME="$profile_env" HOME="$home" "$INSTALL" --local step-back \
+    >"$WORK/env-same.out" 2>"$WORK/env-same.err" ||
+    fail "expected install with one shared profile dir to succeed: $(cat "$WORK/env-same.err")"
+  [ "$(grep -c "skills/step-back ->" "$WORK/env-same.out")" = "2" ] ||
+    fail "expected two harness links (~/.claude and the shared profile): $(cat "$WORK/env-same.out")"
+  ! grep -F "WARN" "$WORK/env-same.err" >/dev/null || fail "expected no warning for a shared profile dir"
+  CLAUDE_CONFIG_DIR="$profile_env" CODEX_HOME="$profile_env" HOME="$home" "$UNINSTALL" step-back \
+    >"$WORK/env-same-un.out" 2>"$WORK/env-same-un.err" ||
+    fail "expected uninstall of the shared profile link to succeed: $(cat "$WORK/env-same-un.err")"
+  [ ! -e "$profile/skills/step-back" ] && [ ! -L "$profile/skills/step-back" ] ||
+    fail "expected uninstall to remove the shared profile link"
+}
+
 test_default_install_falls_back_to_local_skill_when_split_branch_is_missing
 test_default_fallback_does_not_overwrite_mismatched_plain_directory
 test_local_install_overwrites_dirty_managed_clone
@@ -538,5 +775,10 @@ test_install_warns_when_the_skill_is_also_a_claude_code_plugin
 test_uninstall_reports_the_claude_code_plugin_copy_it_cannot_remove
 test_uninstall_removes_agent_memory_integration_hooks
 test_install_with_no_harness_dirs_and_duplicate_names
+test_local_resync_keeps_venv_and_copies_only_unignored_files
+test_local_sync_without_git_skips_caches
+test_local_sync_refuses_the_checkout_itself
+test_install_reads_split_branches_with_one_ls_remote
+test_install_links_into_claude_config_dir_and_codex_home
 
 echo "install tests passed"

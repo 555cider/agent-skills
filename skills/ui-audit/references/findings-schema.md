@@ -19,6 +19,7 @@
   "disableGpu": true,
   "chromeArgs": [],
   "themeInitScripts": { "app-dark": "document.documentElement.dataset.theme='dark'" },
+  "initScripts": ["localStorage.setItem('onboarding-complete', '1')"],
   "apiMockPattern": "**/api/**",
   "stateMocks": {
     "empty": [{ "pattern": "**/api/items", "method": "GET", "minMatches": 1, "status": 200, "contentType": "application/json", "body": [] }],
@@ -27,14 +28,6 @@
   "stateSetups": {
     "dialog-open": {
       "actions": [{ "type": "click", "selector": "#open" }],
-      "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
-    },
-    "import-dialog": {
-      "timeoutMs": 45000,
-      "actions": [
-        { "type": "click", "selector": "button[aria-label='파일']" },
-        { "type": "upload", "selector": "[data-testid='import-ifc']", "files": ["fixtures/two-storey.ifc"] }
-      ],
       "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
     }
   },
@@ -52,11 +45,17 @@
 }
 ```
 
-`routes`, `viewports`, `themes`, `states`, and `scrollPositions` are required non-empty arrays after defaults and CLI overrides are merged. Routes, themes, and states contain non-empty strings; viewport dimensions and DPR are positive; `isMobile` is boolean; scroll positions are `top`, `mid`, or `bottom`. Built-in `light`/`dark` themes use media emulation. Every custom theme requires a non-empty `themeInitScripts.<theme>` script. Configuration errors exit 2 before Chrome launches.
+`routes`, `viewports`, `themes`, `states`, and `scrollPositions` are required non-empty arrays after defaults and CLI overrides are merged. Routes, themes, and states contain non-empty strings; viewport dimensions and DPR are positive; `isMobile` is boolean; scroll positions are `top`, `mid`, or `bottom`. Built-in `light`/`dark` themes use media emulation. Every custom theme requires a non-empty `themeInitScripts.<theme>` script. Configuration errors — including every `stateSetups` entry, `keyboardProbe`, `hoverProbe`, and `initScripts` — exit 2 before Chrome launches.
+
+A route is a path, query, or fragment joined to the base URL (`/settings`, `?demo`, `#/list`); a bare `settings` is joined as `/settings`, and a route with a scheme is refused. Git Bash rewrites a `/`-prefixed `--routes` argument into a path under its install root (`C:/Program Files/Git/settings`); the runner strips that root back off and refuses any other drive-letter shape with a `MSYS_NO_PATHCONV=1` hint.
+
+`isMobile: true` cells are touch-emulated, so the page answers `(hover: none)` and `(pointer: coarse)` with touch points as a phone does; device metrics stay `mobile: false` so `innerHeight` is the configured height. Mobile cells skip the `zoom-200`/`reflow-320` adaptations and the hover probe.
+
+`initScripts` (a string or an array of strings) run on every new document before the app's own code, in every cell. Use them to suppress a gate unrelated to the screen under review — an onboarding tour, a cookie banner, a "what's new" modal — whose backdrop would otherwise catch every `stateSetups` click.
 
 `stateMocks.<state>` must be a non-empty array when declared. Every item has a `pattern` and exactly one of `body` or `hold: true`; `method` defaults to `any`, `minMatches` defaults to `1`, `status` defaults to 200, and `contentType` defaults to `application/json`. Methods are case-normalized HTTP tokens; `minMatches` is an integer of at least 1. Non-string bodies are JSON encoded. Empty/error/loading fallback mocks use `apiMockPattern` when no explicit rule exists.
 
-Every explicit rule is verified independently after its URL pattern, request method, and minimum match count are satisfied. This applies to explicit mocks on `default` as well as non-default states. A successful structured setup may independently prove a custom interaction state only when no incomplete explicit mock contract remains.
+Configured or fallback mocks count as coverage only when CDP Fetch actually intercepts the declared request. Every explicit rule must independently reach its URL pattern, method, and minimum match count, including rules declared for `default`; one matching rule cannot make unmatched siblings green. Inspect `coverage.matrix[].stateMock.rules[]` for per-rule `matches`, `held`, and `status`. A structured setup proves a custom interaction state only when no incomplete explicit mock contract remains; when both are configured, both must succeed.
 
 ## State setup and proof
 
@@ -89,11 +88,9 @@ A whole-screen matrix with forced data and interaction states:
 }
 ```
 
-`routes`, `viewports`, `themes`, `states`, and `scrollPositions` must each be non-empty and valid. `light` and `dark` use media emulation; every other theme name requires a non-empty matching `themeInitScripts.<theme>` driver. Invalid configuration exits 2 before Chrome starts.
 
-Configured or fallback mocks count as coverage only when CDP Fetch actually intercepts the declared request. `method` defaults to `any`; `minMatches` defaults to `1`. Every explicit rule must independently reach its minimum, including rules declared for `default`; one matching rule cannot make unmatched siblings green. Inspect `coverage.matrix[].stateMock.rules[]` for `pattern`, `method`, `minMatches`, `matches`, `held`, and per-rule `status`. The flat `interceptions` count remains an aggregate compatibility field. If an explicit network mock and structured setup are both configured, both must succeed.
 
-Structured actions support `click`, `fill`, `press`, `hover`, `check`, `selectOption`, and `upload`; every action selector must match exactly one element. Use `themeInitScripts` for class/data-attribute themes.
+Structured actions support `click`, `fill`, `press`, `hover`, `check`, `selectOption`, and `upload`; every action selector must match exactly one element. `press` focuses the selector and sends a trusted key: `Enter`, `Space` (or `" "`), `Tab`, `Escape`, arrows, `Home`, `End`, or one character, optionally with `Shift+`, `Alt+`, `Control+`/`Ctrl+`, `Meta+`. Enter, Space, and characters run the browser default action (activate, submit, toggle, type). Use `themeInitScripts` for class/data-attribute themes.
 
 For local authenticated routes, a fresh browser context starts signed out in every cell. If the app exposes a local demo login, set each route to its login URL with `returnTo` pointing at the target, use `stateSetups.default.actions` to click the login control, and assert a selector unique to the destination page. `waitForSelector` must name an element visible before the setup runs (usually the login control). Confirm the screenshot shows the destination; the report's `route` still names the initial login URL.
 
@@ -103,8 +100,8 @@ For local authenticated routes, a fresh browser context starts signed out in eve
 "import-dialog": {
   "timeoutMs": 45000,
   "actions": [
-    { "type": "click", "selector": "button[aria-label='파일']" },
-    { "type": "upload", "selector": "[data-testid='import-ifc']", "files": ["fixtures/two-storey.ifc"] }
+    { "type": "click", "selector": "#file-menu" },
+    { "type": "upload", "selector": "[data-testid='import-csv']", "files": ["fixtures/orders-500.csv"] }
   ],
   "expect": [{ "selector": "[role=dialog]", "state": "visible" }]
 }
@@ -216,6 +213,10 @@ Only high-confidence measured signals appear here. `Polish` remains in the total
   "totals": { "required": 0, "optional": 0 }
 }
 ```
+
+## `screens/`
+
+Unless `--no-screenshots` is passed, each cell writes `screens/<route>_<viewport>_<theme>_<state>_<adaptation>_<top|bottom>.png` (viewport frames at those scroll positions) and, for `adaptation: none`, `..._none_full.png`: the whole page from a content-size clip, taken after the pointer and keyboard probes and before Escape, cut at 16384 device px per side (16384 / `dpr` CSS px). `coverage.matrix[].fullPageScreenshot` records `captured` with the clip size and `cut`, or `error`; a failed capture does not fail the cell. Screenshots are evidence for judgment, never the source of truth. At the start of a run the runner deletes the PNGs in `screens/` that match its own naming, so no image from an earlier matrix survives; other files stay.
 
 ## `coverage.json`
 

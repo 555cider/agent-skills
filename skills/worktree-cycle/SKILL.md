@@ -89,12 +89,13 @@ cat "$(git rev-parse --absolute-git-dir)/worktree-ports"   # run inside the work
   OS users are outside this registry; their running listeners are still checked.
 - **Explicit ports use the same checks.** `--port-base <n>` must be aligned and free.
   Failure exits non-zero after worktree creation and reports that partial state;
-  it never silently substitutes another block. Retry the allocator with the printed
-  worktree's git-dir, not `start` again:
-  `python <skill-dir>/scripts/reserve-ports.py --repo <main> --branch <branch> --git-dir <git-dir> --port-base <n>`.
+  it never silently substitutes another block.
 - **Reservation lifetime follows git-dir.** `worktree-ports` lives outside tracked
   content and is removed with the worktree. A missing Python or failed automatic
   allocation leaves a usable worktree with an explicit no-reservation warning.
+- **On any allocation failure, start prints the retry command** (`reserve-ports.py
+  --repo … --branch … --git-dir …`, plus `--port-base` when given). Run that, not
+  `start` again. It blames Python only when no Python 3.10+ was found.
 - Probing releases its sockets; another process can bind afterwards. Always use
   strict server binding, check listeners before launch, and probe the resulting
   endpoint. A reservation file is not evidence that the intended code is serving.
@@ -144,7 +145,8 @@ Guards — any violation stops the run **before anything is modified**:
   the run.
 - The target branch exists and has commits beyond base, and shares a common ancestor with it.
 - The target worktree is clean, so nothing uncommitted is lost. A branch whose worktree is
-  already gone still merges and gets deleted.
+  already gone (even a directory deleted by hand, whose stale registration is dropped) still
+  merges and gets deleted.
 
 Once the merge starts:
 
@@ -179,23 +181,15 @@ Full explanations: [references/traps.md](references/traps.md).
 
 ## Common Mistakes
 
-- Running finish **from inside** the worktree — blocked by a guard; return to the main worktree.
-- Running finish with uncommitted work in the worktree — blocked by a guard; commit first.
-- Running finish with unrelated tracked changes in the main worktree — blocked by a guard;
-  this is deliberate.
-- Expecting `start` to branch from the remote default — it branches only from the **local**
-  integration branch HEAD, which is the entire point.
-- **Drifting into the main worktree to work, and restarting its dev server there.** Two
-  failures at once: the change is being made outside the isolation the skill exists to
-  provide, and the shared instance other sessions depend on gets killed and replaced with
-  half-finished code. Work in your own worktree, on your own port block.
-- Running the dev server on the default port because the reserved block "seems unnecessary
-  right now" — the collision only appears once a second worktree exists, and by then the
-  failure looks like a broken build, not a port clash.
-- Reading a non-zero finish as "the merge failed" — after cleanup warnings the merge already
-  landed. Read the message and finish the cleanup by hand instead of re-running.
-- Reporting the empty-directory residue as a failed cleanup — it exits **zero**. Say the merge
-  landed and mention the leftover; do not re-run finish and do not present it as lost work.
-- Deleting a leftover empty directory by hand from a shell standing inside it — that shell is
-  usually what holds the lock. Run `rmdir` from somewhere else, or just leave it: the next
-  `start` under the same name reclaims it.
+The guards above already stop the scripted mistakes; these are the ones they cannot see.
+
+- **Drifting into the main worktree to work, and restarting its dev server there.** The change
+  leaves the isolation the skill exists to provide, and the shared instance other sessions
+  depend on is replaced with half-finished code. Work in your own worktree, on your own block.
+- **Running the dev server on the default port** because the block "seems unnecessary right
+  now". The collision appears only once a second worktree exists, and then looks like a broken
+  build, not a port clash.
+- **Misreading finish's exit.** Non-zero after cleanup warnings means the merge already landed:
+  finish the cleanup by hand as printed, do not re-run. The empty-directory residue exits
+  **zero**: say the merge landed and mention the leftover. Remove it with `rmdir` from a shell
+  that is not standing in it, or leave it for the next `start` to reclaim.

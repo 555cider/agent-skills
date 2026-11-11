@@ -41,10 +41,11 @@ two deeply does not justify a conclusion about the rest. Distinguish verified
 findings, inspection-based concerns, and untested hypotheses. Passing packaging or
 text checks is not evidence of model behavior or a rendered outcome.
 
-For your own large change, passing tests and screenshots cover what you thought to
-check, not the whole diff. Before claiming completion, get a read that is not
-anchored on yours: reviewers given the diff and the intent, not your conclusions,
-split by area when the change is broad. Check each finding in the code, fix the real
+For your own large change (several hundred changed lines, or several modules),
+passing tests and screenshots cover what you thought to check, not the whole diff.
+Before claiming completion, get a read that is not anchored on yours: in-session
+subagent reviewers given the diff and the intent, not your conclusions, split by
+area when the change is broad. Check each finding in the code, fix the real
 ones, and say why the others do not happen. When a change alters what a value means
 (what counts as evidence, a flag, a state), it is covered only when every surface
 that shows that value agrees with the new meaning.
@@ -86,8 +87,5 @@ that now fails differently. Do not restart successful tests without a new reason
 
 ## Boundaries
 
-Use available verification evidence before judging completion. When available,
-`superpowers:verification-before-completion` supports evidence checks and
-`superpowers:systematic-debugging` supports testing a new causal hypothesis.
-Neither is a prerequisite dependency: apply the same principles locally if those
-skills are unavailable. This skill does not authorize extra edits or external actions.
+Judge completion from verification evidence you actually have, not from intent.
+This skill does not authorize extra edits or external actions.

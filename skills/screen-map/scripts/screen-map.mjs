@@ -22,7 +22,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { connectBrowser, launchBrowser, Page, SandboxRefused, sleep } from './browser.mjs';
 import { newRecordStats, recordSession } from './record.mjs';
 import {
-  SCHEMA_VERSION, VERIFIED_OR_OBSERVED, authTarget, createRegistry, fingerprintSignature,
+  SCHEMA_VERSION, VERIFIED_OR_OBSERVED, authTarget, carryRecorded, createRegistry, fingerprintSignature,
   migrateMap, mutatingDetour, normalizePath, observeTarget, pathFromEntrypoints, playwrightExpr,
   reachability, renderMarkdown, replayPathKey, routeTemplate, routeToMcpSteps, routeToSteps,
   shortestSafePath, stateById, stateKey, statesByRoute, statusCounts, transitionsFrom,
@@ -55,8 +55,46 @@ function out(payload) { process.stdout.write(JSON.stringify(payload, null, 2) + 
 
 /**
  * Git Bash rewrites a lone `/settings` argument into `C:/Program Files/Git/settings`
- * before Node ever sees it. Nothing here can undo that, but silently reporting
- * "unknown route" sends the reader hunting in the wrong place.
+ * before Node ever sees it. A route never starts with a drive letter, so under MSYS
+ * (`MSYSTEM` set) a route flag that starts with the Git install directory is turned back
+ * into the route it was. The install directory comes from `EXEPATH` (the launcher's
+ * `…\Git\bin`, or `…\Git` itself), with a `…/Git/` pattern for shells that do not set it.
+ */
+const ROUTE_FLAGS = ['to', 'from', 'route'];
+
+function msysRoots(env = process.env) {
+  const roots = [];
+  if (env.EXEPATH) {
+    const exe = String(env.EXEPATH).replace(/\\/g, '/').replace(/\/+$/, '');
+    roots.push(exe.replace(/\/(?:usr\/bin|mingw(?:32|64)\/bin|bin)$/i, ''), exe);
+  }
+  return roots;
+}
+
+function undoMsysPathConversion(value, env = process.env) {
+  if (!env.MSYSTEM || typeof value !== 'string' || !/^[A-Za-z]:[\\/]/.test(value)) return value;
+  const slashed = value.replace(/\\/g, '/');
+  for (const root of msysRoots(env)) {
+    if (!root) continue;
+    const lower = slashed.toLowerCase();
+    const prefix = root.toLowerCase();
+    if (lower === prefix || lower === prefix + '/') return '/';
+    if (lower.startsWith(prefix + '/')) return slashed.slice(root.length);
+  }
+  const match = /^[A-Za-z]:\/(?:.*?\/)?Git(\/.*)?$/i.exec(slashed);
+  return match ? (match[1] || '/') : value;
+}
+
+function normalizeRouteFlags(options) {
+  for (const key of ROUTE_FLAGS) {
+    if (typeof options[key] === 'string') options[key] = undoMsysPathConversion(options[key]);
+  }
+  return options;
+}
+
+/**
+ * Whatever `undoMsysPathConversion` could not recognise still arrives as a Windows path;
+ * silently reporting "unknown route" would send the reader hunting in the wrong place.
  */
 function pathConversionHint(value) {
   return /^[A-Za-z]:[\\/]/.test(String(value || ''))
@@ -145,6 +183,7 @@ function gitInfo(mapPath) {
       mapPath,
       join(dirname(mapPath), 'map.md'),
       join(dirname(mapPath), 'storage-state.json'),
+      join(dirname(mapPath), '.gitignore'),
     ].map(path => gitPath(root, path)));
     const changed = [
       ...gitLines(runGit(root, ['diff', '--name-only'])),
@@ -230,7 +269,7 @@ async function commandCrawl(options) {
   const baseUrl = assertHostAllowed(config.baseUrl, config.allowHosts);
   const baseOrigin = baseUrl.origin;
   const allowMutating = options.allowMutating === true || options.allowMutating === 'true';
-  const replayVerify = !(options.replayVerify === false || options.noReplayVerify === true || options.noReplayVerify === 'true');
+  const replayVerify = !(options.noReplayVerify === true || options.noReplayVerify === 'true');
   const startedAt = new Date().toISOString();
   const deadline = Date.now() + config.budget.maxMillis;
 
@@ -241,6 +280,22 @@ async function commandCrawl(options) {
   // It is read before the registry exists because every entry the registry stamps
   // carries this commit.
   const appInfo = gitInfo(mapFile);
+
+  // The map this crawl replaces. Its recorded edges and `recordings` history are carried
+  // into every snapshot (see `carryRecorded`); everything the crawl itself finds is
+  // rebuilt from the walk, so a re-crawl still drops what the app no longer has.
+  let previous = null;
+  if (existsSync(mapFile)) {
+    try { previous = migrateMap(JSON.parse(readFileSync(mapFile, 'utf8'))); }
+    catch (error) {
+      // Unreadable is already lost; refusing to crawl would not bring it back.
+      process.stderr.write(`the existing map at ${mapFile} is unreadable (${error.message}); crawling from scratch\n`);
+      previous = null;
+    }
+    if (previous && previous.schema !== SCHEMA_VERSION) {
+      fail(EXIT_ERROR, `map schema ${previous.schema} is not supported by this build (expected ${SCHEMA_VERSION})`);
+    }
+  }
 
   const registry = createRegistry({ config, stamp: { source: 'crawl', commit: appInfo.commit } });
   const { states, transitions, entrypoints } = registry;
@@ -341,6 +396,8 @@ async function commandCrawl(options) {
    * carries the reason the run stopped — `incomplete` means it has not stopped yet, and
    * a file left saying that is a file whose crawl never came back.
    */
+  /** Recorded edges the last snapshot carried over from the previous map. */
+  let lastCarried = 0;
   function snapshot(hit) {
     const finishedAt = new Date().toISOString();
     const timing = {
@@ -372,7 +429,7 @@ async function commandCrawl(options) {
         })),
     };
 
-    return {
+    const { map: merged, carried } = carryRecorded({
       schema: SCHEMA_VERSION,
       app: { baseUrl: config.baseUrl, commit: appInfo.commit, dirty: appInfo.dirty },
       run: {
@@ -382,18 +439,21 @@ async function commandCrawl(options) {
         dialogs: page ? page.dialogs : [],
       },
       states, transitions, entrypoints,
+    }, previous);
+    lastCarried = carried;
+    // `notExecuted` leaves out `observed`, as `statusCounts` defines it: a carried
+    // recorded edge was executed, just not by this tool.
+    const counts = statusCounts(merged.transitions);
+    return {
+      ...merged,
       coverage: {
-        states: states.length,
-        actionsSeen: transitions.length,
+        states: merged.states.length,
+        actionsSeen: merged.transitions.length,
         executed,
-        // `blocked` used to hold every non-verified transition, so `sampled` and
-        // `unexplored` were counted inside it and again beside it. Two fields now, each
-        // meaning what it says: the honest total, and the narrow status.
-        notExecuted: transitions.filter(transition => transition.status !== 'verified').length,
-        blocked: transitions.filter(transition => transition.status === 'blocked').length,
-        unexplored: transitions.filter(transition => transition.status === 'unexplored').length,
-        sampled: transitions.filter(transition => transition.status === 'sampled').length,
-        failed: transitions.filter(transition => transition.status === 'failed').length,
+        notExecuted: counts.notExecuted,
+        verified: counts.verified, observed: counts.observed,
+        blocked: counts.blocked, unexplored: counts.unexplored,
+        sampled: counts.sampled, failed: counts.failed,
         frontier: queue.map(item => {
           const state = byId(item.stateId);
           return `${state ? state.route : item.stateId} :: ${item.actionKey}`;
@@ -574,7 +634,7 @@ async function commandCrawl(options) {
     if (config.auth) {
       await timed('setup.auth', () => runAuth(page, config, baseOrigin));
       const state = await page.storageState();
-      writeFileSync(join(config.__dir, 'storage-state.json'), JSON.stringify(state, null, 2));
+      writeStorageState(config.__dir, state);
     }
 
     for (const entry of config.entrypoints) {
@@ -700,6 +760,8 @@ async function commandCrawl(options) {
     coverage: map.coverage, budgetHit, timing: map.run.timing,
     notExecuted: transitions.filter(transition => transition.status !== 'verified')
       .map(transition => ({ from: byId(transition.from)?.route, action: transition.action.name, class: transition.class, reason: transition.blockedReason })),
+    // Recorded edges are not re-walked; they are kept so a re-crawl does not erase them.
+    ...(previous ? { carriedFromRecordings: lastCarried } : {}),
   });
 }
 
@@ -882,6 +944,18 @@ async function commandRecord(options) {
   });
 }
 
+/**
+ * storage-state.json holds live session cookies. It is written next to the map, which is
+ * meant to be committed, so the directory gets a `.gitignore` naming it the first time —
+ * an existing one is left alone, since it is the user's to edit.
+ */
+function writeStorageState(dir, state) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'storage-state.json'), JSON.stringify(state, null, 2));
+  const ignore = join(dir, '.gitignore');
+  if (!existsSync(ignore)) writeFileSync(ignore, 'storage-state.json\n');
+}
+
 async function runAuth(page, config, baseOrigin) {
   for (const step of config.auth.steps || []) {
     switch (step.kind) {
@@ -937,9 +1011,18 @@ async function runAuth(page, config, baseOrigin) {
 
 // ---------- queries ----------
 
-function commandRoute(options) {
-  if (!options.to) fail(EXIT_ERROR, 'route requires --to <route>');
-  const { map, path } = loadMap(options);
+/**
+ * The one path `route` hands out and `verify` replays. Two copies of this search had
+ * drifted: verify ignored `--from` and took an edge seen to land in two places, so it
+ * could prove a path route would never have offered.
+ *
+ * `--from` starts at the route's page screen. An overlay at the same route (a menu left
+ * open) is a different screen; starting there would hand back a path whose first step
+ * assumes a dropdown the caller does not have open. Overlays are used only when the route
+ * has no page screen at all.
+ */
+function resolveRoute(map, options, command) {
+  if (!options.to) fail(EXIT_ERROR, `${command} requires --to <route>`);
   const targets = statesByRoute(map, options.to);
   if (!targets.length) {
     fail(EXIT_NO_ANSWER, `no screen with route ${normalizePath(options.to)}`, {
@@ -951,8 +1034,14 @@ function commandRoute(options) {
   let origins = map.entrypoints;
   if (options.from) {
     const fromStates = statesByRoute(map, options.from);
-    if (!fromStates.length) fail(EXIT_NO_ANSWER, `no screen with route ${normalizePath(options.from)}`);
-    origins = fromStates.map(state => state.id);
+    if (!fromStates.length) {
+      fail(EXIT_NO_ANSWER, `no screen with route ${normalizePath(options.from)}`, {
+        known: [...new Set(map.states.map(state => state.route))].sort(),
+        hint: pathConversionHint(options.from) || undefined,
+      });
+    }
+    const pages = fromStates.filter(state => state.kind === 'page');
+    origins = (pages.length ? pages : fromStates).map(state => state.id);
   }
 
   const search = (statuses, extra = {}) => {
@@ -994,6 +1083,13 @@ function commandRoute(options) {
       mutatingPath: detour || undefined,
     });
   }
+  return { best, evidence };
+}
+
+function commandRoute(options) {
+  if (!options.to) fail(EXIT_ERROR, 'route requires --to <route>');
+  const { map, path } = loadMap(options);
+  const { best, evidence } = resolveRoute(map, options, 'route');
 
   const freshness = freshnessOf(map, path);
   const steps = routeToSteps(map, best.resolved, map.app.baseUrl);
@@ -1145,9 +1241,13 @@ function commandInvalidate(options) {
   transition.blockedReason = options.reason ? String(options.reason) : 'invalidated during use';
   transition.invalidatedAt = new Date().toISOString();
   writeFileSync(path, JSON.stringify(map, null, 2));
+  // map.md is the human copy of the same graph; left alone it would keep offering the
+  // step just invalidated.
+  const report = join(dirname(path), 'map.md');
+  writeFileSync(report, renderMarkdown(map, freshnessOf(map, path)));
 
   // Only `crawl` may add to the map; live use downgrades and nothing else.
-  out({ ok: true, transition: transition.id, status: transition.status, unchanged: before });
+  out({ ok: true, transition: transition.id, status: transition.status, unchanged: before, report });
 }
 
 // ---------- verify ----------
@@ -1155,36 +1255,16 @@ function commandInvalidate(options) {
 async function commandVerify(options) {
   if (!options.to) fail(EXIT_ERROR, 'verify requires --to <route>');
   const { map, path } = loadMap(options);
-  const targets = statesByRoute(map, options.to);
-  if (!targets.length) {
-    fail(EXIT_NO_ANSWER, `no screen with route ${normalizePath(options.to)}`,
-      { hint: pathConversionHint(options.to) || undefined });
-  }
+  // A recorded path is the one most worth replaying: it is the only kind the map holds
+  // that has never been proved. `resolveRoute` falls back to it the way `route` does, so
+  // verify replays exactly the path route would hand out.
+  const { best, evidence } = resolveRoute(map, options, 'verify');
 
   const configPath = options.config ? options.config : join(dirname(path), 'config.json');
   let config;
   try { config = loadConfig(configPath); }
   catch (error) { fail(EXIT_ERROR, error.message); }
   const baseUrl = assertHostAllowed(config.baseUrl, config.allowHosts);
-
-  // A recorded path is the one most worth replaying: it is the only kind the map holds
-  // that has never been proved. Refusing to replay it would leave `observed` edges with no
-  // way to ever become anything else.
-  const findPath = statuses => {
-    let found = null;
-    for (const target of targets) {
-      const resolved = pathFromEntrypoints(map, target.id, null, statuses ? { statuses } : {});
-      if (resolved && (!found || resolved.path.length < found.resolved.path.length)) found = { target, resolved };
-    }
-    return found;
-  };
-  let evidence = 'verified';
-  let best = findPath(null);
-  if (!best) {
-    const observed = findPath(VERIFIED_OR_OBSERVED);
-    if (observed) { best = observed; evidence = 'observed'; }
-  }
-  if (!best) fail(EXIT_NO_ANSWER, `no safe path to ${normalizePath(options.to)}`);
 
   const browser = await launchBrowser({ headless: options.headed !== true, noSandbox: options.noSandbox === true });
   let page;
@@ -1247,7 +1327,7 @@ async function commandVerify(options) {
 
 // ---------- entry ----------
 
-const options = parseArgs(process.argv.slice(2));
+const options = normalizeRouteFlags(parseArgs(process.argv.slice(2)));
 const command = options._[0];
 
 try {

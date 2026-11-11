@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS retrieval_queries (
   harness TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS retrieval_queries_created_idx ON retrieval_queries(created_at);
 -- What each session was already shown, so a long conversation is not handed
 -- the same records on every prompt.
 CREATE TABLE IF NOT EXISTS session_exposures (

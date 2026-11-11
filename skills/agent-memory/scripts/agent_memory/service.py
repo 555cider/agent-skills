@@ -18,6 +18,7 @@ from .constants import (
     EVENT_SCHEMA,
     EXPORT_SCHEMA,
     EXPORT_SCOPES,
+    FEEDBACK_WINDOW_DAYS,
     HANDOFF_TTL_DAYS,
     HARNESSES,
     IMPORT_BATCH_EVIDENCE,
@@ -27,6 +28,7 @@ from .constants import (
     MEMORY_KINDS,
     MEMORY_STATES,
     PROCEDURE_STALE_DAYS,
+    REVIEW_STATES,
     RAW_CHAT_TTL_DAYS,
     RECORD_SCHEMA,
     SCOPES,
@@ -421,6 +423,7 @@ class MemoryService:
                 self.db.conn.execute(
                     "DELETE FROM session_exposures WHERE exposed_at<=?", (utc_after(days=-1),)
                 )
+                self._prune_query_log()
             cursor = self.db.conn.execute(
                 "INSERT OR IGNORE INTO events("
                 "id,schema_name,session_id,harness,kind,repo_key,payload_zlib,payload_sha256,"
@@ -454,6 +457,8 @@ class MemoryService:
                 )
 
         immediate: list[str] = []
+        stored: list[dict[str, str]] = []
+        superseded: list[dict[str, str]] = []
         forgotten: list[str] = []
         forget_skipped = 0
         if inserted and kind == "user_prompt" and not is_harness_message(str(payload.get("prompt", ""))):
@@ -481,6 +486,15 @@ class MemoryService:
                 )
                 if memory:
                     immediate.append(str(memory["id"]))
+                    stored.append(
+                        {
+                            "id": memory["id"],
+                            "kind": memory["kind"],
+                            "statement": memory["statement"],
+                            "existing": bool(memory.get("existing")),
+                        }
+                    )
+                    superseded.extend(memory.get("superseded") or [])
         return {
             "captured": inserted,
             "paused": False,
@@ -490,6 +504,8 @@ class MemoryService:
             "queued": inserted and queued,
             "redactions": sorted(set(findings)),
             "immediate_memories": immediate,
+            "stored": stored,
+            "superseded": superseded,
             "forgotten": forgotten,
             "forget_skipped": forget_skipped,
         }
@@ -850,8 +866,11 @@ class MemoryService:
                         "UPDATE memories SET last_verified_at=?,updated_at=? WHERE id=?",
                         (now, now, existing["id"]),
                     )
+                superseded: list[dict[str, str]] = []
+                if replaces_id and replaces_id != existing["id"]:
+                    superseded.append(self._supersede(existing["id"], replaces_id, now))
                 row = self.db.conn.execute("SELECT * FROM memories WHERE id=?", (existing["id"],)).fetchone()
-                return record_from_row(self.db, row)
+                return {**record_from_row(self.db, row), "superseded": superseded, "existing": True}
 
             state, authority, confidence = self._activation(candidate)
             memory_id = f"mem_{uuid.uuid4().hex[:24]}"
@@ -931,14 +950,20 @@ class MemoryService:
                 (memory_id, candidate.kind, candidate.scope, target_project),
             ).fetchall()
             explicit = authority in {"explicit", "approved"}
+            superseded = []
             for peer in peers:
                 if not self._contradicts(candidate.statement, peer["statement"]):
                     continue
+                if peer["id"] == replaces_id:
+                    continue  # retracted below as the named replacement
                 if explicit:
                     self._change_state(peer["id"], "retracted", "superseded by explicit correction")
                     self.db.conn.execute(
                         "INSERT OR IGNORE INTO relations(source_id,target_id,relation,created_at) VALUES(?,?,?,?)",
                         (memory_id, peer["id"], "supersedes", now),
+                    )
+                    superseded.append(
+                        {"id": peer["id"], "statement": peer["statement"], "reason": "contradiction"}
                     )
                 else:
                     self._change_state(memory_id, "disputed", "conflicting evidence")
@@ -948,16 +973,24 @@ class MemoryService:
                         (memory_id, peer["id"], "conflicts_with", now),
                     )
             if replaces_id:
-                peer = self.db.conn.execute("SELECT id FROM memories WHERE id=?", (replaces_id,)).fetchone()
-                if not peer:
-                    raise MemoryError(f"replacement target not found: {replaces_id}")
-                self._change_state(replaces_id, "retracted", "explicit replacement")
-                self.db.conn.execute(
-                    "INSERT OR IGNORE INTO relations(source_id,target_id,relation,created_at) VALUES(?,?,?,?)",
-                    (memory_id, replaces_id, "supersedes", now),
-                )
+                superseded.append(self._supersede(memory_id, replaces_id, now))
             row = self.db.conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
-            return record_from_row(self.db, row)
+            return {**record_from_row(self.db, row), "superseded": superseded}
+
+    def _supersede(self, memory_id: str, replaces_id: str, now: str) -> dict[str, str]:
+        """Retract `replaces_id` in favour of `memory_id` (caller holds the transaction)."""
+
+        peer = self.db.conn.execute(
+            "SELECT id,statement FROM memories WHERE id=?", (replaces_id,)
+        ).fetchone()
+        if not peer:
+            raise MemoryError(f"replacement target not found: {replaces_id}")
+        self._change_state(replaces_id, "retracted", "explicit replacement")
+        self.db.conn.execute(
+            "INSERT OR IGNORE INTO relations(source_id,target_id,relation,created_at) VALUES(?,?,?,?)",
+            (memory_id, replaces_id, "supersedes", now),
+        )
+        return {"id": peer["id"], "statement": peer["statement"], "reason": "replaces"}
 
     @staticmethod
     def _forget_matches(rows: Sequence[sqlite3.Row], query: str) -> list[sqlite3.Row]:
@@ -1334,7 +1367,7 @@ class MemoryService:
             sql += " AND m.state=?"
             params.append(state)
         else:
-            sql += " AND m.state IN ('provisional','disputed')"
+            sql += f" AND m.state IN ({','.join(repr(item) for item in REVIEW_STATES)})"
         if scope:
             if scope not in SCOPES:
                 raise MemoryError(f"invalid scope: {scope}")
@@ -1403,10 +1436,11 @@ class MemoryService:
         )
         resolved: list[str] = []
         for record in pending:
+            # review_list already narrowed the batch to the review states.
             if decision == "approve":
-                self.approve(record["id"])
+                self.approve(record["id"], force=True)
             else:
-                self.reject(record["id"])
+                self.reject(record["id"], force=True)
             resolved.append(record["id"])
         return {"batch": batch, "decision": decision, "resolved": resolved, "count": len(resolved)}
 
@@ -1435,10 +1469,22 @@ class MemoryService:
         record["relations"] = [jsonable_row(item) for item in relations]
         return record
 
-    def approve(self, memory_id: str) -> dict[str, Any]:
+    def _reviewable(self, memory_id: str, action: str, force: bool) -> sqlite3.Row:
+        row = self.db.conn.execute(
+            "SELECT state,repo_key FROM memories WHERE id=?", (memory_id,)
+        ).fetchone()
+        if not row:
+            raise MemoryError(f"memory not found: {memory_id}")
+        if row["state"] not in REVIEW_STATES and not force:
+            raise MemoryError(
+                f"cannot {action} {memory_id}: state is {row['state']}; review only resolves "
+                "provisional or disputed records (use forget to delete, or --force)"
+            )
+        return row
+
+    def approve(self, memory_id: str, *, force: bool = False) -> dict[str, Any]:
         with self.db.transaction(immediate=True):
-            if not self.db.conn.execute("SELECT 1 FROM memories WHERE id=?", (memory_id,)).fetchone():
-                raise MemoryError(f"memory not found: {memory_id}")
+            self._reviewable(memory_id, "approve", force)
             self.db.conn.execute(
                 "UPDATE memories SET confidence=max(confidence,0.95),last_verified_at=? WHERE id=?",
                 (utc_now(), memory_id),
@@ -1446,10 +1492,8 @@ class MemoryService:
             self._change_state(memory_id, "active", "user approved", authority="approved")
         return self.get_memory(memory_id)
 
-    def reject(self, memory_id: str) -> list[str]:
-        row = self.db.conn.execute("SELECT repo_key FROM memories WHERE id=?", (memory_id,)).fetchone()
-        if not row:
-            raise MemoryError(f"memory not found: {memory_id}")
+    def reject(self, memory_id: str, *, force: bool = False) -> list[str]:
+        row = self._reviewable(memory_id, "reject", force)
         return self.forget(project=str(row["repo_key"] or ""), memory_id=memory_id)
 
     def trust_grant(self, project: str, kinds: Sequence[str]) -> None:
@@ -1510,19 +1554,34 @@ class MemoryService:
         return {"session_id": sid, "paused": paused, "harness": harness, "repo_key": project}
 
     def feedback(
-        self, query_id: str, memory_id: str, *, used: bool, outcome: str | None = None
+        self,
+        query_id: str,
+        memory_ids: str | Sequence[str],
+        *,
+        used: bool,
+        outcome: str | None = None,
     ) -> dict[str, Any]:
+        """Record one vote per memory id; all of them or none."""
+
+        ids = [memory_ids] if isinstance(memory_ids, str) else list(dict.fromkeys(memory_ids))
+        if not ids:
+            raise MemoryError("feedback requires at least one memory id")
         now = utc_now()
         safe_outcome = redact_text(outcome).value if outcome else None
-        cursor = self.db.conn.execute(
-            "UPDATE retrieval_feedback SET used=?,outcome=?,updated_at=? WHERE query_id=? AND memory_id=?",
-            (int(used), safe_outcome, now, query_id, memory_id),
-        )
-        if cursor.rowcount != 1:
-            raise MemoryError("feedback target was not exposed by that query")
+        with self.db.transaction(immediate=True):
+            for memory_id in ids:
+                cursor = self.db.conn.execute(
+                    "UPDATE retrieval_feedback SET used=?,outcome=?,updated_at=? WHERE query_id=? AND memory_id=?",
+                    (int(used), safe_outcome, now, query_id, memory_id),
+                )
+                if cursor.rowcount != 1:
+                    raise MemoryError(
+                        f"feedback target {memory_id} was not exposed by that query; nothing recorded"
+                    )
         return {
             "query_id": query_id,
-            "memory_id": memory_id,
+            "memory_id": ids[0],
+            "memory_ids": ids,
             "used": used,
             "outcome": safe_outcome,
         }
@@ -1730,6 +1789,14 @@ class MemoryService:
         statement = item.get("statement") if isinstance(item, dict) else None
         report["skipped"].append({"statement": str(statement or ""), "reason": reason})
 
+    def _prune_query_log(self) -> int:
+        """Delete recall logs past the feedback window; feedback rows cascade."""
+
+        return self.db.conn.execute(
+            "DELETE FROM retrieval_queries WHERE created_at<=?",
+            (utc_after(days=-FEEDBACK_WINDOW_DAYS),),
+        ).rowcount
+
     def gc(self) -> dict[str, int]:
         now = utc_now()
         cutoff = (datetime.now(UTC) - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -1739,6 +1806,7 @@ class MemoryService:
                 "DELETE FROM tombstones WHERE expires_at<=?", (now,)
             ).rowcount
             self.db.conn.execute("DELETE FROM session_exposures WHERE exposed_at<=?", (utc_after(days=-1),))
+            queries = self._prune_query_log()
             expiring = self.db.conn.execute(
                 "SELECT id FROM memories WHERE valid_until IS NOT NULL AND valid_until<=? "
                 "AND state NOT IN ('expired','retracted')",
@@ -1751,4 +1819,10 @@ class MemoryService:
                 "DELETE FROM jobs WHERE state='done' AND updated_at<?", (cutoff,)
             ).rowcount
             self.db.conn.execute("PRAGMA optimize")
-        return {"events": events, "tombstones": tombstones, "expired": expired, "jobs": jobs}
+        return {
+            "events": events,
+            "tombstones": tombstones,
+            "expired": expired,
+            "jobs": jobs,
+            "queries": queries,
+        }

@@ -31,8 +31,9 @@ With no selectors, `context` uses staged, unstaged, and untracked Git paths:
 <skill-dir>/bin/plan-graph context
 ```
 
-An explicit query/path does not mix in an unrelated dirty worktree unless you
-add `--worktree`. Use `--plan <id>` when the user names a plan directly.
+A relative `--path` is read from the current directory, and a directory path
+selects every plan scoped inside it. An explicit query/path does not mix in an
+unrelated dirty worktree unless you add `--worktree`. Use `--plan <id>` when the user names a plan directly.
 
 The decision pack separates:
 
@@ -69,7 +70,8 @@ vocabulary into false ordering constraints.
 Advisory signals are derived from Git and file content at read time and are
 never persisted. Each one requires a concrete response, not acknowledgement:
 
-- `stale_plan` warning, or `staleness.state` of `stale` on a pack item: the
+- `stale_plan` warning (active plans only), or `staleness.state` of `stale` on a
+  pack item (`Staleness:` line in text output): the
   plan's scope changed in that many commits since the plan file itself last
   changed. Read the scope diff since `staleness.anchor`, then continue, revise,
   reopen, or replace — do not act on the plan text unread.

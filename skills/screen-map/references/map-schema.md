@@ -128,6 +128,14 @@ of those, the edge keeps `source: "crawl"` — the crawl is where the control ca
 the finder. The status is the field that says how the edge is known; only a recording produces
 `observed`, so nothing is ambiguous.
 
+**A re-crawl keeps what was watched.** The crawl rebuilds its own entries from the walk, but every
+`observed` edge, every `source: "record"` screen and edge, and `recordings` are carried into the new
+map. Screens are matched by route and signature and renumbered, so an id from the old map may name a
+different entry in the new one. A carried edge the new crawl also lists keeps the crawl's proof if it
+has one and otherwise stays `observed`. A carried edge on a screen the new crawl walked, whose control
+the crawl no longer lists, is dropped: the app no longer has it. Back navigation is kept, since a crawl
+never lists the browser's back button.
+
 **Three timestamps, three questions.** `commit`/`recordedAt` say when an entry was first seen.
 `lastObservedCommit`/`lastObservedAt` say when it was last seen — a recording that revisits a screen
 updates these and nothing else, so an edge found by a crawl weeks ago and confirmed to still exist

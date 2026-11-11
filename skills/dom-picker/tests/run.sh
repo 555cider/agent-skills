@@ -47,6 +47,7 @@ assert_status 0 "Chromium driver parses" node --check "$DRIVER"
 assert_status 0 "source locator parses" node --check "$LOCATOR"
 assert_status 0 "session ledger parses" node --check "$LEDGER"
 assert_status 0 "locator report parses" node --check "$REPORT"
+assert_status 0 "shared option parser parses" node --check "$SKILL/scripts/cli-options.mjs"
 assert_status 0 "driver help succeeds" node "$DRIVER" help
 if grep -qF "start <url>" "$TMP/out" && grep -qF "verify --request" "$TMP/out"; then
   pass "driver help documents continuous and verification paths"
@@ -60,6 +61,9 @@ assert_status 2 "verifier requires declared assertions" node "$DRIVER" verify --
 if grep -qF "verify requires --assertions" "$TMP/err"; then pass "missing-assertion diagnostic is actionable"; else fail "missing-assertion diagnostic is actionable" "$(cat "$TMP/out" "$TMP/err")"; fi
 printf '{"picks":[]}\n' >"$TMP/no-picks.json"
 assert_status 2 "locator rejects evidence with no picks" node "$LOCATOR" --repo="$SKILL" --input="$TMP/no-picks.json"
+assert_status 2 "locator rejects an unknown option" node "$LOCATOR" --repository="$SKILL" --input="$TMP/no-picks.json"
+assert_status 2 "locator rejects evidence with no picks (space-separated options)" node "$LOCATOR" --repo "$SKILL" --input "$TMP/no-picks.json"
+assert_contains "locator reads space-separated options" "does not contain any picks" "$TMP/err"
 
 # Runtime and trust-boundary regression guards.
 assert_contains "runtime exposes protocol v2" "var VERSION = 2" "$PICKER"

@@ -455,10 +455,6 @@ fi
 # adbanners.html has two low-contrast `.ad-banner` slots. The buggy safeMatch only compared the
 # first match of each selector, so it leaked every finding past the first whitelisted instance.
 node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/adbanners.html"],"adaptations":[]}')" --out-dir "$WORK/wl-off" --no-screenshots >/dev/null 2>&1
-# MSYS2_ARG_CONV_EXCL: Git Bash rewrites a bare "/route.html" argv into
-# "C:/Program Files/Git/route.html" before the runner sees it, which silently
-# audits nothing. Excluding the route prefix leaves $RUNNER conversion intact.
-MSYS2_ARG_CONV_EXCL='/adbanners.html' \
 node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/adbanners.html"],"adaptations":[],"auditConfig":{"whitelist":[".ad-banner"]}}')" \
   --routes "/adbanners.html" --out-dir "$WORK/wl-on" --no-screenshots >/dev/null 2>&1
 if python3 - "$WORK/wl-off/findings.json" "$WORK/wl-on/findings.json" <<'PY'
@@ -592,7 +588,6 @@ PY
 then pass "workers=1 and workers=2 produce deterministic outputs"; else fail "workers=1 and workers=2 produce deterministic outputs" "output mismatch"; fi
 
 # ---- non-default data states are recorded as not-forced, not silently 'checked' ----
-MSYS2_ARG_CONV_EXCL='/clean.html' \
 node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"states":["default","empty"],"themes":["light"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":3}]}')" \
   --routes "/clean.html" --out-dir "$WORK/nf" --no-screenshots >"$WORK/nf.out" 2>&1
 EC=$?
@@ -690,7 +685,6 @@ PY
 then pass "explicit default-state mock requires proof"; else fail "explicit default-state mock requires proof" "$(cat "$WORK/default-explicit-mock/coverage.json" 2>/dev/null | tr '\n' '|' | head -c 500)"; fi
 
 # ---- rulesSkipped is unverified coverage, not a green audit ----
-MSYS2_ARG_CONV_EXCL='/clean.html' \
 node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"auditConfig":{"polish":null},"themes":["dark"],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"states":["default"],"scrollPositions":["top"]}')" \
   --routes "/clean.html" --out-dir "$WORK/skipped" --no-screenshots >"$WORK/skipped.out" 2>&1
 EC=$?
@@ -733,7 +727,8 @@ else
 fi
 
 # ---- the usage contract requires both reachable and realistically dense states ----
-SKILL_DOC="$HERE/../SKILL.md"
+# SKILL.md points to these; the contract itself lives in the state-proof reference.
+SKILL_DOC="$HERE/../references/findings-schema.md"
 if grep -qF "Data presence also does not prove data density." "$SKILL_DOC"; then
   pass "skill distinguishes populated DOM from data density"
 else
@@ -774,6 +769,66 @@ chrome = json.load(open(sys.argv[1]))["runner"]["chrome"]
 assert chrome["args"] == ["--headless=new", "--force-color-profile=srgb"], chrome
 PY
 then pass "disableGpu and chromeArgs override the rendering path"; else fail "disableGpu and chromeArgs override the rendering path" "override not applied"; fi
+
+# ---- every static configuration error exits 2 before Chrome starts ----
+UPLOAD_MISSING="$WORK/no-such-upload.bin"
+for CASE in \
+  'initScripts|{"initScripts":[""]}|initScripts entries must be non-empty strings' \
+  'setup-shape|{"stateSetups":{"open":{"actions":[{"type":"tap","selector":"#a"}],"expect":[{"selector":"#a"}]}}}|stateSetups.open.actions[0].type is unsupported' \
+  'setup-key|{"stateSetups":{"open":{"actions":[{"type":"press","selector":"#a","key":"Hyper+Enter"}],"expect":[{"selector":"#a"}]}}}|unsupported key modifier: Hyper' \
+  "setup-upload|{\"stateSetups\":{\"open\":{\"actions\":[{\"type\":\"upload\",\"selector\":\"#a\",\"files\":[\"$UPLOAD_MISSING\"]}],\"expect\":[{\"selector\":\"#a\"}]}}}|file not found" \
+  'keyboardProbe|{"keyboardProbe":{"maxSteps":0}}|keyboardProbe.maxSteps must be an integer' \
+  'hoverProbe|{"hoverProbe":{"maxTargets":0}}|hoverProbe.maxTargets must be an integer'; do
+  NAME="${CASE%%|*}"; REST="${CASE#*|}"; EXTRA="${REST%%|*}"; EXPECTED="${REST#*|}"
+  CFG="$(config_file "$(node -e 'const extra=JSON.parse(process.argv[1]);process.stdout.write(JSON.stringify({routes:["/clean.html"],viewports:[{name:"m",width:390,height:844,isMobile:true,dpr:1}],themes:["light"],states:["default"],scrollPositions:["top"],...extra}))' "$EXTRA")")"
+  node "$RUNNER" "http://127.0.0.1:$PORT" --config "$CFG" --out-dir "$WORK/precheck-$NAME" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+  EC=$?
+  assert_exit "invalid $NAME is a configuration error" 2
+  if grep -qF "$EXPECTED" "$WORK/err" && [ ! -e "$WORK/precheck-$NAME/coverage.json" ]; then
+    pass "invalid $NAME is reported before Chrome launches"
+  else
+    fail "invalid $NAME is reported before Chrome launches" "$(cat "$WORK/err" 2>/dev/null | tr '\n' '|' | head -c 300)"
+  fi
+done
+
+# ---- CLI routes: a Git Bash install-root rewrite is undone, other shapes are refused ----
+ROUTE_CFG="$(config_file '{"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":1}],"states":["default"],"scrollPositions":["top"]}')"
+MSYSTEM=MINGW64 EXEPATH='C:\Program Files\Git\bin' \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$ROUTE_CFG" --routes 'C:/Program Files/Git/clean.html,hover-valid.html' \
+  --out-dir "$WORK/msys-routes" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+if node -e 'const m=require(process.argv[1]).matrix;if(JSON.stringify(m.map(c=>[c.route,c.status]))!==JSON.stringify([["/clean.html","checked"],["hover-valid.html","checked"]]))throw new Error(JSON.stringify(m.map(c=>[c.route,c.status,c.error])))' "$WORK/msys-routes/coverage.json" 2>"$WORK/err"; then
+  pass "Git Bash route rewrite is undone and a bare route joins under the base URL"
+else
+  fail "Git Bash route rewrite is undone and a bare route joins under the base URL" "$(head -c 300 "$WORK/err")"
+fi
+MSYSTEM=MINGW64 EXEPATH='C:\Program Files\Git\bin' \
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$ROUTE_CFG" --routes 'D:/elsewhere/settings' --out-dir "$WORK/msys-bad" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "an unrecoverable Git Bash route rewrite is refused" 2
+grep -qF "MSYS_NO_PATHCONV=1" "$WORK/err" && pass "route rewrite error names the MSYS_NO_PATHCONV=1 fix" || fail "route rewrite error names the MSYS_NO_PATHCONV=1 fix" "$(head -c 300 "$WORK/err")"
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$ROUTE_CFG" --routes 'http://elsewhere.test/' --out-dir "$WORK/url-route" --no-screenshots >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "a full URL as a route is refused" 2
+
+# ---- phone cells are touch-emulated; typed keys run the browser default action ----
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/runner-input.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"m","width":390,"height":844,"isMobile":true,"dpr":3}],"states":["touch","press-enter","press-space"],"stateSetups":{"touch":{"expect":[{"selector":"html[data-pointer=coarse][data-hover=none][data-touch=yes][data-inner-height=\"844\"]","state":"attached"}]},"press-enter":{"actions":[{"type":"press","selector":"#enter-target","key":"Enter"}],"expect":[{"selector":"#enter-panel","state":"visible"}]},"press-space":{"actions":[{"type":"press","selector":"#space-target","key":"Space"}],"expect":[{"selector":"#space-panel","state":"visible"}]}}}')" \
+  --out-dir "$WORK/runner-input-mobile" >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "touch emulation and Enter/Space presses reach their states" 0
+# Desktop: no touch points, and screenshots include a full-page capture taller than the viewport.
+mkdir -p "$WORK/runner-input-desktop/screens"
+: >"$WORK/runner-input-desktop/screens/stale_m_light_default_none_top.png"
+: >"$WORK/runner-input-desktop/screens/notes.txt"
+node "$RUNNER" "http://127.0.0.1:$PORT" --config "$(config_file '{"routes":["/runner-input.html"],"themes":["light"],"adaptations":[],"viewports":[{"name":"d","width":1280,"height":900,"isMobile":false,"dpr":1}],"states":["desk"],"stateSetups":{"desk":{"expect":[{"selector":"html[data-touch=no][data-inner-height=\"900\"]","state":"attached"}]}}}')" \
+  --out-dir "$WORK/runner-input-desktop" >"$WORK/out" 2>"$WORK/err"
+EC=$?
+assert_exit "desktop cell keeps a mouse-only device" 0
+SCREENS="$WORK/runner-input-desktop/screens"
+if node -e 'const fs=require("fs"),p=require("path"),d=process.argv[1];const png=fs.readFileSync(p.join(d,"runner-input.html_d_light_desk_none_full.png"));if(png.readUInt32BE(20)<=900)throw new Error("full-page height "+png.readUInt32BE(20));for(const f of ["runner-input.html_d_light_desk_none_top.png","runner-input.html_d_light_desk_none_bottom.png","notes.txt"])if(!fs.existsSync(p.join(d,f)))throw new Error("missing "+f);if(fs.existsSync(p.join(d,"stale_m_light_default_none_top.png")))throw new Error("stale screenshot kept");for(const run of ["runner-input-desktop","runner-input-mobile"])for(const cell of require(p.join(d,"..","..",run,"coverage.json")).matrix)if(cell.fullPageScreenshot?.status!=="captured")throw new Error(run+" "+JSON.stringify(cell.fullPageScreenshot))' "$SCREENS" 2>"$WORK/err"; then
+  pass "full-page screenshot is captured and stale runner screenshots are cleared"
+else
+  fail "full-page screenshot is captured and stale runner screenshots are cleared" "$(head -c 300 "$WORK/err")"
+fi
 
 PROFILES_AFTER=""
 for _attempt in 1 2 3 4 5 6 7 8 9 10; do

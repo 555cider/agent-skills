@@ -364,10 +364,20 @@ export class Page {
     return { ok: true, via: target.via };
   }
 
+  /**
+   * Sets the value through the element's *prototype* setter, not `el.value = …`. React
+   * (and libraries built the same way) shadow `value` on the node to remember the last
+   * value they rendered, and an `input` event whose value matches that memory is not a
+   * change — so a plain assignment left a controlled login form empty in React's state
+   * and the submit posted blanks.
+   */
   async fill(selector, value) {
     const filled = await this.evaluateJson(
       `(()=>{const el=document.querySelector(${JSON.stringify(selector)});if(!el)return {ok:false};` +
-      `el.focus();el.value=${JSON.stringify(value)};` +
+      `el.focus();` +
+      `const ctor=[HTMLInputElement,HTMLTextAreaElement,HTMLSelectElement].find(c=>el instanceof c);` +
+      `const setter=ctor&&(Object.getOwnPropertyDescriptor(ctor.prototype,'value')||{}).set;` +
+      `if(setter)setter.call(el,${JSON.stringify(value)});else el.value=${JSON.stringify(value)};` +
       `el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));` +
       `return {ok:true};})()`);
     if (!filled || !filled.ok) throw new Error(`auth step: no element matched ${selector}`);

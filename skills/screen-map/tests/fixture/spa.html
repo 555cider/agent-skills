@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>SPA</title></head>
+<body>
+  <!-- One document, three screens. Every move is pushState or the back button's popstate,
+       so no new document ever loads: the case a recorder that only hears document
+       navigations gets wrong. Not linked from anywhere else, so no crawl reaches it. -->
+  <main id="app"></main>
+  <script>
+    const screens = {
+      '/spa': { title: 'SPA 홈', go: [['SPA 둘로', '/spa/two'], ['SPA 셋으로', '/spa/three']] },
+      '/spa/two': { title: 'SPA 둘', go: [['SPA 홈으로', '/spa']] },
+      '/spa/three': { title: 'SPA 셋', go: [['SPA 홈으로', '/spa']] },
+    };
+    function render() {
+      const screen = screens[location.pathname] || screens['/spa'];
+      const app = document.getElementById('app');
+      app.innerHTML = '';
+      const heading = document.createElement('h1');
+      heading.textContent = screen.title;
+      app.appendChild(heading);
+      const nav = document.createElement('nav');
+      nav.setAttribute('aria-label', screen.title);
+      for (const [label, path] of screen.go) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.addEventListener('click', () => { history.pushState({}, '', path); render(); });
+        nav.appendChild(button);
+      }
+      app.appendChild(nav);
+    }
+    window.addEventListener('popstate', render);
+    render();
+  </script>
+</body>
+</html>

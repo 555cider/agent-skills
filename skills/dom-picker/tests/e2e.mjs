@@ -245,6 +245,7 @@ function fixtureHtml() {
         <button id="edge-target">Edge</button>
         <button id="bottom-target">Bottom</button>
         <iframe id="picker-frame" src="/frame" title="Picker child frame" style="display:block;width:320px;height:140px;margin-top:20px"></iframe>
+        <div id="axis-clip" style="width:80px;height:40px;overflow:hidden auto;white-space:nowrap">Overflowing axis label text</div>
       </main>
       <script>
         window.appClicks = 0;
@@ -599,7 +600,8 @@ try {
   }, "removing the mixed local pick corrupted the child-frame projection");
   await delay(350);
   const frameReloaded = pageConnection.waitFor("Page.loadEventFired", () => true, 12_000, false);
-  const frameReload = runProcess(process.execPath, [DRIVER, "reload", `--port=${debugPort}`, `--target=${target.id}`]);
+  // reload resolves its page from the session manifest, like find and snapshot.
+  const frameReload = runProcess(process.execPath, [DRIVER, "reload", "--session", sessionReady.payload.sessionPath]);
   await frameReloaded;
   const frameReloadResult = await frameReload;
   expect(frameReloadResult.status === 0, `iframe persistence reload failed: ${frameReloadResult.stdout}\n${frameReloadResult.stderr}`);
@@ -803,7 +805,8 @@ try {
   await delay(350);
   const oldWorldId = worldContext().id;
   const loaded = pageConnection.waitFor("Page.loadEventFired", () => true, 12_000, false);
-  const reloadRun = runProcess(process.execPath, [DRIVER, "reload", "--ignore-cache", `--port=${debugPort}`, `--target=${target.id}`]);
+  // ...or from a request record's connection, like verify.
+  const reloadRun = runProcess(process.execPath, [DRIVER, "reload", "--ignore-cache", `--request=${requestPath}`]);
   await loaded;
   const reloadResult = await reloadRun;
   expect(reloadResult.status === 0 && JSON.parse(reloadResult.stdout).event === "reloaded", `reload command failed: ${reloadResult.stdout}\n${reloadResult.stderr}`);
@@ -929,6 +932,9 @@ try {
   expect(fallbackSnapshot.status === 0, `fallback snapshot failed: ${fallbackSnapshot.stdout}\n${fallbackSnapshot.stderr}`);
   const fallbackEvent = JSON.parse(fallbackSnapshot.stdout.trim());
   expect(fallbackEvent.event === "snapshot" && fallbackEvent.payload.pick?.accessibleName === "Save", "fallback snapshot returned incomplete evidence");
+  // `overflow: hidden auto` clips only the x axis; the shorthand alone reads as neither value.
+  const axisSnapshot = spawnSync(process.execPath, [DRIVER, "snapshot", "#axis-clip", `--port=${debugPort}`, `--target=${target.id}`], { encoding: "utf8", timeout: 12_000 });
+  expect(axisSnapshot.status === 0 && JSON.parse(axisSnapshot.stdout.trim()).payload.pick?.metrics?.clipped === true, `single-axis overflow clip was not reported: ${axisSnapshot.stdout}\n${axisSnapshot.stderr}`);
   const fallbackAudit = await mainEval("globalThis.__domPicker._host.audit()");
   expect(fallbackAudit.secure === false, "fallback runtime incorrectly claimed isolated security");
   expect(fallbackAudit.controls.find((control) => control.tagName === "textarea")?.disabled === true, "fallback panel accepted browser instructions");

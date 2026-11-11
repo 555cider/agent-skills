@@ -319,7 +319,13 @@
       metrics: {
         horizontalOverflow: element.scrollWidth > element.clientWidth + 1,
         verticalOverflow: element.scrollHeight > element.clientHeight + 1,
-        clipped: ["hidden", "clip"].includes(getComputedStyle(element).overflow) && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1)
+        // Per axis: the `overflow` shorthand reads "hidden auto" when only one axis clips.
+        clipped: (function () {
+          var computed = getComputedStyle(element);
+          var clips = function (value) { return value === "hidden" || value === "clip"; };
+          return (clips(computed.overflowX) && element.scrollWidth > element.clientWidth + 1) ||
+            (clips(computed.overflowY) && element.scrollHeight > element.clientHeight + 1);
+        })()
       },
       resolvedFromLeaf: element !== rawElement ? rawElement.tagName.toLowerCase() : null,
       frame: { url: location.href, origin: location.origin, isTop: IS_TOP },

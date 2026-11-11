@@ -9,7 +9,8 @@
 #
 # Removes, for each <name>:
 #   ~/.claude/skills/<name>        (harness link/junction only)
-#   ~/.codex/skills/<name>         (harness link/junction only)
+#   $CLAUDE_CONFIG_DIR/skills/<name>  (when set; harness link/junction only)
+#   ${CODEX_HOME:-~/.codex}/skills/<name>  (harness link/junction only)
 #   ~/.agents/skills/<name>/       (the installed skill directory)
 #   ~/.local/bin/agent-memory       (managed launcher, for agent-memory only)
 #   agent-memory harness hooks      (Claude/Codex hooks and the OpenCode plugin that
@@ -35,8 +36,39 @@
 # --- END USAGE ---
 set -euo pipefail
 
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;;
+  *)                    IS_WINDOWS=0 ;;
+esac
+
+# env_dir <value>: print a directory taken from an environment variable in
+# POSIX form without a trailing slash. Mirrors install.sh.
+env_dir() {
+  local value="$1"
+  [ -n "$value" ] || return 0
+  if [ "$IS_WINDOWS" = "1" ] && command -v cygpath >/dev/null 2>&1; then
+    value="$(cygpath -u "$value")"
+  fi
+  while [ "${#value}" -gt 1 ] && [ "${value%/}" != "$value" ]; do
+    value="${value%/}"
+  done
+  printf '%s\n' "$value"
+}
+
+# The harness skill dirs install.sh links into: ~/.claude, $CLAUDE_CONFIG_DIR
+# when set, and ${CODEX_HOME:-~/.codex}. A dir two variables name is listed once.
 AGENTS_ROOT="$HOME/.agents/skills"
-HARNESS_ROOTS=("$HOME/.claude/skills" "$HOME/.codex/skills")
+CLAUDE_CONFIG_HOME="$(env_dir "${CLAUDE_CONFIG_DIR:-}")"
+CODEX_CONFIG_HOME="$(env_dir "${CODEX_HOME:-}")"
+[ -n "$CODEX_CONFIG_HOME" ] || CODEX_CONFIG_HOME="$HOME/.codex"
+HARNESS_ROOTS=()
+for h in "$HOME/.claude" ${CLAUDE_CONFIG_HOME:+"$CLAUDE_CONFIG_HOME"} "$CODEX_CONFIG_HOME"; do
+  duplicate=0
+  for seen in ${HARNESS_ROOTS[@]+"${HARNESS_ROOTS[@]}"}; do
+    [ "$seen" = "$h/skills" ] && { duplicate=1; break; }
+  done
+  [ "$duplicate" = "1" ] || HARNESS_ROOTS+=("$h/skills")
+done
 ROOTS=(${HARNESS_ROOTS[@]+"${HARNESS_ROOTS[@]}"} "$AGENTS_ROOT")
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_SRC="$REPO_ROOT/skills"
@@ -280,11 +312,12 @@ remove_agent_memory_integration() {
 # carries every skill in this repository under one id and therefore collides
 # with all of them.
 plugin_conflict_ids() {
-  local name="$1"
-  local registry="$HOME/.claude/plugins/installed_plugins.json"
-  [ -f "$registry" ] || return 0
-  grep -Eo "\"(${name}|agent-skills)@[A-Za-z0-9._-]+\"" "$registry" 2>/dev/null \
-    | tr -d '"' | sort -u || true
+  local name="$1" registry
+  for registry in "$HOME/.claude/plugins/installed_plugins.json" \
+                  ${CLAUDE_CONFIG_HOME:+"$CLAUDE_CONFIG_HOME/plugins/installed_plugins.json"}; do
+    [ -f "$registry" ] || continue
+    grep -Eo "\"(${name}|agent-skills)@[A-Za-z0-9._-]+\"" "$registry" 2>/dev/null || true
+  done | tr -d '"' | sort -u
   return 0
 }
 

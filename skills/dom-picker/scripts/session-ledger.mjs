@@ -22,6 +22,11 @@ export const CAPABILITIES = Object.freeze([
 export const ACTIVE_STATES = new Set(["claimed", "locating", "editing", "verifying", "cancel_requested"]);
 export const FINAL_STATES = new Set(["applied_verified", "no_change", "cancelled", "review_required", "blocked"]);
 const STATUS_STATES = new Set([...ACTIVE_STATES, ...FINAL_STATES]);
+// Once cancellation is requested, the work may only wind down; it cannot advance or complete.
+const CANCELLATION_STATES = new Set(["cancel_requested", "cancelled", "review_required", "blocked"]);
+// locator-report.mjs reads exactly this file name under each request directory.
+const FIX_RESULT_NAME = "fix-result.json";
+const FIX_RESULT_REQUIRED = JSON.parse(readFileSync(new URL("../references/fix-result.schema.json", import.meta.url), "utf8")).required;
 const TRANSITIONS = {
   claimed: new Set(["locating", "cancel_requested", "cancelled", "review_required", "blocked"]),
   locating: new Set(["editing", "cancel_requested", "cancelled", "no_change", "review_required", "blocked"]),
@@ -301,6 +306,19 @@ export function requestCancellation(requestPath, input) {
   return { ...cancellation, accepted: true, immediate: true, state: "cancelled" };
 }
 
+function validateAppliedResult(resultPath) {
+  if (!resultPath) throw new Error("applied_verified requires resultPath");
+  if (basename(resultPath) !== FIX_RESULT_NAME) throw new Error(`applied_verified resultPath must name ${FIX_RESULT_NAME}`);
+  let result;
+  try { result = readJson(resultPath); }
+  catch { throw new Error(`applied_verified resultPath is not valid JSON: ${FIX_RESULT_NAME}`); }
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error(`${FIX_RESULT_NAME} must be a JSON object`);
+  const missing = FIX_RESULT_REQUIRED.filter((key) => !(key in result));
+  if (missing.length) throw new Error(`${FIX_RESULT_NAME} is missing required fields: ${missing.join(", ")}`);
+  if (result.status !== "applied_verified") throw new Error(`${FIX_RESULT_NAME} status is ${JSON.stringify(result.status)}, not "applied_verified"`);
+  if (result.verification?.passed !== true) throw new Error(`${FIX_RESULT_NAME} verification.passed must be true for applied_verified`);
+}
+
 export function recordRequestStatus(requestPath, input) {
   const context = requestContext(requestPath);
   const state = String(input?.state || "");
@@ -311,6 +329,9 @@ export function recordRequestStatus(requestPath, input) {
   const queueEntry = entryFor(context.directory);
   if (!queueEntry.claim) throw new Error("request must be claimed before recording status");
   if (state === "cancelled" && !queueEntry.cancellation) throw new Error("cancelled requires a durable cancellation request");
+  if (queueEntry.cancellation && !CANCELLATION_STATES.has(state)) {
+    throw new Error(`cancellation was requested; record cancel_requested, cancelled, review_required, or blocked, not ${state}`);
+  }
   const current = queueEntry.status?.state || "claimed";
   if (FINAL_STATES.has(current)) throw new Error(`request is already final: ${current}`);
   if (!TRANSITIONS[current]?.has(state)) throw new Error(`invalid request state transition: ${current} -> ${state}`);
@@ -339,7 +360,7 @@ export function recordRequestStatus(requestPath, input) {
     if (!inside(realpathSync(context.directory), absoluteResult)) throw new Error("resultPath must stay inside the request directory");
     resultPath = absoluteResult;
   }
-  if (state === "applied_verified" && !resultPath) throw new Error("applied_verified requires resultPath");
+  if (state === "applied_verified") validateAppliedResult(resultPath);
 
   const at = new Date().toISOString();
   const history = [...(queueEntry.status?.history || []), {

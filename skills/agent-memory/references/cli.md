@@ -42,8 +42,8 @@ review list [--state STATE] [--cwd PATH] [--all-projects]
             [--batch TOKEN] [--source NAME] [--scope SCOPE] [--kind KIND]
             [--repo-key KEY]
 review show ID
-review approve (ID | --batch TOKEN [--source/--scope/--kind/--repo-key])
-review reject  (ID | --batch TOKEN [--source/--scope/--kind/--repo-key])
+review approve (ID [--force] | --batch TOKEN [--source/--scope/--kind/--repo-key])
+review reject  (ID [--force] | --batch TOKEN [--source/--scope/--kind/--repo-key])
 
 policy trust grant --cwd PATH (--kind KIND ... | --all-kinds)
 policy trust revoke --cwd PATH [--kind KIND ... | --all-kinds]
@@ -54,7 +54,7 @@ session pause|resume|status
   --harness HARNESS
   --id SESSION_ID            optional exact session
 
-feedback QUERY_ID MEMORY_ID (--used|--unused) [--outcome TEXT]
+feedback QUERY_ID MEMORY_ID [MEMORY_ID ...] (--used|--unused) [--outcome TEXT]
 export [--cwd PATH] [--include-global] [--scope global|project|all]
 import [FILE]
   --cwd PATH                 adopt project records into this repository
@@ -90,10 +90,16 @@ statement), `unmatched_same_hash`, and the `backup` path when applied. It moves
 
 `remember` still stores a statement over 500 characters but prints a `WARN=`
 line to stderr suggesting it be split or kept in the repository with a pointer.
+`--replaces ID` retracts that record even when the statement already exists.
+Every record the call retracted — the `--replaces` target or an older record
+judged contradictory — is listed in the output's `superseded`. `feedback` takes
+every id it is given in one transaction: if any id was not exposed by that
+query, nothing is recorded.
 Statements/prompts may come from stdin when omitted. `forget --all-projects`
 is intentionally explicit. Query-based forget matches raw statement tokens
 only (no concept aliases) and exits 1 when more than five records match
-unless `--all-matches` confirms the bulk deletion. `integrate` is dry-run
+unless `--all-matches` confirms the bulk deletion. `integrate` writes the Claude and
+Codex files under `$CLAUDE_CONFIG_DIR` and `$CODEX_HOME` when set, and is dry-run
 unless `--apply` is present. Primary mode is blocked by an enabled `remember`
 plugin in the selected harnesses' files (Claude `enabledPlugins`, Codex
 `config.toml`); `--disable-known-conflicts` switches those entries off, and the
@@ -138,8 +144,9 @@ about.
 
 `review approve` and `review reject` touch only `provisional` and `disputed`
 records, so a batch that merged onto active memory can neither re-approve nor
-delete it. Rejection is `forget`, tombstone included: a statement turned down
-stays out of the next adoption for the tombstone's life.
+delete it. A single ID in another state exits 1 unless `--force`; delete
+settled memory with `forget`. Rejection is `forget`, tombstone included: a
+statement turned down stays out of the next adoption for the tombstone's life.
 
 ## Internal commands
 

@@ -74,18 +74,14 @@ Resolve paths relative to this skill directory.
 
    ```bash
    node scripts/dom-picker.mjs queue --session=<session.json>
-   node scripts/dom-picker.mjs claim --session=<session.json> --consumer=<stable-agent-id>
+   node scripts/dom-picker.mjs claim --session=<session.json> --consumer=<stable-agent-id> --wait-ms=60000
    ```
 
    `claim` is idempotent for the same consumer and reports `busy` to a different consumer while one
-   request is active. Use the claimed `entry.requestPath`; FIFO order comes from `queueSequence`.
-
-   After an agent restart, `queue.recovery` names the existing consumer, phase, and request.
-   Confirm the previous worker has stopped before reusing that consumer ID with `claim`.
-   Inspect existing changes when `repositoryReviewRequired` is true; resume verification or
-   cancellation from the persisted phase. Never delete claim files, reset the phase, or adopt
-   an active consumer merely to bypass `busy`. If the prior worker may still be running, wait
-   or coordinate its stop. Driver `resume` restores the browser connection, not edit ownership.
+   request is active. `--wait-ms` waits in-process until a request is claimed or the wait ends
+   (`timedOut: true`); use it instead of a shell polling loop. Use the claimed `entry.requestPath`.
+   After an agent restart, follow `queue.recovery` as `references/protocol.md` describes; never
+   delete claim files or reset a phase to bypass `busy`.
 
 5. Publish lifecycle progress after each transition. Messages are user-visible, single-line,
    at most 240 characters, and must contain only a coarse reason—never source paths, diffs, secrets,
@@ -94,22 +90,14 @@ Resolve paths relative to this skill directory.
    ```bash
    printf '%s' '{"state":"locating","message":"Locating the owning component"}' |
      node scripts/dom-picker.mjs status --request=<request.json> --input=-
-   printf '%s' '{"state":"editing","message":"Applying the minimal spacing change"}' |
-     node scripts/dom-picker.mjs status --request=<request.json> --input=-
-   printf '%s' '{"state":"verifying","message":"Checking the selected toolbar"}' |
-     node scripts/dom-picker.mjs status --request=<request.json> --input=-
    ```
 
-   The browser shows non-final work first, the latest three completed requests, and a launcher badge.
-   A live `status`/trusted-chat `cancel` command attempts an immediate isolated-world update and
-   reports `browserSynced`; the session heartbeat remains the recovery path during navigation.
-   Re-run `queue` before editing, before verification, and whenever the browser emits
-   `cancel_request`. On `cancel_requested`, stop starting new work. If no edits remain, record
-   `cancelled`. If session-owned edits exist, reverse only those hunks when safe; record `cancelled`
-   only after rollback is complete, and include
-   `"cancellation":{"changesRemain":false,"rollbackCompleted":true}` in that final status input.
-   The ledger rejects an after-edit `cancelled` transition without this proof. Otherwise record
-   `review_required` or `blocked` with the exact remaining risk. A trusted-chat cancellation can use:
+   Publish `editing` and `verifying` the same way. Re-run `queue` before editing, before
+   verification, and whenever the browser emits `cancel_request`. On `cancel_requested`, stop
+   starting new work; the ledger then accepts only `cancelled`, `review_required`, or `blocked`.
+   Record `cancelled` before any edit, or only after rollback is complete with the proof described
+   in `references/protocol.md`; otherwise record `review_required` or `blocked` with the remaining
+   risk. A trusted-chat cancellation can use:
 
    ```bash
    node scripts/dom-picker.mjs cancel --request=<request.json> --channel=trusted-chat
@@ -146,9 +134,9 @@ Resolve paths relative to this skill directory.
    node scripts/locate-source.mjs --repo=<repo-root> --input=<requestPath-from-step-3-or-4>
    ```
 
-   Read the top candidates and confirm the owning markup or style. High confidence requires score
-   `>= 0.82`, two independent signal families, and a `>= 0.12` lead over the runner-up. Medium/low
-   results are review-only. See `references/source-location.md`.
+   Read the top candidates and confirm the owning markup or style. Only a result the locator marks
+   high confidence (gate in `references/source-location.md`) can auto-apply; medium/low results are
+   review-only.
 
 8. Diagnose the observable cause. Before editing, write assertions for the requested outcome, for
    example:
@@ -163,7 +151,7 @@ Resolve paths relative to this skill directory.
 10. Wait for HMR, or reload explicitly, then verify against the original request artifact:
 
    ```bash
-   node scripts/dom-picker.mjs reload --port=<port> --target=<target-id>
+   node scripts/dom-picker.mjs reload --request=<request.json>
    node scripts/dom-picker.mjs verify --request=<request.json> --assertions=<assertions.json>
    ```
 
@@ -173,16 +161,18 @@ Resolve paths relative to this skill directory.
    Inspect the clean full screenshots and target crops when the request is subjective, and run the
    narrowest relevant project test or typecheck.
 
-11. Publish the final request state with `status`. `applied_verified` requires a result file inside
-   the request directory; `no_change`, `cancelled`, `review_required`, and `blocked` must reflect the
-   actual repository and rollback state. For example:
+11. Publish the final request state with `status`. `applied_verified` requires `resultPath` naming
+   the request directory's `fix-result.json`, carrying every field `references/fix-result.schema.json`
+   requires, `status: "applied_verified"`, and `verification.passed: true`; `no_change`,
+   `cancelled`, `review_required`, and `blocked` must reflect the actual repository and rollback
+   state. For example:
 
    ```bash
    printf '%s' '{"state":"applied_verified","message":"Rendered checks passed","resultPath":"<request-dir>/fix-result.json"}' |
      node scripts/dom-picker.mjs status --request=<request.json> --input=-
    ```
 
-   Then claim the next FIFO item, if any.
+   Then `claim --wait-ms=N` for the next FIFO item.
 
 12. Keep the picker available for follow-up picks. At session end stop the long-running driver with
    `stop --session=PATH`, not by killing it (on Windows a kill skips all cleanup); a `start`
@@ -228,6 +218,7 @@ with the failed assertion and artifacts.
 - `assets/picker-runtime.js` is the transient picker runtime.
 - `scripts/dom-picker.mjs` is the zero-dependency Chromium driver and verifier.
 - `scripts/session-ledger.mjs` owns durable FIFO, claim, status, and cancellation transitions.
+- `scripts/cli-options.mjs` is the option parser the driver and locator share.
 - `scripts/locate-source.mjs` is the deterministic local source locator.
 - `scripts/locator-report.mjs` reports locator precision from saved fix results.
 

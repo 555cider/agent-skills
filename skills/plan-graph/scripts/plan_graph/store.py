@@ -41,6 +41,9 @@ class Store:
         return tuple(item for item in self.diagnostics if item.severity == "warning")
 
 
+GIT_TIMEOUT = 10
+
+
 def _run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     # Bytes, decoded here as UTF-8: git prints paths as UTF-8, and `text=True` decodes
     # with the locale codec instead. On a cp949 Windows console a Korean repository
@@ -51,8 +54,12 @@ def _run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
             ["git", "-C", str(root), *args],
             check=False,
             capture_output=True,
-            timeout=10,
+            timeout=GIT_TIMEOUT,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise PlanGraphError(
+            f"Git did not answer within {GIT_TIMEOUT}s: git {' '.join(args)}", code="git_timeout"
+        ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise PlanGraphError(f"failed to run Git: {exc}", code="git_failed") from exc
     try:
@@ -354,48 +361,110 @@ def prunable_done(plans: dict[str, Plan]) -> set[str]:
     }
 
 
+NESTED_SCAN_SKIP = {
+    ".git",
+    ".worktrees",
+    "node_modules",
+    "vendor",
+    ".venv",
+    "venv",
+    "__pycache__",
+}
+
+
+def _nested_store_diagnostic(relative: str) -> Diagnostic:
+    return Diagnostic(
+        "error",
+        "nested_store",
+        "only the Git-root .agents/plans store is allowed",
+        path=relative,
+    )
+
+
+def _nested_legacy_diagnostic(relative: str) -> Diagnostic:
+    return Diagnostic(
+        "error",
+        "nested_legacy_store",
+        "nested v1 graph is unsupported",
+        path=relative,
+    )
+
+
+def _listed_repo_paths(root: Path) -> list[str] | None:
+    """Tracked plus untracked-not-ignored paths from Git, or None without Git."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            check=False,
+            capture_output=True,
+            timeout=GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return [
+        raw.decode("utf-8", errors="replace").replace("\\", "/")
+        for raw in result.stdout.split(b"\0")
+        if raw
+    ]
+
+
 def find_nested_stores(root: Path) -> list[Diagnostic]:
+    """Stores below the root, from Git's file list when available.
+
+    Git already skips ignored trees (dependencies, build output, linked worktrees)
+    and lists a nested repository or submodule as one entry, never its files, so
+    the scan costs one `ls-files` instead of a walk that descends into every
+    `node_modules` and follows Windows junctions. Without Git it walks the tree.
+    """
+    listed = _listed_repo_paths(root)
+    if listed is None:
+        return _walk_nested_stores(root)
+    stores: set[str] = set()
+    legacy: set[str] = set()
+    for path in listed:
+        parts = path.rstrip("/").split("/")
+        if any(part in NESTED_SCAN_SKIP for part in parts[:-1]):
+            continue
+        for index in range(1, len(parts) - 1):
+            if parts[index - 1] != ".agents":
+                continue
+            if parts[index] == "plans" and index > 1:
+                stores.add("/".join(parts[: index + 1]))
+            elif parts[index] == "plan" and index == len(parts) - 2 and parts[-1] == "graph.yaml" and index > 1:
+                legacy.add(path)
+    diagnostics = [_nested_store_diagnostic(item) for item in sorted(stores)]
+    diagnostics.extend(_nested_legacy_diagnostic(item) for item in sorted(legacy))
+    return diagnostics
+
+
+def _walk_nested_stores(root: Path) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
     canonical = (root / PLAN_DIR).resolve(strict=False)
-    skip = {
-        ".git",
-        ".worktrees",
-        "node_modules",
-        "vendor",
-        ".venv",
-        "venv",
-        "__pycache__",
-    }
+    isjunction = getattr(os.path, "isjunction", None)
     for current, dirs, files in os.walk(root):
         current_path = Path(current)
         if current_path != root and (current_path / ".git").exists():
             dirs[:] = []
             continue
-        dirs[:] = [name for name in dirs if name not in skip]
+        dirs[:] = [
+            name
+            for name in dirs
+            if name not in NESTED_SCAN_SKIP
+            and not os.path.islink(current_path / name)
+            and not (isjunction is not None and isjunction(current_path / name))
+        ]
         if current_path.resolve(strict=False) == canonical:
             dirs[:] = []
             continue
         if current_path.name == "plans" and current_path.parent.name == ".agents":
-            diagnostics.append(
-                Diagnostic(
-                    "error",
-                    "nested_store",
-                    "only the Git-root .agents/plans store is allowed",
-                    path=repo_relative(root, current_path),
-                )
-            )
+            diagnostics.append(_nested_store_diagnostic(repo_relative(root, current_path)))
             dirs[:] = []
         if "graph.yaml" in files and current_path.name == "plan" and current_path.parent.name == ".agents":
             candidate = current_path / "graph.yaml"
             if candidate != root / LEGACY_GRAPH:
-                diagnostics.append(
-                    Diagnostic(
-                        "error",
-                        "nested_legacy_store",
-                        "nested v1 graph is unsupported",
-                        path=repo_relative(root, candidate),
-                    )
-                )
+                diagnostics.append(_nested_legacy_diagnostic(repo_relative(root, candidate)))
     return diagnostics
 
 
@@ -424,12 +493,19 @@ def git_worktree_paths(root: Path) -> list[str]:
     return sorted(paths)
 
 
-def id_seen_in_git(root: Path, plan_id: str) -> bool:
+def id_seen_in_git(root: Path, plan_id: str) -> bool | None:
+    """Whether the plan file was ever indexed or committed; None when Git timed out."""
     relative = (PLAN_DIR / f"{plan_id}.md").as_posix()
-    indexed = _run_git(root, ["ls-files", "--error-unmatch", "--", relative])
-    if indexed.returncode == 0:
-        return True
-    result = _run_git(root, ["log", "--all", "--format=%H", "--", relative])
+    try:
+        indexed = _run_git(root, ["ls-files", "--error-unmatch", "--", relative])
+        if indexed.returncode == 0:
+            return True
+        # One hit settles it; a full history walk of a large repo is what timed out.
+        result = _run_git(root, ["log", "--all", "--max-count=1", "--format=%H", "--", relative])
+    except PlanGraphError as exc:
+        if exc.code == "git_timeout":
+            return None
+        raise
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
@@ -437,13 +513,27 @@ def reserved_ids(plans: dict[str, Plan]) -> set[str]:
     return set(plans) | {old for plan in plans.values() for old in plan.replaces}
 
 
-def assert_new_id(root: Path, plans: dict[str, Plan], plan_id: str) -> None:
+def assert_new_id(root: Path, plans: dict[str, Plan], plan_id: str) -> list[Diagnostic]:
+    """Raise for a used or reserved ID; return warnings for checks that could not finish."""
     if not ID_RE.fullmatch(plan_id):
         raise PlanGraphError("plan ID must be lowercase kebab-case", code="invalid_id")
     if plan_id in reserved_ids(plans):
         raise PlanGraphError(f"plan ID is already used or reserved: {plan_id}", code="id_reused")
-    if id_seen_in_git(root, plan_id):
+    seen = id_seen_in_git(root, plan_id)
+    if seen:
         raise PlanGraphError(f"plan ID appears in Git history and may not be reused: {plan_id}", code="id_reused")
+    if seen is None:
+        return [
+            Diagnostic(
+                "warning",
+                "id_history_unchecked",
+                f"Git history search timed out after {GIT_TIMEOUT}s; confirm with"
+                f" `git log --all -- {(PLAN_DIR / f'{plan_id}.md').as_posix()}` that the ID"
+                " was never used",
+                plan_id,
+            )
+        ]
+    return []
 
 
 def lock_path_for(root: Path) -> Path:
@@ -564,6 +654,25 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             temp.unlink()
 
 
+def _recovery_parent(root: Path) -> Path:
+    """Where deleted plans' bytes are saved: the common git dir, else `.agents`.
+
+    A linked worktree's own git dir (`.git/worktrees/<name>`) is deleted by
+    `git worktree remove`, taking any recovery copy with it; the common dir
+    outlives every worktree of the repository.
+    """
+    # No --path-format: git before 2.31 echoes an unknown option back on stdout and
+    # still exits 0. The bare answer may be relative, and `-C root` makes it relative
+    # to root.
+    common = _run_git(root, ["rev-parse", "--git-common-dir"])
+    if common.returncode == 0 and common.stdout.strip():
+        candidate = Path(common.stdout.strip().splitlines()[-1])
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        return candidate / "plan-graph-recovery"
+    return root / ".agents" / "plan-recovery"
+
+
 def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) -> Path | None:
     graph_errors = [item for item in validate_plan_set(after) if item.severity == "error"]
     if graph_errors:
@@ -602,9 +711,7 @@ def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) 
         if deletes:
             # Persist exact current bytes before any mutation, including untracked plans.
             # In-memory rollback alone cannot recover a successful prune.
-            git_dir = _run_git(root, ["rev-parse", "--absolute-git-dir"])
-            parent = (Path(git_dir.stdout.strip()) / "plan-graph-recovery"
-                      if git_dir.returncode == 0 else root / ".agents" / "plan-recovery")
+            parent = _recovery_parent(root)
             if parent.is_symlink():
                 raise PlanGraphError("recovery directory may not be a symlink", code="symlink_store")
             recovery = parent / secrets.token_hex(16)

@@ -12,7 +12,9 @@ def _write(path, text):
     path.write_text(text, encoding="utf-8")
 
 
-def test_claude_reads_home_and_ancestor_instruction_files(tmp_path):
+def test_claude_reads_home_and_ancestor_instruction_files(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     home = tmp_path / "home"
     repo = tmp_path / "work" / "repo"
     _write(home / ".claude" / "CLAUDE.md", "# 전역\n\n- 커밋 메시지에 `Co-Authored-By:` 트레일러를 절대 넣지 않는다.\n")

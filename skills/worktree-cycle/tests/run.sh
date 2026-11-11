@@ -128,6 +128,15 @@ if [ "${1:-}" = "worktree" ] && [ "${2:-}" = "remove" ]; then
       echo "error: failed to delete: Permission denied" >&2
       exit 1
       ;;
+    remove-nonempty)
+      # Deregistered and mostly emptied, but ignored content (node_modules) survived.
+      p="${@: -1}"
+      "$WTC_REAL_GIT" "$@" >/dev/null 2>&1 || true
+      mkdir -p "$p/node_modules/pkg"
+      : > "$p/node_modules/pkg/index.js"
+      echo "error: failed to delete '$p': Directory not empty" >&2
+      exit 1
+      ;;
   esac
 fi
 if [ "${1:-}" = "branch" ] && [ "${2:-}" = "-D" ] && [ "${WTC_STUB_MODE:-}" = "branch-fail" ]; then
@@ -335,6 +344,10 @@ run_in "$repo" "$START" feat2 --port-base "$taken"
 assert_exit_nonzero "explicit allocation refuses another worktree's reserved block"
 assert_dir "port failure reports a created worktree, not a failed creation" "$repo/.worktrees/feat2"
 assert_eq "failed port allocation does not write a reservation" "" "$(port_base_of "$repo/.worktrees/feat2")"
+assert_stderr_contains "port failure prints the allocator retry command" "reserve-ports.py --repo"
+assert_stderr_contains "the retry names this worktree's git-dir" "--git-dir"
+assert_stderr_contains "the retry keeps the requested block" "--port-base $taken"
+assert_stderr_not_contains "an allocator refusal does not blame a missing Python" "Python 3.10+ not found"
 
 # Determinism, and the reservation's lifetime: git owns the file, so finish takes it away.
 repo="$(new_repo ports-determinism)"
@@ -606,6 +619,19 @@ assert_stderr_contains "the report says the merge is done" "do NOT re-run"
 assert_stderr_contains "a still-registered worktree gets the remove --force advice" "worktree remove --force"
 assert_stderr_not_contains "and not the empty-directory advice" "is not a working tree"
 
+# Deregistered, but content survived: the advice must be the link-safe recipe, not plain rmdir.
+repo="$(new_repo "cleanup nonempty leftover")"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt" work.txt "one" "wip"
+with_git_stub remove-nonempty "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): node_modules survived"
+assert_exit_nonzero "a non-empty deregistered leftover fails the run"
+assert_dir "the leftover is not deleted by the script" "$wt/node_modules"
+assert_stderr_contains "the advice checks links before deleting" "ReparsePoint"
+assert_stderr_contains "the advice deletes without following junctions" "rmdir //s //q \""
+assert_stderr_contains "the advice prunes the registration" "worktree prune"
+assert_stderr_not_contains "the still-registered advice is not given" "worktree remove --force"
+
 repo="$(new_repo cleanup-branch-fail)"
 run_in "$repo" "$START" feat1
 commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
@@ -765,6 +791,26 @@ assert_exit "finish handles a branch whose worktree is already gone" 0
 assert_eq "it still merges one commit" "$((before + 1))" "$(count_commits "$repo" dev)"
 if branch_exists "$repo" worktree-feat1; then
   fail "it still deletes the branch" "branch still present"; else pass "it still deletes the branch"; fi
+
+# A worktree directory deleted by hand is still registered, and git refuses to delete a branch
+# checked out in a registered worktree. finish prunes the stale registration first.
+repo="$(new_repo worktree-dir-deleted)"
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+rm -rf "$repo/.worktrees/feat1"
+before="$(count_commits "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): worktree dir deleted by hand"
+assert_exit "finish handles a worktree directory deleted by hand" 0
+assert_eq "it merges one commit" "$((before + 1))" "$(count_commits "$repo" dev)"
+if branch_exists "$repo" worktree-feat1; then
+  fail "it deletes the branch despite the stale registration" "branch still present"
+else pass "it deletes the branch despite the stale registration"; fi
+assert_eq "the stale registration is dropped" "1" "$(git -C "$repo" worktree list --porcelain | grep -c '^worktree ')"
+
+run_in "$repo" "$FINISH" --help
+assert_exit "finish --help" 0
+if grep -qF "asks for --base" "$OUT"; then pass "finish --help says a missing base stops the run"; else
+  fail "finish --help says a missing base stops the run" "header still describes a main-worktree fallback"; fi
 
 repo="$(new_repo custom-branch-name)"
 run_in "$repo" "$START" feat1 --branch my/custom

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — install skills from this monorepo into ~/.agents/skills/<name>/
-# and link them into per-harness skill dirs (~/.claude/skills, ~/.codex/skills).
+# and link them into per-harness skill dirs (~/.claude/skills,
+# $CLAUDE_CONFIG_DIR/skills, ${CODEX_HOME:-~/.codex}/skills).
 #
 # Usage:
 #   ./install.sh                       # install every skill
@@ -24,9 +25,12 @@
 #   installed during development.
 #
 #   For local development, --local skips origin entirely and synchronizes the
-#   current checkout's skills/<name>/ into ~/.agents/skills/<name>/.
+#   current checkout's skills/<name>/ into ~/.agents/skills/<name>/. A sync
+#   copies only tracked and non-ignored files, removes files the checkout no
+#   longer has, and keeps the destination's .git and .venv.
 #
-#   Per-harness dirs (~/.claude/skills/<name>, ~/.codex/skills/<name>) are
+#   Per-harness dirs (~/.claude/skills/<name>, $CLAUDE_CONFIG_DIR/skills/<name>
+#   when that variable is set, ${CODEX_HOME:-~/.codex}/skills/<name>) are
 #   symlinks (POSIX) or NTFS directory junctions (Windows + Git Bash / MSYS2
 #   / Cygwin) pointing at ~/.agents/skills/<name>/. Junctions do NOT require
 #   admin rights; they sidestep `ln -s` silently degrading to a copy on
@@ -197,13 +201,48 @@ fi
 AGENTS_DIR="$HOME/.agents/skills"
 mkdir -p "$AGENTS_DIR"
 
-# Detect harnesses: skip those not installed.
+# env_dir <value>: print a directory taken from an environment variable in
+# POSIX form without a trailing slash. On Windows the variable is usually a
+# native path (C:\Users\...), which Git Bash does not convert for us.
+env_dir() {
+  local value="$1"
+  [ -n "$value" ] || return 0
+  if [ "$IS_WINDOWS" = "1" ]; then
+    value="$(cygpath -u "$value")"
+  fi
+  while [ "${#value}" -gt 1 ] && [ "${value%/}" != "$value" ]; do
+    value="${value%/}"
+  done
+  printf '%s\n' "$value"
+}
+
+# Harness config dirs: ~/.claude, plus $CLAUDE_CONFIG_DIR when Claude Code runs
+# from another config dir, and Codex at ${CODEX_HOME:-~/.codex}. uninstall.sh
+# resolves the same list.
+CLAUDE_CONFIG_HOME="$(env_dir "${CLAUDE_CONFIG_DIR:-}")"
+CODEX_CONFIG_HOME="$(env_dir "${CODEX_HOME:-}")"
+[ -n "$CODEX_CONFIG_HOME" ] || CODEX_CONFIG_HOME="$HOME/.codex"
+HARNESS_HOMES=("$HOME/.claude")
+[ -z "$CLAUDE_CONFIG_HOME" ] || HARNESS_HOMES+=("$CLAUDE_CONFIG_HOME")
+HARNESS_HOMES+=("$CODEX_CONFIG_HOME")
+
+# Detect harnesses: skip those not installed, and link once into a dir that two
+# variables name (CLAUDE_CONFIG_DIR and CODEX_HOME may be the same profile dir).
 HARNESSES=()
-for h in "$HOME/.claude" "$HOME/.codex"; do
-  [ -d "$h" ] && HARNESSES+=("$h/skills")
+HARNESS_PHYS=()
+for h in ${HARNESS_HOMES[@]+"${HARNESS_HOMES[@]}"}; do
+  [ -d "$h" ] || continue
+  h_phys="$( (cd "$h" && pwd -P) 2>/dev/null || printf '%s' "$h")"
+  duplicate=0
+  for seen in ${HARNESS_PHYS[@]+"${HARNESS_PHYS[@]}"}; do
+    [ "$seen" = "$h_phys" ] && { duplicate=1; break; }
+  done
+  [ "$duplicate" = "1" ] && continue
+  HARNESS_PHYS+=("$h_phys")
+  HARNESSES+=("$h/skills")
 done
 if [ ${#HARNESSES[@]} -eq 0 ]; then
-  echo "warning: no harness dirs (~/.claude, ~/.codex) found; installing to ~/.agents/skills/ only" >&2
+  echo "warning: no harness dirs (~/.claude, \$CLAUDE_CONFIG_DIR, \${CODEX_HOME:-~/.codex}) found; installing to ~/.agents/skills/ only" >&2
 fi
 
 # resolve_phys <path>: print the physical (symlink/junction-followed) absolute
@@ -224,25 +263,41 @@ resolve_phys() {
 # every Claude Code session. The registry is keyed "<plugin>@<marketplace>", so
 # a substring match on the key is enough; the "agent-skills" bundle plugin
 # carries every skill in this repository under one id and therefore collides
-# with all of them.
+# with all of them. A Claude Code started with CLAUDE_CONFIG_DIR keeps its
+# registry there instead.
 plugin_conflict_ids() {
-  local name="$1"
-  local registry="$HOME/.claude/plugins/installed_plugins.json"
-  [ -f "$registry" ] || return 0
-  grep -Eo "\"(${name}|agent-skills)@[A-Za-z0-9._-]+\"" "$registry" 2>/dev/null \
-    | tr -d '"' | sort -u || true
+  local name="$1" registry
+  for registry in "$HOME/.claude/plugins/installed_plugins.json" \
+                  ${CLAUDE_CONFIG_HOME:+"$CLAUDE_CONFIG_HOME/plugins/installed_plugins.json"}; do
+    [ -f "$registry" ] || continue
+    grep -Eo "\"(${name}|agent-skills)@[A-Za-z0-9._-]+\"" "$registry" 2>/dev/null || true
+  done | tr -d '"' | sort -u
   return 0
 }
 
+# Published split branches, read with one `git ls-remote` on first use instead
+# of one round trip per skill. SPLIT_LOOKUP_STATUS keeps that call's exit code:
+# 0 = list fetched, anything else (e.g. 128) = network/auth failure.
+SPLIT_HEADS=""
+SPLIT_LOOKUP_STATUS=""
+
+# split_branch_status <branch>: 0 = published, 2 = not published (the code
+# `git ls-remote --exit-code` uses for an absent ref), other = lookup failed.
 split_branch_status() {
   local branch="$1"
-  local status
-  if git ls-remote --exit-code --heads "$REMOTE_URL" "$branch" >/dev/null 2>&1; then
-    return 0
-  else
-    status=$?
-    return "$status"
+  if [ -z "$SPLIT_LOOKUP_STATUS" ]; then
+    if SPLIT_HEADS="$(git ls-remote --heads "$REMOTE_URL" 'refs/heads/split/*' 2>/dev/null)"; then
+      SPLIT_LOOKUP_STATUS=0
+    else
+      SPLIT_LOOKUP_STATUS=$?
+      SPLIT_HEADS=""
+    fi
   fi
+  [ "$SPLIT_LOOKUP_STATUS" = "0" ] || return "$SPLIT_LOOKUP_STATUS"
+  if printf '%s\n' "$SPLIT_HEADS" | awk -v ref="refs/heads/$branch" '$2 == ref { found = 1 } END { exit !found }'; then
+    return 0
+  fi
+  return 2
 }
 
 local_skill_dir_matches() {
@@ -327,17 +382,42 @@ clone_skill() {
   printf '  +    cloned %s into %s\n' "$branch" "$dest"
 }
 
+# Directories never copied from the checkout nor removed from an install:
+# .git (an installed clone's metadata) and .venv (agent-memory's private venv,
+# which a resync would otherwise delete and pip-install again). The other
+# names are caches a plain (non-git) checkout may carry.
+SYNC_SKIP_PATTERN='(^|/)(\.git|\.venv|__pycache__|\.pytest_cache|node_modules)(/|$)'
+
+# list_skill_files <src>: print the files of <src> to install, one relative
+# path per line. In a git checkout these are the tracked files plus untracked
+# files that .gitignore does not exclude, so a developer's caches never ship.
+# Outside git it falls back to every file, minus the caches above.
+list_skill_files() {
+  local src="$1" rel
+  {
+    if git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      # -z: without it git C-quotes non-ASCII names.
+      git -C "$src" ls-files -z --cached --others --exclude-standard -- . | tr '\0' '\n'
+    else
+      (cd "$src" && find . -name .git -prune -o ! -type d -print) | sed 's#^\./##'
+    fi
+  } | grep -Ev "$SYNC_SKIP_PATTERN" | sort -u | while IFS= read -r rel; do
+    # --cached still lists a tracked file deleted from the working tree.
+    if [ -f "$src/$rel" ] || [ -L "$src/$rel" ]; then printf '%s\n' "$rel"; fi
+  done
+}
+
 # sync_local_skill <name>: copy the current checkout's skills/<name>/ into
-# ~/.agents/skills/<name>/. Only .git metadata is preserved; every other file in
-# the matching destination working tree is replaced from the checkout. The
-# monorepo checkout is authoritative whenever this function is reached. In
-# normal install mode clone_skill screens existing git repositories first, so
-# their local work is still protected.
+# ~/.agents/skills/<name>/. The destination ends up holding exactly the files
+# list_skill_files names, plus its .git and .venv; files that are no longer in
+# the checkout are removed. The monorepo checkout is authoritative whenever
+# this function is reached. In normal install mode clone_skill screens
+# existing git repositories first, so their local work is still protected.
 sync_local_skill() {
   local name="$1"
   local src="$SKILLS_SRC/$name"
   local dest="$AGENTS_DIR/$name"
-  local entry base
+  local src_list dest_list
 
   if [ -L "$dest" ]; then
     printf '  WARN %s is a symlink — remove with `rm -rf %s` and re-run\n' "$dest" "$dest" >&2
@@ -354,17 +434,43 @@ sync_local_skill() {
     return 1
   fi
 
+  # A checkout cloned at ~/.agents makes the source its own destination; the
+  # deletion pass below would then remove the checkout's ignored files.
+  if [ -d "$dest" ] && [ "$(resolve_phys "$src")" = "$(resolve_phys "$dest")" ]; then
+    printf '  WARN %s is the checkout itself — nothing to sync\n' "$dest" >&2
+    return 1
+  fi
+
   mkdir -p "$dest"
+  src_list="$(mktemp "${TMPDIR:-/tmp}/agent-skills-sync.XXXXXX")"
+  dest_list="$(mktemp "${TMPDIR:-/tmp}/agent-skills-sync.XXXXXX")"
+  list_skill_files "$src" >"$src_list"
+  # An empty or failed listing would turn the deletion pass into "remove everything".
+  if ! grep -qx 'SKILL.md' "$src_list"; then
+    rm -f "$src_list" "$dest_list"
+    printf '  WARN could not list the files of %s — not syncing\n' "$src" >&2
+    return 1
+  fi
+  (cd "$dest" && find . \( -path ./.git -o -path ./.venv \) -prune -o ! -type d -print) \
+    | sed 's#^\./##' >"$dest_list"
 
-  while IFS= read -r -d '' entry; do
-    rm -rf -- "$entry"
-  done < <(find "$dest" -mindepth 1 -maxdepth 1 ! -name .git -print0)
+  # Remove what the checkout no longer has (including caches an older
+  # installer copied), then every directory that left empty, deepest first.
+  # Removing before copying also clears a file or directory standing where
+  # the checkout now has the other kind.
+  awk 'NR == FNR { keep[$0] = 1; next } !($0 in keep)' "$src_list" "$dest_list" \
+    | while IFS= read -r rel; do rm -f -- "$dest/$rel"; done
+  (cd "$dest" && find . \( -path ./.git -o -path ./.venv \) -prune -o -type d ! -name . -print) \
+    | sort -r | while IFS= read -r rel; do rmdir -- "$dest/$rel" 2>/dev/null || true; done
 
-  while IFS= read -r -d '' entry; do
-    base="$(basename "$entry")"
-    [ "$base" = ".git" ] && continue
-    cp -a "$entry" "$dest/"
-  done < <(find "$src" -mindepth 1 -maxdepth 1 -print0)
+  # One tar pipe instead of a process per file; relative paths and stdin
+  # keep it working with GNU tar, bsdtar and Windows tar alike.
+  if ! (cd "$src" && tr '\n' '\0' <"$src_list" | tar -cf - --null -T -) | (cd "$dest" && tar -xf -); then
+    rm -f "$src_list" "$dest_list"
+    printf '  WARN failed to copy %s into %s\n' "$src" "$dest" >&2
+    return 1
+  fi
+  rm -f "$src_list" "$dest_list"
 
   printf '  +    synced %s into %s\n' "$src" "$dest"
 }
@@ -373,10 +479,11 @@ sync_local_skill() {
 # pointing at <target>. POSIX symlink on macOS/Linux, NTFS directory junction
 # on Windows (Git Bash / MSYS2 / Cygwin).
 #
-# Idempotency check is by resolved physical path comparison rather than
-# `readlink`, because junctions are invisible to `readlink` / `[ -L ]` in Git
-# Bash but the linked directory's contents still resolve correctly via
-# `cd … && pwd -P`.
+# Current Git for Windows (MSYS2 runtime 3.x) reports a `mklink /J` junction
+# as a symlink: `[ -L ]` is true and `readlink` prints the target in POSIX
+# form, so the first branch below handles junctions too. The resolved
+# physical path comparison (`cd … && pwd -P`) is the fallback for runtimes
+# that show a junction as a plain directory.
 ensure_link() {
   local target="$1" link="$2"
   local target_phys link_phys

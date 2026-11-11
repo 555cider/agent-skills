@@ -111,11 +111,39 @@ try {
 
   const resultPath = join(committed[0].directory, "fix-result.json");
   writeFileSync(resultPath, "{}\n", { mode: 0o600 });
+  const fixResult = {
+    status: "applied_verified",
+    confidence: "high",
+    diagnosis: "Toolbar gap was zero",
+    authorization: { channel: "isolated-picker", eligible: true },
+    candidates: [{ path: "src/Toolbar.css", score: 0.9, signalFamilies: ["class", "text"] }],
+    changes: [{ file: "src/Toolbar.css", reason: "Add the toolbar gap" }],
+    verification: { targetReacquired: true, assertions: [], passed: true },
+    warnings: [],
+  };
   recordRequestStatus(committed[0].requestPath, { state: "locating", message: "Locating source" });
   recordRequestStatus(committed[0].requestPath, { state: "editing", message: "Applying the minimal patch" });
   assert.equal(listQueue(session.sessionPath).recovery.repositoryReviewRequired, true);
   assert.equal(claimNextRequest(session.sessionPath, recovery.consumer).entry.state, 'editing');
   recordRequestStatus(committed[0].requestPath, { state: "verifying", message: "Checking the rendered target" });
+  // applied_verified is only as good as the result it points to: the file locator-report.mjs
+  // reads, with every field fix-result.schema.json requires.
+  assert.throws(
+    () => recordRequestStatus(committed[0].requestPath, { state: "applied_verified", resultPath }),
+    /missing required fields: status, confidence/,
+  );
+  const misnamedResult = join(committed[0].directory, "result.json");
+  writeFileSync(misnamedResult, JSON.stringify(fixResult), { mode: 0o600 });
+  assert.throws(
+    () => recordRequestStatus(committed[0].requestPath, { state: "applied_verified", resultPath: misnamedResult }),
+    /must name fix-result\.json/,
+  );
+  writeFileSync(resultPath, JSON.stringify({ ...fixResult, verification: { ...fixResult.verification, passed: false } }), { mode: 0o600 });
+  assert.throws(
+    () => recordRequestStatus(committed[0].requestPath, { state: "applied_verified", resultPath }),
+    /verification\.passed must be true/,
+  );
+  writeFileSync(resultPath, JSON.stringify(fixResult), { mode: 0o600 });
   const completed = recordRequestStatus(committed[0].requestPath, {
     state: "applied_verified",
     message: "Verified in Chromium",
@@ -160,6 +188,15 @@ try {
     /inside the request directory/,
   );
   recordRequestStatus(committed[2].requestPath, { state: "locating", message: "Locating source" });
+  // A durable cancel marker without the cancel_requested status (a crash between the two
+  // writes) still stops the work from advancing.
+  const pendingCancel = join(committed[2].directory, "cancel.json");
+  writeFileSync(pendingCancel, JSON.stringify({ channel: "isolated-picker", requestedAt: "2026-08-02T00:00:06.000Z" }));
+  assert.throws(
+    () => recordRequestStatus(committed[2].requestPath, { state: "editing", message: "Applying a scoped patch" }),
+    /cancellation was requested/,
+  );
+  rmSync(pendingCancel);
   recordRequestStatus(committed[2].requestPath, { state: "editing", message: "Applying a scoped patch" });
   requestCancellation(committed[2].requestPath, { channel: "isolated-picker" });
   assert.throws(

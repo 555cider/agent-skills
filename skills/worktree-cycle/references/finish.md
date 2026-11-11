@@ -69,13 +69,19 @@ Two different leftovers get two different remedies:
   tree"; the directory itself has to go. Finish handles the common form of this itself: if the
   leftover is empty it is simply `rmdir`-ed and the run succeeds.
 - **git deregistered it but reports `Directory not empty`** → ignored content survived, usually
-  the worktree's own `node_modules`. Confirm every reparse point in it targets a path inside the
-  worktree (`Get-ChildItem -Force <path> -Recurse -Depth 2 -Attributes ReparsePoint | % Target`),
-  stop anything you started there, then delete it once from outside with
-  `cmd //c "rmdir /s /q <path>"`, which does not follow junctions, and `git worktree prune`.
+  the worktree's own `node_modules`. Finish prints this recipe with the path filled in: confirm
+  every reparse point in it targets a path inside the worktree
+  (`Get-ChildItem -Force <path> -Recurse -Depth 2 -Attributes ReparsePoint | % Target`), stop
+  anything you started there, then delete it once from outside with
+  `cmd //c rmdir //s //q "<path>"` (Git Bash spelling), which does not follow junctions, and
+  `git worktree prune`.
 - **even the empty directory refuses to go** → this is **not** a failed cleanup and the run
   **exits zero**. See the cwd trap in [traps.md](traps.md) for why nothing in the run can
   clear it, and why the residue blocks nothing.
+
+A worktree directory deleted by hand before finish is not a leftover: git still lists it, and
+would refuse to delete a branch checked out there, so finish drops that one registration
+(`git worktree remove --force` on the missing path) before `git branch -D`.
 
 Behavior once the merge starts:
 

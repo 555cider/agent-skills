@@ -5,9 +5,10 @@ name: split-skills
 # that split branch for normal installs; before a new split branch exists, it
 # can sync the local skills/<name>/ checkout for maintainer testing.
 #
-# This workflow runs `git subtree split` for every skill on every push to
-# main that touches skills/, and force-pushes the result. The split
-# branches are derived artifacts — never commit to them directly.
+# On every push to main that touches skills/, this workflow runs `git subtree
+# split` for each skill whose files changed and force-pushes the result (every
+# skill on a manual run or a force-push). The split branches are derived
+# artifacts — never commit to them directly.
 
 on:
   pull_request:
@@ -15,6 +16,7 @@ on:
       - 'skills/**'
       - 'tests/**'
       - '.claude-plugin/**'
+      - 'hooks/**'
       - 'install.sh'
       - 'uninstall.sh'
       - '.github/workflows/split.yml'
@@ -24,6 +26,7 @@ on:
       - 'skills/**'
       - 'tests/**'
       - '.claude-plugin/**'
+      - 'hooks/**'
       - 'install.sh'
       - 'uninstall.sh'
       - '.github/workflows/split.yml'
@@ -61,13 +64,17 @@ jobs:
           python3 tests/validate-skill-evals.py
       - name: Validate Claude Code plugin manifests
         run: python3 tests/validate-plugin-manifests.py
-      - name: Run deterministic regression suites
+      # The suites the portability matrix runs (and tests/install.sh) are left to it,
+      # which covers Ubuntu as well.
+      - name: Run the remaining deterministic regression suites
         run: |
           set -euo pipefail
           for suite in skills/*/tests/run.sh; do
+            case "$suite" in
+              skills/agent-memory/*|skills/peer-review/*|skills/step-back/*|skills/worktree-cycle/*) continue ;;
+            esac
             bash "$suite"
           done
-          bash tests/install.sh
       - name: Check shared copies are in sync
         run: |
           set -euo pipefail
@@ -79,7 +86,8 @@ jobs:
 
   # The shell tooling is used on every OS, and each one breaks it differently: macOS ships
   # /bin/bash 3.2 (empty arrays under set -u, no GNU sed), Windows runs it through Git Bash
-  # (paths, file locking, the python3 Store stub). Run the shell suites everywhere.
+  # (paths, file locking, the python3 Store stub). Run the shell suites everywhere, and
+  # agent-memory's, whose hooks and .cmd shim run on every prompt on each of them.
   portability:
     strategy:
       fail-fast: false
@@ -94,6 +102,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Provide python3 on Windows
         if: runner.os == 'Windows'
         run: |
@@ -146,6 +157,10 @@ jobs:
         run: |
           bash --version | head -n 1
           bash skills/peer-review/tests/run.sh
+      - name: agent-memory suite
+        run: bash skills/agent-memory/tests/run.sh
+        env:
+          AGENT_MEMORY_TEST_VENV: ${{ runner.temp }}/agent-memory-test-venv
 
   split:
     needs: [quality, portability]
@@ -168,16 +183,52 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Split each skill into split/<name>
+      - name: Choose the skills to split
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          FORCED: ${{ github.event.forced }}
+        run: |
+          # A push splits the skills its range changed, plus any skill whose
+          # published split branch does not match skills/<name> at this commit
+          # (an earlier run that failed or was skipped). A manual run, a
+          # force-push, or a range git cannot diff splits every skill: a
+          # rewritten history can change a split branch without changing a file.
+          set -euo pipefail
+          shopt -s nullglob
+          git fetch --quiet --no-tags origin '+refs/heads/split/*:refs/remotes/origin/split/*' || true
+          all=0
+          if [ "$EVENT" != "push" ] || [ "$FORCED" = "true" ] \
+             || [ -z "$BEFORE" ] || [ -z "${BEFORE//0/}" ] \
+             || ! git merge-base --is-ancestor "$BEFORE" "$GITHUB_SHA" 2>/dev/null; then
+            all=1
+          fi
+          changed=""
+          [ "$all" = "1" ] || changed="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" -- skills/ | cut -d/ -f2 | sort -u)"
+          names=()
+          for dir in skills/*/; do
+            name="$(basename "$dir")"
+            published="$(git rev-parse --quiet --verify "refs/remotes/origin/split/$name^{tree}" 2>/dev/null || true)"
+            current="$(git rev-parse --quiet --verify "$GITHUB_SHA:skills/$name" 2>/dev/null || true)"
+            if [ "$all" = "1" ] || [ "$published" != "$current" ] || printf '%s\n' "$changed" | grep -Fxq "$name"; then
+              names+=("$name")
+            fi
+          done
+          echo "skills=${names[*]}" >> "$GITHUB_OUTPUT"
+          echo "splitting: ${names[*]:-(none)}"
+
+      - name: Split each chosen skill into split/<name>
+        if: steps.pick.outputs.skills != ''
+        env:
+          SKILLS: ${{ steps.pick.outputs.skills }}
         run: |
           # NB: no `set -e` — one skill's split/push failure must NOT abort the
           # rest of the matrix. Failures are collected and reported at the end so
           # the remaining skills still get republished on this run.
           set -uo pipefail
-          shopt -s nullglob
           failed=()
-          for dir in skills/*/; do
-            name="$(basename "$dir")"
+          for name in $SKILLS; do
             branch="split/$name"
             echo "::group::$name"
             # subtree split rebuilds history of skills/<name>/ as if that

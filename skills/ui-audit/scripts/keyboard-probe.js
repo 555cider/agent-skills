@@ -452,7 +452,12 @@
     var modal = topModal();
     var stops = tabbables(modal || document);
     if (!stops.length) return { ok: true, empty: true, active: cssPath(deepActive()) };
+    // focus() on the element that already has focus does not scroll. A state setup that pressed
+    // a key on the first stop leaves it focused, and after the scroll loop it sits off-screen,
+    // which the traversal would then report as focus hidden.
+    var alreadyActive = deepActive() === stops[0];
     stops[0].focus({ preventScroll: false });
+    if (alreadyActive && stops[0].scrollIntoView) stops[0].scrollIntoView({ block: 'nearest', inline: 'nearest' });
     return { ok: deepActive() === stops[0], empty: false, active: cssPath(deepActive()) };
   }
 

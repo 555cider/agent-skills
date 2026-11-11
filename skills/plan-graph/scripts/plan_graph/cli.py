@@ -225,6 +225,11 @@ def _print_context(data: dict[str, object]) -> None:
         print(f"\n[{item['role']}] {item['id']} — {item['title']}")
         if item.get("matched_by"):
             print("Matched: " + "; ".join(item["matched_by"]))
+        staleness_line = _staleness_text(item.get("staleness") or {})
+        if staleness_line:
+            print(staleness_line)
+        for lineage in item.get("lineage", []):
+            print(f"Replaced: {lineage['replaced']} (recover: {lineage['recover']})")
         if "outcome" in item:
             print("Outcome:\n" + str(item.get("outcome", "")))
             print("Decisions:\n" + str(item.get("decisions", "")))
@@ -241,6 +246,19 @@ def _print_context(data: dict[str, object]) -> None:
             print(f"  - {item['id']} ({item['readiness']}): {item['title']}")
     elif not selected:
         print("\nNo active plans matched.")
+
+
+def _staleness_text(staleness: dict[str, object]) -> str:
+    """One line for a pack item whose scope moved on; nothing when fresh or unknown."""
+    state = staleness.get("state")
+    if state not in {"aging", "stale"}:
+        return ""
+    churn = staleness.get("commits_since_plan_update")
+    anchor = str(staleness.get("anchor") or "")[:12]
+    detail = f"{churn} scope commit(s) since the plan last changed"
+    if anchor:
+        detail += f"; read `git diff {anchor}..HEAD` over its scope"
+    return f"Staleness: {state} ({detail})"
 
 
 def _print_why(data: dict[str, object]) -> None:
@@ -296,24 +314,52 @@ def _load_valid(root: Path, *, deep: bool = False) -> Store:
     return store
 
 
-def _normalize_paths(root: Path, values: Iterable[str]) -> list[str]:
+def _cwd_prefix(root: Path, cwd: Path | None = None) -> PurePosixPath | None:
+    """The working directory relative to `root`, or None when it lies outside."""
+    try:
+        relative = (cwd or Path.cwd()).resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return PurePosixPath(relative.as_posix())
+
+
+def _normalize_paths(root: Path, values: Iterable[str], cwd: Path | None = None) -> list[str]:
+    """Repository-relative routing paths; directories keep a trailing `/`.
+
+    A relative path is read from the working directory when that lies inside the
+    root (run from anywhere), and from the root otherwise (`--root` from outside).
+    """
     normalized: list[str] = []
+    prefix = _cwd_prefix(root, cwd)
+    root_resolved = root.resolve()
     for value in values:
+        slashed = value.replace("\\", "/")
+        is_dir_hint = slashed.endswith("/")
         candidate = Path(value)
-        if candidate.is_absolute():
-            try:
-                relative = candidate.resolve(strict=False).relative_to(root.resolve())
-            except ValueError as exc:
-                raise PlanGraphError(f"routing path is outside repository root: {value}", code="path_escape") from exc
-            path = relative.as_posix()
-        else:
-            pure = PurePosixPath(value.replace("\\", "/"))
-            if ".." in pure.parts:
-                raise PlanGraphError(f"routing path escapes repository root: {value}", code="path_escape")
-            path = pure.as_posix()
-            while path.startswith("./"):
-                path = path[2:]
-        if path and path != "." and path not in normalized:
+        if not candidate.is_absolute():
+            pure = PurePosixPath(slashed)
+            joined = (prefix / pure) if prefix is not None else pure
+            parts: list[str] = []
+            for part in joined.parts:
+                if part == "..":
+                    if not parts:
+                        raise PlanGraphError(
+                            f"routing path escapes repository root: {value}", code="path_escape"
+                        )
+                    parts.pop()
+                elif part != ".":
+                    parts.append(part)
+            candidate = root_resolved.joinpath(*parts)
+        try:
+            relative = candidate.resolve(strict=False).relative_to(root_resolved)
+        except ValueError as exc:
+            raise PlanGraphError(f"routing path is outside repository root: {value}", code="path_escape") from exc
+        path = relative.as_posix()
+        if not path or path == ".":
+            continue
+        if is_dir_hint or candidate.is_dir():
+            path += "/"
+        if path not in normalized:
             normalized.append(path)
     return normalized
 
@@ -428,7 +474,7 @@ def _handle_context(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 
 def _handle_create(args: argparse.Namespace, root: Path, store: Store) -> int:
-    assert_new_id(root, store.plans, args.id)
+    id_warnings = assert_new_id(root, store.plans, args.id)
     title = _validated_title(args.title)
     unknown = sorted(set(args.require) - set(store.plans))
     if unknown:
@@ -450,6 +496,7 @@ def _handle_create(args: argparse.Namespace, root: Path, store: Store) -> int:
         changes=[{"action": "create", "plan": args.id, "path": plan.path.relative_to(root).as_posix()}],
         dry_run=args.dry_run,
         json_mode=args.json,
+        extra_diagnostics=id_warnings,
     )
 
 
@@ -492,7 +539,7 @@ def _handle_update(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 def _handle_rename(args: argparse.Namespace, root: Path, store: Store) -> int:
     original = _require_plan(store, args.old)
-    assert_new_id(root, store.plans, args.new)
+    id_warnings = assert_new_id(root, store.plans, args.new)
     renamed = replace(original, id=args.new, path=plan_path(root, args.new))
     if args.title is not None:
         renamed = replace_title(renamed, _validated_title(args.title))
@@ -518,6 +565,7 @@ def _handle_rename(args: argparse.Namespace, root: Path, store: Store) -> int:
         changes=changes,
         dry_run=args.dry_run,
         json_mode=args.json,
+        extra_diagnostics=id_warnings,
     )
 
 
@@ -530,7 +578,7 @@ def _handle_replace(args: argparse.Namespace, root: Path, store: Store) -> int:
             f"cannot replace {args.old}; active dependents require review: {', '.join(dependents)}",
             code="active_dependents",
         )
-    assert_new_id(root, store.plans, args.new)
+    id_warnings = assert_new_id(root, store.plans, args.new)
     unknown = sorted(set(args.require) - (set(store.plans) - {args.old}))
     if unknown:
         raise PlanGraphError("unknown required plans: " + ", ".join(unknown), code="unknown_plan")
@@ -560,6 +608,7 @@ def _handle_replace(args: argparse.Namespace, root: Path, store: Store) -> int:
         changes=changes,
         dry_run=args.dry_run,
         json_mode=args.json,
+        extra_diagnostics=id_warnings,
     )
 
 
@@ -703,9 +752,11 @@ def run(args: argparse.Namespace) -> int:
             if files is not None:
                 advisory.extend(advice.scope_overlaps(store.plans, index))
             advisory.extend(advice.near_duplicates(store.plans, index))
+            # A done plan is history: nobody acts on it, so its churn is not a warning.
+            # context and why still report a done item's staleness when it is read.
             report = advice.staleness(
                 root,
-                store.plans,
+                {plan_id: plan for plan_id, plan in store.plans.items() if plan.status == "active"},
                 dirty_paths=_safe_worktree_paths(root),
                 stale_after=args.stale_after,
             )

@@ -6,8 +6,14 @@ broken media, and design-system drift (see `references/audit-rules.md`). Do **no
 re-apply those by eye. This file covers what only judgment can settle, applied
 *after* you have the audit's measured findings in hand.
 
-Severity words and meanings come from SKILL.md (`Fail` = broken now · `Risk` =
-breaks with real data/state/locale/viewport · `Polish` = unpolished but functional).
+Severity words, used the same way the runner uses them:
+
+- **`Fail`** — broken now for some user in this cell: unreadable, unreachable, clipped, or lying
+  about state.
+- **`Risk`** — works in this cell but breaks with real data, state, locale, viewport, or input, or
+  misleads enough to cost a wrong action.
+- **`Polish`** — functional and honest, but unpolished: it costs attention, not correctness.
+
 **A measured `Fail` is never downgraded by taste.** Pure visual-judgment findings
 cap at `Risk` ("Risk-confirm") unless paired with a measured `Fail`.
 
@@ -17,8 +23,26 @@ Each bullet is tagged:
 - **[hybrid]** — audit flags candidates; you confirm intent, meaning, or severity.
 - **[visual]** — no signal in code; pure judgment; capped at `Risk`.
 
-Use these section names as report groups (SKILL.md: "group findings by failure mode").
+Use these section names as report groups (SKILL.md groups results by failure mode).
 Skip empty groups.
+
+## Which sections to read
+
+Always do **Triage the measured findings**, then read only the sections the surface has:
+
+| Surface in the audited screen | Sections |
+|---|---|
+| Any screen | Page composition · Visual hierarchy · Spacing rhythm · Microcopy · System & brand coherence |
+| Long prose, articles, help text | Typography & reading flow |
+| Operational, admin, or CRUD screen | Density appropriateness · Tables (when it has one) |
+| Empty, error, loading, stale, or partial data states | Data feedback |
+| Icons or icon-only controls | Icon consistency |
+| Hover, motion, inline edit, show/hide panels | Motion & affordance nuance |
+| Tabs, dialogs, forms, menus, badges, carousels, steppers, search | Widget grammar & information scent |
+| Charts, KPIs, canvas visualizations | Charts & metrics interpretability |
+| Data tables and lists with columns | Tables: column hierarchy |
+| Inspectors, property panels, record detail views | Key/value sheets |
+| Mobile, zoom, translated, or RTL cells in the matrix | Responsive / i18n / zoom judgment |
 
 ---
 
@@ -26,22 +50,20 @@ Skip empty groups.
 
 Do this before opening any judgment group. It turns raw audit output into a clean finding list.
 
-- **Resolve `needs-visual`.** Any finding with `confidence: needs-visual` (text over a
-  gradient/image or through opacity/filter/blend/mask/inset-shadow paint; CLS with no observer) is unconfirmed. Pixel-sample a screenshot crop
-  for the true composited contrast, or re-inject `audit.js` *before* navigation so the
-  CLS observer installs early. Never assert a number you did not measure; never ship it
-  unresolved.
+- **Resolve `needs-visual`.** Any signal with `confidence: needs-visual` (text over a
+  gradient/image or through opacity/filter/blend/mask/inset-shadow paint) is unconfirmed.
+  Pixel-sample the screenshot for the true composited contrast, then fix it or record the
+  cleared case as a `baseline` entry. Never assert a number you did not measure.
 - **Inspect opaque surfaces separately.** `uninspectedSurface` means the light-DOM pass
   could not inspect an open shadow root, frame, canvas, object, or embed. Review that
   live surface with the appropriate rendered, keyboard, and accessibility evidence.
   Use `data-ui-audit-surface-exempt="<reason>"` only when equivalent evidence already
   exists; an empty reason is not a resolution.
-- **Apply whitelist/baseline.** Drop findings matched by `whitelist`/`baseline` in
-  `audit-config.json`. A returning baseline finding is not new noise.
-- **Dedupe to root cause.** Collapse the same defect across repeated instances of one
-  component into a single finding with an instance count. Fix the component, not 40 rows.
-- **Cap Polish volume.** Polish is advisory. Summarize many small Polish items as one
-  themed line; do not bury Fails under a Polish wall.
+- **Dedupe to root cause.** The runner merges only an identical `rule + selector`; rows of one
+  component still arrive as separate selectors. Report them as one finding with a count and fix
+  the component, not 40 rows.
+- **Summarize Polish.** Report many small Polish items as one themed line; do not bury Fails
+  under a Polish wall.
 - **De-escalate intended patterns (the audit cannot read intent — you can):**
   - `overflow-x` on a carousel / horizontal scroller with a visible scroll affordance → not horizontal-overflow.
   - `role=dialog` / `role=tooltip` / `role=menu` overlay covering content → intended occlusion, not stickyOverlap.
@@ -411,8 +433,8 @@ not as a list of labelled fields.
   neighbours, not the one that separates key from value. `Polish`; `Risk` when the sheet is
   the primary place values are read.
 - **[hybrid]** The value stays on the name's row. A long name wraps inside its column (give it
-  break opportunities at `_`, `.` and camelCase boundaries so `ThermalTransmittance` or
-  `Fire_Rating_Reference` does not force a horizontal overflow); it does not push the value
+  break opportunities at `_`, `.` and camelCase boundaries so `maxConcurrentRequests` or
+  `billing_contact_email` does not force a horizontal overflow); it does not push the value
   under it. A sheet that decides per set "names this long go stacked, shorter ones go beside"
   by counting characters makes two sets of the same object look like two different widgets.
   Measure: every row's name box and value box share the same top within a few px. `Risk`.
@@ -421,7 +443,7 @@ not as a list of labelled fields.
   ragged seam that moves between sections. Measure the name-column right edge across sections
   and compare the numbers. `Polish`; `Risk` when a resizable panel re-splits each set differently.
 - **[visual]** Group headings as dividers, not cards. A set title with its count
-  (`Pset_DoorCommon · 3`) on a divider line costs one row; a framed card around every set spends
+  (`Shipping · 3`) on a divider line costs one row; a framed card around every set spends
   a frame on each and makes seven sets read as seven panels. `Polish`.
 - **[visual]** Per-row actions (remove, reset, link) sit at the end of the value cell and reveal
   on hover or focus for fine pointers, always visible for coarse pointers; a permanent column of
@@ -429,15 +451,15 @@ not as a list of labelled fields.
   on hover, never as its own full-width row. `Polish`; `Risk` when the hover-only action is the
   only route on touch.
 - **[visual]** Units and types belong in the value cell, after the number, in the muted tone
-  (`3.70 W/(m²·K)`); a unit in the name column makes the name column the thing the eye has to
+  (`12.5 kg`); a unit in the name column makes the name column the thing the eye has to
   read. `Polish`.
 - **[hybrid]** Volume honesty. Count rows and sections at a realistic object: a sheet past
   roughly three screens with every section open has no outline the user can hold, and the
   sections the user can actually change sit wherever the data model put them. Put editable
   sections first, collapse tool-generated or rarely read sets by default (remember the choice per
   set), and give a panel past ~2 screens an outline or jump strip. Do not keep controls open
-  that cannot act on this object (a type picker for a file-drawn shape that the lock banner says
-  will not change): collapse them under what would unlock them. `Risk` when the first viewport
+  that cannot act on this object (a plan picker on an account whose plan is managed by its
+  organization): collapse them under what would unlock them. `Risk` when the first viewport
   is spent on sections that do not apply. (`accordionPanelScroll` measures the inner-scroll
   case; the ordering and default-open choice is yours.)
 

@@ -6,8 +6,8 @@
  *
  * It injects scripts/audit.js (the deterministic detector) into every render state across a
  * route x viewport x theme x state x adaptation matrix, measures defects, and writes
- * schema-v2 findings.json + advisories.json + coverage.json. Screenshots are
- * viewport-clipped evidence, never the source of truth.
+ * schema-v2 findings.json + advisories.json + coverage.json. Screenshots (viewport frames plus
+ * one full page per unadapted cell) are evidence, never the source of truth.
  *
  *   node audit-chrome.mjs http://localhost:3000 \
  *       [--config audit-config.json] [--out-dir .ui-audit] [--routes /,/login] [--no-screenshots]
@@ -16,7 +16,7 @@
  * Exit code: non-zero if a cell is unverified, an un-baselined Fail exists, or a
  * required-review advisory remains unresolved.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { assessRuleCoverage } from './rule-coverage.mjs';
@@ -88,7 +88,33 @@ try {
   configurationError(`invalid JSON configuration: ${error && error.message || error}`);
 }
 const cfg = { ...defCfg, ...userCfg };
-const routes = routesOverride !== null ? routesOverride.split(',') : cfg.routes;
+
+/**
+ * Git Bash (MSYS) rewrites a POSIX-looking argument before Node sees it: `--routes /settings`
+ * arrives as `C:/Program Files/Git/settings`, and `#/a` as `#A:/`. The runner would then audit
+ * `http://host` + that string — a page that does not exist — and report it as a navigation error.
+ * The install-root prefix is stripped back off; any other drive-letter shape cannot be undone.
+ */
+function msysRoots() {
+  if (!process.env.MSYSTEM) return [];
+  const roots = new Set();
+  for (const raw of [process.env.EXEPATH, process.env.SHELL]) {
+    if (!raw || !/^[A-Za-z]:[\\/]/.test(raw)) continue;
+    let root = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (/\.exe$/i.test(root)) root = root.slice(0, root.lastIndexOf('/'));
+    root = root.replace(/\/(usr\/)?bin$/i, '');
+    roots.add(root.toLowerCase() + '/');
+  }
+  roots.add('c:/program files/git/');
+  return [...roots];
+}
+function cliRoute(raw) {
+  for (const root of msysRoots()) {
+    if (raw.replace(/\\/g, '/').toLowerCase().startsWith(root)) return '/' + raw.replace(/\\/g, '/').slice(root.length);
+  }
+  return raw;
+}
+const routes = routesOverride !== null ? routesOverride.split(',').map(cliRoute) : cfg.routes;
 const viewports = cfg.viewports;
 const themes = cfg.themes;
 const states = cfg.states;
@@ -111,7 +137,7 @@ const initScripts = (() => {
   if (raw == null) return [];
   const list = Array.isArray(raw) ? raw : [raw];
   for (const entry of list) {
-    if (typeof entry !== 'string' || !entry.trim()) throw new Error('initScripts entries must be non-empty strings');
+    if (typeof entry !== 'string' || !entry.trim()) configurationError('initScripts entries must be non-empty strings');
   }
   return list;
 })();
@@ -176,7 +202,18 @@ requireNonEmptyArray('scrollPositions', scrollPositions);
 
 routes.forEach((route, index) => {
   if (typeof route !== 'string' || !route.trim()) configurationError(`routes[${index}] must be a non-empty string`);
+  // A route is a path, query, or fragment under the base URL. A scheme or drive letter here is
+  // either a second URL (never joined correctly) or a Git Bash path rewrite.
+  const rewritten = process.env.MSYSTEM && /^[#?]?[A-Za-z]:[\\/]/.test(route);
+  if (rewritten || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(route)) {
+    configurationError(`routes[${index}] must be a path under the base URL (starting with /, ?, or #), got ${JSON.stringify(route)}` +
+      (rewritten ? '. Git Bash rewrote a /-prefixed argument into a Windows path; re-run with MSYS_NO_PATHCONV=1 or put the routes in --config.' : ''));
+  }
 });
+/** Join a route to the base URL; a bare `settings` is a path, not a suffix of the host. */
+function routeUrl(route) {
+  return baseUrl + (/^[/?#]/.test(route) ? route : '/' + route);
+}
 viewports.forEach((viewport, index) => {
   if (!viewport || typeof viewport !== 'object' || Array.isArray(viewport)) configurationError(`viewports[${index}] must be an object`);
   if (typeof viewport.name !== 'string' || !viewport.name.trim()) configurationError(`viewports[${index}].name must be a non-empty string`);
@@ -215,8 +252,27 @@ for (const state of Object.keys(stateMocks)) {
   try { normalizedStateRules(state, stateMocks, apiMockPattern); }
   catch (error) { configurationError(error && error.message || error); }
 }
+// Setups and probe settings are static configuration too: a typo must stop the run before
+// Chrome starts, not surface as one unverified cell per matrix entry.
+let keyboardSettings;
+let hoverSettings;
+try {
+  if (!stateSetups || typeof stateSetups !== 'object' || Array.isArray(stateSetups)) throw new Error('stateSetups must be an object');
+  for (const state of Object.keys(stateSetups)) validateStateSetup(state, stateSetups[state]);
+  keyboardSettings = keyboardProbeSettings(keyboardCfg);
+  hoverSettings = hoverProbeSettings(hoverCfg);
+} catch (error) {
+  configurationError(error && error.message || error);
+}
 
+// Screenshots this runner names are replaced every run; a PNG left from an earlier matrix
+// would otherwise read as evidence for a cell this run never rendered. Other files stay.
+const SCREEN_NAME = /_(none|zoom-200|reflow-320)_(top|bottom|full)\.png$/;
+const FULL_PAGE_MAX_DEVICE_PX = 16384;
 mkdirSync(join(outDir, 'screens'), { recursive: true });
+for (const name of readdirSync(join(outDir, 'screens'))) {
+  if (SCREEN_NAME.test(name)) rmSync(join(outDir, 'screens', name), { force: true });
+}
 
 // ---------- chrome ----------
 // Launch, process-tree cleanup, and the CDP client live in chrome-cdp.mjs, shared verbatim
@@ -292,10 +348,13 @@ const KEY_CODES = {
   ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35
 };
 
-async function dispatchKey(cdp, sessionId, chord) {
+/** `Shift+Tab` → { key, modifiers }. `Space` is an alias for the ' ' key. Throws on a bad chord. */
+function parseKeyChord(chord) {
   if (typeof chord !== 'string' || !chord) throw new Error('key must be a non-empty string');
-  const parts = chord.split('+');
-  const key = parts.pop();
+  const parts = chord === '+' ? ['+'] : chord.split('+');
+  let key = parts.pop();
+  if (!key) throw new Error(`key chord ${JSON.stringify(chord)} names no key`);
+  if (key === 'Space') key = ' ';
   let modifiers = 0;
   for (const modifier of parts) {
     if (modifier === 'Alt') modifiers |= 1;
@@ -304,14 +363,23 @@ async function dispatchKey(cdp, sessionId, chord) {
     else if (modifier === 'Shift') modifiers |= 8;
     else throw new Error(`unsupported key modifier: ${modifier}`);
   }
-  const windowsVirtualKeyCode = KEY_CODES[key] || (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
+  return { key, modifiers };
+}
+
+async function dispatchKey(cdp, sessionId, chord) {
+  const { key, modifiers } = parseKeyChord(chord);
+  const windowsVirtualKeyCode = KEY_CODES[key === ' ' ? 'Space' : key] || (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
   const code = key === ' ' ? 'Space' : key;
   const params = { key, code, modifiers, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode };
-  if (key.length === 1 && (modifiers & 7) === 0) {
+  // A key that types is a `keyDown` carrying its text; that is what makes Chrome run the
+  // default action (Enter submits or activates, Space toggles). `rawKeyDown` sends the bare
+  // keydown event only, so `press Enter` on a button did nothing.
+  if (key === 'Enter') params.text = params.unmodifiedText = '\r';
+  else if (key.length === 1 && (modifiers & 7) === 0) {
     params.text = (modifiers & 8) ? key.toUpperCase() : key;
     params.unmodifiedText = key;
   }
-  await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...params }, sessionId);
+  await cdp.send('Input.dispatchKeyEvent', { type: params.text ? 'keyDown' : 'rawKeyDown', ...params }, sessionId);
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params }, sessionId);
 }
 
@@ -323,10 +391,11 @@ async function actionTarget(cdp, sessionId, selector, timeoutMs = 5000) {
   });
 }
 
-async function applyStateSetup(cdp, sessionId, state, setups, defaultTimeoutMs = 5000) {
-  if (!setups || typeof setups !== 'object' || Array.isArray(setups)) throw new Error('stateSetups must be an object');
-  const spec = setups[state];
-  if (spec == null) return { configured: false, driver: 'none', status: 'not-configured', actions: 0, assertions: 0 };
+/**
+ * Static checks for one `stateSetups` entry, run for every entry before Chrome starts. Returns
+ * the upload file lists resolved to absolute paths, keyed by action index.
+ */
+function validateStateSetup(state, spec) {
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new Error(`stateSetups.${state} must be an object`);
   const actions = spec.actions || [];
   const expects = spec.expect;
@@ -339,14 +408,48 @@ async function applyStateSetup(cdp, sessionId, state, setups, defaultTimeoutMs =
   if (spec.timeoutMs != null && (!Number.isFinite(spec.timeoutMs) || spec.timeoutMs <= 0)) {
     throw new Error(`stateSetups.${state}.timeoutMs must be a positive number of milliseconds`);
   }
+  const allowed = new Set(['click', 'fill', 'press', 'hover', 'check', 'selectOption', 'upload']);
+  const files = {};
+  actions.forEach((action, index) => {
+    const at = `stateSetups.${state}.actions[${index}]`;
+    if (!action || typeof action !== 'object' || Array.isArray(action)) throw new Error(`${at} must be an object`);
+    if (!allowed.has(action.type)) throw new Error(`${at}.type is unsupported: ${JSON.stringify(action.type)}`);
+    if (typeof action.selector !== 'string' || !action.selector) throw new Error(`${at}.selector must be non-empty`);
+    if ((action.type === 'fill' || action.type === 'selectOption') && typeof action.value !== 'string') throw new Error(`${at}.value must be a string`);
+    if (action.type === 'press') {
+      if (typeof action.key !== 'string' || !action.key) throw new Error(`${at}.key must be non-empty`);
+      try { parseKeyChord(action.key); } catch (error) { throw new Error(`${at}.key: ${error.message}`); }
+    }
+    if (action.type === 'upload') {
+      if (!Array.isArray(action.files) || !action.files.length) throw new Error(`${at}.files must be a non-empty array of paths`);
+      files[index] = action.files.map(file => {
+        if (typeof file !== 'string' || !file) throw new Error(`${at}.files entries must be non-empty paths`);
+        const full = resolvePath(file);
+        // A missing fixture would otherwise surface as an unexplained chooser timeout.
+        if (!existsSync(full)) throw new Error(`${at} file not found: ${full}`);
+        return full;
+      });
+    }
+  });
+  expects.forEach((expectation, index) => {
+    const at = `stateSetups.${state}.expect[${index}]`;
+    if (!expectation || typeof expectation !== 'object' || Array.isArray(expectation)) throw new Error(`${at} must be an object`);
+    if (typeof expectation.selector !== 'string' || !expectation.selector) throw new Error(`${at}.selector must be non-empty`);
+    if (!['visible', 'hidden', 'attached', 'detached'].includes(expectation.state || 'visible')) throw new Error(`${at}.state is unsupported: ${JSON.stringify(expectation.state)}`);
+  });
+  return files;
+}
+
+async function applyStateSetup(cdp, sessionId, state, setups, defaultTimeoutMs = 5000) {
+  const spec = setups[state];
+  if (spec == null) return { configured: false, driver: 'none', status: 'not-configured', actions: 0, assertions: 0 };
+  const uploadFiles = validateStateSetup(state, spec);
+  const actions = spec.actions || [];
+  const expects = spec.expect;
   const timeoutMs = spec.timeoutMs ?? defaultTimeoutMs;
 
   for (let index = 0; index < actions.length; index++) {
     const action = actions[index];
-    const allowed = new Set(['click', 'fill', 'press', 'hover', 'check', 'selectOption', 'upload']);
-    if (!action || typeof action !== 'object' || Array.isArray(action)) throw new Error(`stateSetups.${state}.actions[${index}] must be an object`);
-    if (!allowed.has(action.type)) throw new Error(`stateSetups.${state}.actions[${index}].type is unsupported: ${JSON.stringify(action.type)}`);
-    if (typeof action.selector !== 'string' || !action.selector) throw new Error(`stateSetups.${state}.actions[${index}].selector must be non-empty`);
     const point = await actionTarget(cdp, sessionId, action.selector, timeoutMs);
     const encoded = JSON.stringify(action.selector);
     if (action.type === 'click' || (action.type === 'check' && !point.checked)) {
@@ -355,11 +458,9 @@ async function applyStateSetup(cdp, sessionId, state, setups, defaultTimeoutMs =
     } else if (action.type === 'hover') {
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y }, sessionId);
     } else if (action.type === 'fill') {
-      if (typeof action.value !== 'string') throw new Error(`stateSetups.${state}.actions[${index}].value must be a string`);
       await runtimeJson(cdp, sessionId, `(()=>{const el=document.querySelector(${encoded});el.focus();if(typeof el.select==='function')el.select();return{ok:true};})()`);
       await cdp.send('Input.insertText', { text: action.value }, sessionId);
     } else if (action.type === 'press') {
-      if (typeof action.key !== 'string' || !action.key) throw new Error(`stateSetups.${state}.actions[${index}].key must be non-empty`);
       await runtimeJson(cdp, sessionId, `(()=>{document.querySelector(${encoded}).focus();return{ok:true};})()`);
       await dispatchKey(cdp, sessionId, action.key);
     } else if (action.type === 'upload') {
@@ -367,16 +468,7 @@ async function applyStateSetup(cdp, sessionId, state, setups, defaultTimeoutMs =
       // creates `<input type=file>`, clicks it and removes it again, so the input is never a
       // stable, visible, single-match selector — and `actionTarget` would reject it as hidden.
       // Intercepting the chooser is what makes such a page reachable at all.
-      if (!Array.isArray(action.files) || !action.files.length) {
-        throw new Error(`stateSetups.${state}.actions[${index}].files must be a non-empty array of paths`);
-      }
-      const files = action.files.map(file => {
-        if (typeof file !== 'string' || !file) throw new Error(`stateSetups.${state}.actions[${index}].files entries must be non-empty paths`);
-        const full = resolvePath(file);
-        // A missing fixture would otherwise surface as an unexplained chooser timeout.
-        if (!existsSync(full)) throw new Error(`stateSetups.${state}.actions[${index}] file not found: ${full}`);
-        return full;
-      });
+      const files = uploadFiles[index];
       await cdp.send('DOM.enable', {}, sessionId);
       await cdp.send('Page.setInterceptFileChooserDialog', { enabled: true }, sessionId);
       try {
@@ -396,7 +488,6 @@ async function applyStateSetup(cdp, sessionId, state, setups, defaultTimeoutMs =
         try { await cdp.send('Page.setInterceptFileChooserDialog', { enabled: false }, sessionId); } catch {}
       }
     } else if (action.type === 'selectOption') {
-      if (typeof action.value !== 'string') throw new Error(`stateSetups.${state}.actions[${index}].value must be a string`);
       const value = JSON.stringify(action.value);
       await runtimeJson(cdp, sessionId, `(()=>{const el=document.querySelector(${encoded});for(const option of el.options)option.selected=option.value===${value};el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return{ok:true};})()`);
       const selected = await runtimeJson(cdp, sessionId, `({value:document.querySelector(${encoded}).value})`);
@@ -411,11 +502,8 @@ async function applyStateSetup(cdp, sessionId, state, setups, defaultTimeoutMs =
 
   for (let index = 0; index < expects.length; index++) {
     const expectation = expects[index];
-    if (!expectation || typeof expectation !== 'object' || Array.isArray(expectation)) throw new Error(`stateSetups.${state}.expect[${index}] must be an object`);
     const selector = expectation.selector;
     const expectedState = expectation.state || 'visible';
-    if (typeof selector !== 'string' || !selector) throw new Error(`stateSetups.${state}.expect[${index}].selector must be non-empty`);
-    if (!['visible', 'hidden', 'attached', 'detached'].includes(expectedState)) throw new Error(`stateSetups.${state}.expect[${index}].state is unsupported: ${JSON.stringify(expectedState)}`);
     const encoded = JSON.stringify(selector);
     await waitFor(async () => {
       const actual = await runtimeJson(cdp, sessionId, `(()=>{const matches=[...document.querySelectorAll(${encoded})];return{count:matches.length,visible:matches.filter(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}).length};})()`);
@@ -577,12 +665,17 @@ function keyboardFinding(rule, selector, message, measured, rect, suggestedFix, 
     measured, threshold: options.threshold || {}, rect: rect || null, suggestedFix };
 }
 
-async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], baselineEntries = []) {
+function keyboardProbeSettings(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('keyboardProbe must be an object');
   const maxSteps = Number(config.maxSteps ?? 120);
   const settle = Number(config.settleMs ?? 0);
   if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 1000) throw new Error('keyboardProbe.maxSteps must be an integer between 1 and 1000');
   if (!Number.isInteger(settle) || settle < 0 || settle > 5000) throw new Error('keyboardProbe.settleMs must be an integer between 0 and 5000');
+  return { maxSteps, settle };
+}
+
+async function runKeyboardProbe(cdp, sessionId, settings, whitelist = [], baselineEntries = []) {
+  const { maxSteps, settle } = settings;
   const findings = [];
   const whitelistJson = JSON.stringify(whitelist || []);
   await runtimeJson(cdp, sessionId, 'window.__uiAuditKeyboardProbe.captureFocusBaselines()');
@@ -670,9 +763,8 @@ async function runKeyboardProbe(cdp, sessionId, config = {}, whitelist = [], bas
 // Escape closes dialogs, so this probe is destructive by design. It must run after
 // every rule pass, screenshot, and other probe in the cell; nothing may read the
 // post-Escape DOM as evidence for anything else.
-async function runEscapeProbe(cdp, sessionId, config = {}, whitelist = [], baselineEntries = []) {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('keyboardProbe must be an object');
-  const settle = Number(config.settleMs ?? 0);
+async function runEscapeProbe(cdp, sessionId, settings, whitelist = [], baselineEntries = []) {
+  const { settle } = settings;
   const plan = await runtimeJson(cdp, sessionId, `window.__uiAuditKeyboardProbe.escapePlan(${JSON.stringify(whitelist || [])})`);
   if (!plan.present) {
     return { findings: [], proof: { status: 'not-applicable', reason: 'no visible modal dialog in this cell', dialogs: 0, probed: 0, closed: 0 } };
@@ -727,7 +819,7 @@ function pointerFinding(group) {
   };
 }
 
-async function runPointerProbe(cdp, sessionId, isMobile, config = {}, whitelist = [], baselineEntries = []) {
+function hoverProbeSettings(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('hoverProbe must be an object');
   const maxTargets = Number(config.maxTargets ?? 80);
   const settle = Number(config.settleMs ?? 0);
@@ -737,6 +829,11 @@ async function runPointerProbe(cdp, sessionId, isMobile, config = {}, whitelist 
   if (!Number.isInteger(settle) || settle < 0 || settle > 5000) throw new Error('hoverProbe.settleMs must be an integer between 0 and 5000');
   if (!Number.isInteger(maxWait) || maxWait < settle || maxWait > 5000) throw new Error('hoverProbe.maxWaitMs must be an integer between settleMs and 5000');
   if (!Number.isFinite(denseGapPx) || denseGapPx < 0 || denseGapPx > 100) throw new Error('hoverProbe.denseGapPx must be between 0 and 100');
+  return { maxTargets, settle, maxWait, denseGapPx };
+}
+
+async function runPointerProbe(cdp, sessionId, isMobile, settings, whitelist = [], baselineEntries = []) {
+  const { maxTargets, settle, maxWait, denseGapPx } = settings;
   if (isMobile) return { findings: [], proof: { status: 'not-applicable', expected: 0, checked: 0, missing: 0, maxTargets } };
 
   const whitelistJson = JSON.stringify(whitelist || []);
@@ -870,6 +967,32 @@ function capOptionalAdvisories(items, max, suppression) {
   return required.concat(kept);
 }
 
+/**
+ * Whole-page PNG for composition review. Chrome rasterizes at most ~16384 device px per side,
+ * so the CSS clip is capped by DPR. Evidence only: a failure is recorded, never fatal to the cell.
+ */
+async function captureFullPage(cdp, sessionId, vp, path) {
+  const dpr = vp.dpr || 1;
+  const limit = Math.floor(FULL_PAGE_MAX_DEVICE_PX / dpr);
+  try {
+    const scrolled = await runtimeJson(cdp, sessionId, '({x:window.scrollX,y:window.scrollY})');
+    await cdp.send('Runtime.evaluate', { expression: 'window.scrollTo(0,0)' }, sessionId);
+    await nextPaint(cdp, sessionId);
+    const layout = await cdp.send('Page.getLayoutMetrics', {}, sessionId);
+    const content = layout.cssContentSize || layout.contentSize;
+    const width = Math.max(1, Math.min(limit, Math.ceil(content.width)));
+    const height = Math.max(1, Math.min(limit, Math.ceil(content.height)));
+    const shot = await cdp.send('Page.captureScreenshot',
+      { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width, height, scale: 1 } }, sessionId);
+    writeFileSync(path, Buffer.from(shot.data, 'base64'));
+    await cdp.send('Runtime.evaluate', { expression: `window.scrollTo(${scrolled.x},${scrolled.y})` }, sessionId);
+    await nextPaint(cdp, sessionId);
+    return { status: 'captured', width, height, cut: Math.ceil(content.height) > height };
+  } catch (error) {
+    return { status: 'error', error: String(error && error.message || error) };
+  }
+}
+
 function deviceMetrics(vp, adaptation) {
   if (adaptation === 'zoom-200') {
     return { width: Math.max(1, Math.floor(vp.width / 2)), height: Math.max(1, Math.floor(vp.height / 2)), deviceScaleFactor: (vp.dpr || 1) * 2, mobile: false };
@@ -917,7 +1040,7 @@ try {
   cdp = await CDP.connect(chrome.wsUrl);
   results = await mapLimit(specs, workers, async spec => {
     const { route, vp, theme, state, adaptation } = spec;
-    const url = baseUrl + route;
+    const url = routeUrl(route);
     const identity = { route, viewport: vp.name, theme, state, adaptation };
     const cell = { ...identity, index: spec.index };
     const timings = { navigationMs: 0, stateSetupMs: 0, detectMs: 0, keyboardMs: 0, pointerMs: 0, escapeMs: 0, screenshotMs: 0, totalMs: 0 };
@@ -943,6 +1066,11 @@ try {
       await cdp.send('Network.enable', {}, sessionId);
       await cdp.send('Runtime.enable', {}, sessionId);
       await cdp.send('Emulation.setDeviceMetricsOverride', deviceMetrics(vp, adaptation), sessionId);
+      // A phone cell must answer `(hover: none)` and `(pointer: coarse)` like a phone, or
+      // hover-gated styles render as on a desktop. Touch emulation changes input media only;
+      // metrics keep `mobile: false` (see deviceMetrics), so innerHeight stays the viewport height.
+      // Each cell gets a fresh target, so a desktop cell never inherits it.
+      if (vp.isMobile) await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }, sessionId);
       await cdp.send('Emulation.setEmulatedMedia',
         { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
       cell.themeDriver = themeInitScripts[theme] ? 'init-script' : 'media';
@@ -1020,7 +1148,7 @@ try {
       let pointer;
       try {
         pointer = adaptation === 'none'
-          ? await runPointerProbe(cdp, sessionId, !!vp.isMobile, hoverCfg, auditCfg.whitelist || [], baseline)
+          ? await runPointerProbe(cdp, sessionId, !!vp.isMobile, hoverSettings, auditCfg.whitelist || [], baseline)
           : { findings: [], proof: { status: 'not-applicable', reason: 'hover is not part of adaptation coverage', expected: 0, checked: 0, missing: 0 } };
       } catch (error) {
         pointer = { findings: [], proof: { status: 'error', reason: String(error && error.message || error), expected: 0, checked: 0, missing: 0 } };
@@ -1033,7 +1161,7 @@ try {
       }
 
       const keyboardStarted = Date.now();
-      const keyboard = await runKeyboardProbe(cdp, sessionId, keyboardCfg, auditCfg.whitelist || [], baseline);
+      const keyboard = await runKeyboardProbe(cdp, sessionId, keyboardSettings, auditCfg.whitelist || [], baseline);
       timings.keyboardMs = Date.now() - keyboardStarted;
       cell.keyboardProbe = keyboard.proof;
       if (['checked', 'not-applicable'].includes(keyboard.proof.status)) {
@@ -1047,12 +1175,22 @@ try {
         addSignal(signal, cellFindings, cellAdvisories);
       }
 
+      // Full page after the pointer and keyboard probes: captureBeyondViewport briefly resizes the
+      // viewport, which can fire resize handlers that close a menu the probes still had to measure.
+      // Before Escape, so an open dialog is still in the picture.
+      if (!noShots && adaptation === 'none') {
+        const shotStarted = Date.now();
+        cell.fullPageScreenshot = await captureFullPage(cdp, sessionId, vp,
+          join(outDir, 'screens', `${slug(route)}_${vp.name}_${theme}_${state}_${adaptation}_full.png`));
+        timings.screenshotMs += Date.now() - shotStarted;
+      }
+
       // Destructive: Escape closes the dialog, so this is the last thing that
       // touches the page in this cell. No evidence is read from the DOM after it.
       const escapeStarted = Date.now();
       let escape;
       try {
-        escape = await runEscapeProbe(cdp, sessionId, keyboardCfg, auditCfg.whitelist || [], baseline);
+        escape = await runEscapeProbe(cdp, sessionId, keyboardSettings, auditCfg.whitelist || [], baseline);
       } catch (error) {
         escape = { findings: [], proof: { status: 'error', reason: String(error && error.message || error), dialogs: 0, probed: 0, closed: 0 } };
       }

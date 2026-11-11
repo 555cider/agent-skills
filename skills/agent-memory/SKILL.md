@@ -32,12 +32,13 @@ contents, or raw tool output. Do not convert a repository into memory records.
 
 ## Recall before acting
 
-When the harness hook already injected an `<agent-memory …>` packet for the
-current prompt, use that packet directly — do not run `recall` again for the
-same prompt. Otherwise use the exact current request as the prompt:
+With hooks installed (plugin or `integrate --mode primary`) the prompt hook
+already recalled: use its `<agent-memory …>` packet, and read no packet as
+nothing relevant. Run `recall` yourself only without hooks, or later with a
+different, narrower query; pass your harness so `harness=` conditions match:
 
 ```bash
-agent-memory recall --cwd "$PWD" --prompt "<current request>" --format json
+agent-memory recall --cwd "$PWD" --harness <claude|codex|opencode> --prompt "<request>" --format json
 ```
 
 The packet (`agent-memory.packet.v2`):
@@ -49,10 +50,10 @@ The packet (`agent-memory.packet.v2`):
   memory. The current prompt wins; matched old records are context only.
 - `stale=true` on a procedure or caveat means verify it locally before use.
 - `visibility.material=false` means say nothing about memory.
+- `Stored from …`/`Forgotten by this prompt` lines are done; do not repeat them.
 
-Treat memory as a lead, not proof. Verify drift-prone commands and facts when
-verification is cheap. Mention memory only when it materially changes the
-action, decision, or warning given to the user.
+Treat memory as a lead, not proof: verify drift-prone commands cheaply, and
+mention memory only when it changes the action, decision, or warning given.
 
 Global memory reaches a repo only for kinds the user granted there
 (`agent-memory policy trust grant --cwd "$PWD" --kind preference`); grant only
@@ -70,15 +71,15 @@ agent-memory remember --cwd "$PWD" --scope project --kind preference \
 Kinds are `preference`, `constraint`, `decision`, `procedure`, `caveat`, and
 `handoff`. Use `global` only when the user clearly intends cross-project reuse.
 Add `--condition harness=codex` or `--path-glob 'frontend/**'` when applicability
-is conditional. Use `--replaces <id>` for an explicit correction.
+is conditional. Use `--replaces <id>` for an explicit correction. Tell the
+user about every record in the output's `superseded` list: it was retracted.
 
 Keep each statement one focused fact, well under ~500 tokens; recall injects at
 most ~1,200 tokens. Split a playbook into separate records, and keep long
 documents in the repository with a pointer in memory.
 
-Explicit requests become active. Inferred preferences and assistant-only claims
-stay provisional; a procedure or caveat activates automatically only when local
-command evidence proves it.
+Explicit requests become active; inferred and assistant-only claims stay
+provisional unless local command evidence proves a procedure or caveat.
 
 ## Forget means hard delete
 
@@ -110,16 +111,15 @@ To stop automatic observation without deleting memory, use
 
 ## Record actual use
 
-When a recalled item materially affected the work, record it against the
-packet's `query-id`:
+When recalled items materially affected the work, record them against the
+packet's `query-id` in one call:
 
 ```bash
-agent-memory feedback <query-id> <memory-id> --used --outcome helpful
+agent-memory feedback <query-id> <memory-id> [<memory-id> ...] --used --outcome helpful
 ```
 
-Use `--unused` when an exposed record was irrelevant: a record marked unused in
-most of its votes must match twice as strongly to be shown again. Never
-fabricate feedback for a record that was not in that query packet.
+Mark irrelevant exposed records `--unused` (mostly-unused ones must match twice
+as strongly next time); never give feedback for a record outside that packet.
 
 ## References
 

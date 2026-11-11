@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the Claude Code marketplace and bundle-plugin manifests.
+"""Validate the Claude Code marketplace, bundle-plugin manifests and plugin hooks.
 
 The plugin channel is a second delivery surface for the same skills/<name>/
 directories that install.sh ships. Nothing inside skills/ knows about it: the
@@ -178,11 +178,102 @@ def validate_marketplace(skills: list[str]) -> int:
     return len(entries)
 
 
+# A hook command reaches into its plugin through this placeholder; Claude Code
+# sets CLAUDE_PLUGIN_ROOT and Codex PLUGIN_ROOT, so the shipped commands spell
+# `${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}`. Either name alone is accepted too.
+PLUGIN_ROOT_PATH = re.compile(
+    r"\$\{(?:CLAUDE_PLUGIN_ROOT(?::-\$\{PLUGIN_ROOT\})?|PLUGIN_ROOT)\}/([^\s\"']+)"
+)
+
+
+def validate_hooks_file(path: Path, plugin_root: Path) -> list[tuple[str, str, object]]:
+    """Check one hooks.json and return its (event, command, timeout) entries.
+
+    Plugin hooks run on every prompt; a command pointing at a renamed or
+    deleted script fails in each session instead of in CI.
+    """
+    rel = path.relative_to(ROOT).as_posix()
+    data = load_json(path)
+    require(isinstance(data, dict), f"{rel} must be a JSON object")
+    events = data.get("hooks")
+    require(isinstance(events, dict) and events, f"{rel}.hooks must be a non-empty object")
+    entries: list[tuple[str, str, object]] = []
+    for event, groups in events.items():
+        require(isinstance(groups, list) and groups, f"{rel}.hooks.{event} must be a non-empty array")
+        for gi, group in enumerate(groups, 1):
+            where = f"{rel}.hooks.{event}[{gi}]"
+            require(isinstance(group, dict), f"{where} must be an object")
+            hooks = group.get("hooks")
+            require(isinstance(hooks, list) and hooks, f"{where}.hooks must be a non-empty array")
+            for hi, hook in enumerate(hooks, 1):
+                hwhere = f"{where}.hooks[{hi}]"
+                require(isinstance(hook, dict), f"{hwhere} must be an object")
+                require(hook.get("type") == "command", f"{hwhere}.type must be 'command'")
+                command = hook.get("command")
+                require(
+                    isinstance(command, str) and command.strip(),
+                    f"{hwhere}.command must be a non-empty string",
+                )
+                timeout = hook.get("timeout")
+                require(
+                    timeout is None
+                    or (isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0),
+                    f"{hwhere}.timeout must be a positive number",
+                )
+                for target in PLUGIN_ROOT_PATH.findall(command):
+                    resolved = (plugin_root / target).resolve()
+                    require(
+                        resolved.is_relative_to(plugin_root.resolve()),
+                        f"{hwhere}.command points outside its plugin: {target}",
+                    )
+                    require(
+                        resolved.is_file(),
+                        f"{hwhere}.command runs a missing file: {resolved.relative_to(ROOT).as_posix()}",
+                    )
+                entries.append((event, command, timeout))
+    return entries
+
+
+def validate_hooks(skills: list[str]) -> int:
+    """Validate the bundle's hooks/hooks.json and each skill's own copy.
+
+    The bundle plugin is served from the repository root and the per-skill
+    plugin from skills/<name>, so one skill's hooks exist twice with different
+    paths. They must stay the same hooks apart from that prefix.
+    """
+    count = 0
+    bundle_file = ROOT / "hooks" / "hooks.json"
+    bundle = validate_hooks_file(bundle_file, ROOT) if bundle_file.is_file() else []
+    count += bool(bundle)
+    for name in skills:
+        skill_file = SKILLS / name / "hooks" / "hooks.json"
+        prefix = "}/skills/" + name + "/"
+        bundled = [(e, c.replace(prefix, "}/"), t) for e, c, t in bundle if prefix in c]
+        if not skill_file.is_file():
+            require(
+                not bundled,
+                f"hooks/hooks.json runs skills/{name} but skills/{name}/hooks/hooks.json is missing; "
+                "the per-skill plugin would ship without its hooks",
+            )
+            continue
+        own = validate_hooks_file(skill_file, SKILLS / name)
+        count += 1
+        require(
+            sorted(own, key=repr) == sorted(bundled, key=repr),
+            f"skills/{name}/hooks/hooks.json and the skills/{name} entries in hooks/hooks.json disagree",
+        )
+    return count
+
+
 def main() -> int:
     skills = sorted(d.name for d in SKILLS.iterdir() if (d / "SKILL.md").is_file())
     validate_bundle_plugin(skills)
     count = validate_marketplace(skills)
-    print(f"OK plugin manifests ({count} marketplace entries, {len(skills)} skills)")
+    hook_files = validate_hooks(skills)
+    print(
+        f"OK plugin manifests ({count} marketplace entries, {len(skills)} skills, "
+        f"{hook_files} hooks files)"
+    )
     return 0
 
 

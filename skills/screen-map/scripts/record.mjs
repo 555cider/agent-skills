@@ -16,7 +16,7 @@
  */
 
 import { Page, sleep } from './browser.mjs';
-import { observeTarget } from './model.mjs';
+import { observeTarget, routeTemplate } from './model.mjs';
 
 /**
  * The one action nobody clicked. Fixed shape because there is nothing on the page to
@@ -130,6 +130,11 @@ export async function recordSession({
     const wake = () => { recorder.dirty = true; };
     cleanups.push(cdp.listen('Page.frameNavigated', sessionId, wake));
     cleanups.push(cdp.listen('Page.loadEventFired', sessionId, wake));
+    // A single-page app's pushState, replaceState and popstate change the screen without a
+    // new document, so neither event above fires. Without this wake a back button in an
+    // SPA left `lastState` on the screen it had left, and the next click was filed from there.
+    // An iframe's own pushState wakes it too; that costs one settle and files nothing.
+    cleanups.push(cdp.listen('Page.navigatedWithinDocument', sessionId, wake));
 
     await cdp.send('Runtime.enable', {}, sessionId).catch(() => {});
     // The binding has to exist before the harvest script runs, or the page-side recorder
@@ -197,6 +202,13 @@ export async function recordSession({
         // hang an edge on. Count it: an uncounted drop is a click the user made that the
         // map does not contain and does not admit to missing.
         drop('no-screen-yet');
+      } else if (outstanding.length === 1 && outstanding[0].pathname
+        && routeTemplate(outstanding[0].pathname, config) !== outstanding[0].from.route) {
+        // The page says the click happened on a different route than the screen this tab
+        // last settled on: the screen changed underneath (an in-document navigation that
+        // had not been observed yet), so `from` is wrong and the edge would be invented.
+        drop('from-mismatch');
+        debug(`from-mismatch: clicked on ${outstanding[0].pathname}, last screen ${outstanding[0].from.route}`);
       } else if (outstanding.length === 1) {
         const cause = outstanding[0];
         const fromState = cause.from;

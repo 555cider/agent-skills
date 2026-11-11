@@ -902,6 +902,174 @@ x
         for plan_id, data in before_bytes.items():
             self.assertEqual(self.plan_file(plan_id).read_bytes(), data)
 
+    def run_text(self, *args: str, cwd: Path | None = None) -> str:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), *args, "--root", str(self.root)],
+            cwd=cwd or SKILL, capture_output=True, text=True, encoding="utf-8",
+            timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_fenced_code_headings_are_not_title_or_sections(self) -> None:
+        # A `# comment` in a shell block read as a second H1: duplicate_title failed
+        # every command, and `## step` inside a fence split a section in two.
+        self.create("scripted", tags=("scripted",))
+        path = self.plan_file("scripted")
+        content = path.read_text(encoding="utf-8").replace(
+            "## Implementation\n\nTBD",
+            "## Implementation\n\nRun:\n\n```bash\n# install deps\nnpm ci\n## Outcome\n```\n\n"
+            "~~~~\n# also code\n```\nstill code\n~~~~\nafter fences",
+        )
+        path.write_text(content, encoding="utf-8")
+        doctor, _ = self.run_cli("doctor")
+        self.assertEqual(
+            [item for item in doctor["diagnostics"] if item["severity"] == "error"], []
+        )
+        plan = load_store(self.root).plans["scripted"]
+        self.assertEqual(plan.title, "Scripted")
+        self.assertIn("# install deps", plan.sections["Implementation"])
+        self.assertTrue(plan.sections["Implementation"].endswith("after fences"))
+        self.assertEqual(plan.sections["Outcome"], "TBD")
+        self.run_cli("update", "scripted", "--title", "Scripted v2")
+        updated = path.read_text(encoding="utf-8")
+        self.assertIn("# Scripted v2\n", updated)
+        self.assertIn("# install deps\n", updated)
+
+    def test_unclosed_fence_leaves_later_headings(self) -> None:
+        from plan_graph.model import extract_sections
+        sections = extract_sections("## Outcome\n\n```\n## Evidence\n")
+        self.assertEqual(list(sections), ["Outcome", "Evidence"])
+        sections = extract_sections("## Outcome\n```\n## Fake\n```\n```\n## Evidence\n")
+        self.assertEqual(list(sections), ["Outcome", "Evidence"])
+
+    def test_directory_reaches_scope_with_double_star_inside_a_segment(self) -> None:
+        from plan_graph.model import scope_matches
+        self.assertTrue(scope_matches("apps/check**", "apps/checkout/"))
+        self.assertFalse(scope_matches("apps/check**", "apps/foo/"))
+        self.assertTrue(scope_matches("apps/**", "apps/foo/"))
+
+    def test_context_text_prints_staleness_and_lineage(self) -> None:
+        self.churned_repo(commits=5)
+        text = self.run_text("context", "--plan", "core")
+        self.assertRegex(text, r"Staleness: stale \(5 scope commit\(s\) since the plan last changed; read `git diff [0-9a-f]{12}\.\.HEAD`")
+        self.run_cli("replace", "core", "core-v2", "--title", "Core v2", "--tag", "core")
+        text = self.run_text("context", "--plan", "core-v2")
+        self.assertIn("Replaced: core (recover: git log --all -- .agents/plans/core.md)", text)
+        self.assertNotIn("Staleness:", text)
+
+    def test_relative_path_resolves_from_working_directory(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.create("checkout", scopes=("apps/checkout/**",), tags=("checkout",))
+        self.create("billing", scopes=("apps/billing/api/*.py",), tags=("billing",))
+        nested = self.root / "apps" / "checkout"
+        nested.mkdir(parents=True)
+        (self.root / "apps" / "billing" / "api").mkdir(parents=True)
+        payload, _ = self.run_cli("context", "--path", "service.py", root=False, cwd=nested)
+        self.assertEqual(payload["data"]["selectors"]["paths"], ["apps/checkout/service.py"])
+        self.assertEqual(payload["data"]["selected"], ["checkout"])
+        sibling, _ = self.run_cli("context", "--path", "../billing/api/x.py", root=False, cwd=nested)
+        self.assertEqual(sibling["data"]["selected"], ["billing"])
+        # Outside the root, a relative path is still read from the root.
+        outside, _ = self.run_cli("context", "--path", "apps/checkout/service.py")
+        self.assertEqual(outside["data"]["selected"], ["checkout"])
+        escape, _ = self.run_cli("context", "--path", "../../../x.py", root=False, cwd=nested, expect=1)
+        self.assertEqual(escape["diagnostics"][0]["code"], "path_escape")
+
+    def test_directory_path_selects_scopes_under_it(self) -> None:
+        self.create("checkout", scopes=("apps/checkout/**",), tags=("checkout",))
+        self.create("billing", scopes=("apps/billing/api/*.py",), tags=("billing",))
+        self.create("docs", scopes=("docs/**",), tags=("docs",))
+        (self.root / "apps" / "checkout" / "src").mkdir(parents=True)
+        for value, expected in (
+            ("apps/checkout", ["checkout"]),
+            ("apps/checkout/", ["checkout"]),
+            ("apps/checkout/src", ["checkout"]),
+            ("apps", ["billing", "checkout"]),
+            ("apps/billing/", ["billing"]),
+            ("apps/billing/web/", []),
+        ):
+            payload, _ = self.run_cli("context", "--path", value)
+            self.assertEqual(sorted(payload["data"]["selected"]), expected, value)
+        # A file path that does not exist is still a file, not a directory.
+        payload, _ = self.run_cli("context", "--path", "apps/checkout")
+        self.assertEqual(payload["data"]["selectors"]["paths"], ["apps/checkout/"])
+        missing, _ = self.run_cli("context", "--path", "apps/billing")
+        self.assertEqual(missing["data"]["selectors"]["paths"], ["apps/billing"])
+        self.assertEqual(missing["data"]["selected"], [])
+
+    def test_doctor_does_not_warn_stale_for_done_plans(self) -> None:
+        self.churned_repo(commits=5)
+        self.create("keeper", tags=("keeper",), requires=("core",))
+        self.fill_sections("core")
+        self.git("add", ".")
+        self.git("commit", "-qm", "keeper")
+        target = self.root / "apps" / "core" / "engine.py"
+        self.run_cli("close", "core")
+        self.git("commit", "-aqm", "close core")
+        for index in range(5):
+            target.write_text(f"after {index}\n", encoding="utf-8")
+            self.git("commit", "-aqm", f"after {index}")
+        payload, _ = self.run_cli("doctor")
+        self.assertNotIn("stale_plan", [item["code"] for item in payload["diagnostics"]])
+        why, _ = self.run_cli("why", "core")
+        self.assertEqual(why["data"]["staleness"]["state"], "stale")
+
+    def test_git_history_timeout_warns_instead_of_failing(self) -> None:
+        import plan_graph.store as store_module
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        real_run = subprocess.run
+        calls: list[list[str]] = []
+
+        def slow_log(command, *args, **kwargs):
+            calls.append(list(command))
+            if "log" in command:
+                raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 10))
+            return real_run(command, *args, **kwargs)
+
+        with mock.patch.object(store_module.subprocess, "run", side_effect=slow_log):
+            warnings = store_module.assert_new_id(self.root, {}, "fresh-id")
+        self.assertEqual([item.code for item in warnings], ["id_history_unchecked"])
+        log_calls = [call for call in calls if "log" in call]
+        self.assertIn("--max-count=1", log_calls[0])
+
+    def test_recovery_copies_live_in_common_git_dir_of_linked_worktree(self) -> None:
+        self.churned_repo(commits=0)
+        linked = self.root.parent / f"{self.root.name}-linked"
+        self.git("worktree", "add", "-q", str(linked))
+        self.addCleanup(lambda: subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(linked)],
+            check=False, capture_output=True,
+        ))
+        payload, _ = self.run_cli("close", "core", "--force", root=False, cwd=linked)
+        recovery = Path(payload["data"]["recovery_directory"]).resolve()
+        common = (self.root / ".git").resolve()
+        self.assertEqual(recovery.parent, common / "plan-graph-recovery")
+        self.git("worktree", "remove", "--force", str(linked))
+        self.assertTrue((recovery / "core.md").exists())
+
+    def test_nested_store_scan_uses_git_file_list(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        (self.root / ".gitignore").write_text("build/\n", encoding="utf-8")
+        tracked = self.root / "apps" / "web" / ".agents" / "plans"
+        tracked.mkdir(parents=True)
+        (tracked / "x.md").write_text("x\n", encoding="utf-8")
+        legacy = self.root / "apps" / "old" / ".agents" / "plan"
+        legacy.mkdir(parents=True)
+        (legacy / "graph.yaml").write_text("next: 1\n", encoding="utf-8")
+        ignored = self.root / "build" / ".agents" / "plans"
+        ignored.mkdir(parents=True)
+        (ignored / "y.md").write_text("y\n", encoding="utf-8")
+        payload, _ = self.run_cli("doctor", expect=1)
+        found = sorted((item["code"], item["path"]) for item in payload["diagnostics"])
+        self.assertEqual(
+            found,
+            [
+                ("nested_legacy_store", "apps/old/.agents/plan/graph.yaml"),
+                ("nested_store", "apps/web/.agents/plans"),
+            ],
+        )
+
 
 class PlanGraphAlgorithmTests(unittest.TestCase):
     def test_deep_dag_is_iterative_and_deterministic(self) -> None:

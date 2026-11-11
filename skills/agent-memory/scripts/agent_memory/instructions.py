@@ -8,6 +8,7 @@ read that file, which is why the memory is kept rather than deleted.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Sequence
@@ -15,7 +16,9 @@ from typing import Sequence
 from .util import base_tokens, user_home
 
 # Per host: files under the user's home, and file names read in every directory
-# from the working directory up to the filesystem root.
+# from the working directory up to the filesystem root. A host whose config
+# directory is relocated by an environment variable reads its file from there.
+HOST_HOME_ENV = {"claude": ("CLAUDE_CONFIG_DIR", "CLAUDE.md"), "codex": ("CODEX_HOME", "AGENTS.md")}
 HOST_FILES: dict[str, tuple[tuple[Path, ...], tuple[str, ...]]] = {
     "claude": ((Path(".claude/CLAUDE.md"),), ("CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md")),
     "codex": ((Path(".codex/AGENTS.md"),), ("AGENTS.md",)),
@@ -54,6 +57,9 @@ def loaded_rules(harness: str, cwd: Path, *, home: Path | None = None) -> list[s
     home_files, local_names = HOST_FILES.get(harness, ((), ()))
     home = home or user_home()
     paths = [home / relative for relative in home_files]
+    variable, file_name = HOST_HOME_ENV.get(harness, ("", ""))
+    if variable and os.environ.get(variable):
+        paths = [Path(os.environ[variable]).expanduser() / file_name]
     for directory in (cwd, *cwd.parents):
         paths.extend(directory / name for name in local_names)
     rules: list[str] = []

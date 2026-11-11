@@ -548,6 +548,107 @@ export function observeTarget(transition, stateId, { proved = false } = {}) {
 }
 
 /**
+ * What a re-crawl keeps from the map it replaces. A crawl rebuilds the graph from what it
+ * walks, so without this every edge a recording contributed — the screens behind a login
+ * or a form submit the crawl refuses to press — vanished on the next crawl, along with
+ * the `recordings` history that said they had ever been watched.
+ *
+ * Carried: every `observed` edge and every recording-found entry, plus the screens those
+ * edges touch. Screens are matched by identity (route + signature), never by id, because
+ * the crawl numbers its own states from zero. Where the crawl has an edge of its own for
+ * the same control, the crawl's view stands and the recording only adds what it saw, by
+ * the rule `record` itself follows: an edge the crawl did not prove becomes `observed`,
+ * and one it proved keeps its proof — a different landing marks it nondeterministic. A
+ * recorded control on a screen the crawl walked, observed or not, is dropped when the
+ * crawl's list lacks it: the crawl has just listed that screen's controls, and one
+ * missing from its list is gone. Back navigation is the exception.
+ *
+ * Pure: returns `{ map, carried }` with new arrays and copies of any edge it changes, so
+ * it is safe to call on every checkpoint of a crawl that is still running.
+ */
+export function carryRecorded(map, previous) {
+  if (!previous) return { map, carried: 0 };
+  const carriedEdges = (previous.transitions || [])
+    .filter(transition => transition.status === 'observed' || transition.source === 'record');
+  const needed = new Set((previous.states || [])
+    .filter(state => state.source === 'record').map(state => state.id));
+  for (const transition of carriedEdges) {
+    if (transition.status !== 'observed' && !needed.has(transition.from)) continue;
+    needed.add(transition.from);
+    if (transition.to) needed.add(transition.to);
+    for (const id of transition.toAlternatives || []) needed.add(id);
+  }
+
+  const states = [...map.states];
+  const idByKey = new Map(states.map(state => [stateKey(state.route, state.signature), state.id]));
+  const crawled = new Set(states.map(state => state.id));
+  const nextStateId = nextIdFrom(states, 's');
+  const remap = new Map();
+  for (const state of previous.states || []) {
+    if (!needed.has(state.id)) continue;
+    const key = stateKey(state.route, state.signature);
+    if (!idByKey.has(key)) {
+      const copy = { ...state, id: nextStateId() };
+      states.push(copy);
+      idByKey.set(key, copy.id);
+    }
+    remap.set(state.id, idByKey.get(key));
+  }
+
+  const transitions = [...map.transitions];
+  const transitionKey = (from, key) => JSON.stringify([from, key]);
+  const position = new Map(transitions.map((transition, index) =>
+    [transitionKey(transition.from, transition.action && transition.action.key), index]));
+  const nextTransitionId = nextIdFrom(transitions, 't');
+  let carried = 0;
+  for (const recorded of carriedEdges) {
+    const from = remap.get(recorded.from);
+    if (!from) continue;
+    const to = recorded.to ? remap.get(recorded.to) || null : null;
+    const alternatives = (recorded.toAlternatives || []).map(id => remap.get(id)).filter(Boolean);
+    const key = transitionKey(from, recorded.action && recorded.action.key);
+    if (position.has(key)) {
+      if (recorded.status !== 'observed') continue;
+      const index = position.get(key);
+      const edge = { ...transitions[index] };
+      if (edge.toAlternatives) edge.toAlternatives = [...edge.toAlternatives];
+      if (edge.status !== 'verified') { edge.status = 'observed'; edge.blockedReason = null; }
+      for (const id of [...alternatives.filter(id => id !== to), to]) observeTarget(edge, id);
+      edge.lastObservedAt = recorded.lastObservedAt || edge.lastObservedAt;
+      transitions[index] = edge;
+      carried += 1;
+      continue;
+    }
+    // The crawl just listed this screen's controls and this one is not among them, so
+    // the app no longer has it. Back navigation is exempt: a crawl never lists the
+    // browser's own back button.
+    if (crawled.has(from) && !(recorded.action && recorded.action.kind === 'history')) continue;
+    const edge = { ...recorded, id: nextTransitionId(), from, to };
+    if (recorded.toAlternatives) edge.toAlternatives = alternatives;
+    position.set(key, transitions.length);
+    transitions.push(edge);
+    carried += 1;
+  }
+
+  // A screen a recording reached by URL is somewhere a route can start; the crawl's
+  // entrypoints come from config and would not know about it.
+  const entrypoints = [...map.entrypoints];
+  for (const id of previous.entrypoints || []) {
+    const state = (previous.states || []).find(entry => entry.id === id);
+    const mapped = remap.get(id);
+    if (state && state.source === 'record' && mapped && !entrypoints.includes(mapped)) entrypoints.push(mapped);
+  }
+
+  return {
+    map: {
+      ...map, states, transitions, entrypoints,
+      ...(previous.recordings && previous.recordings.length ? { recordings: previous.recordings } : {}),
+    },
+    carried,
+  };
+}
+
+/**
  * Coverage by status. `notExecuted` deliberately excludes `observed`: those edges *were*
  * executed, just not by this tool, and filing them under "never pressed" would understate
  * what is known about the app by exactly the amount a recording contributed.

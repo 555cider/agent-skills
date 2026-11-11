@@ -197,9 +197,11 @@ The script wires each selected skill in two steps:
    `skills/<skill-name>/` checkout instead. `~/.agents/skills/` is the
    [agentskills.io](https://agentskills.io/specification) runtime aggregation
    path; tool-neutral.
-2. `~/.claude/skills/<skill-name>/`, `~/.codex/skills/<skill-name>/` →
+2. `~/.claude/skills/<skill-name>/`, `$CLAUDE_CONFIG_DIR/skills/<skill-name>/`
+   (when that variable is set), `${CODEX_HOME:-~/.codex}/skills/<skill-name>/` →
    symlink (or NTFS junction on Windows) to `~/.agents/skills/<skill-name>/`.
-   Each harness is auto-detected; missing harnesses are skipped.
+   Each harness dir is auto-detected; missing ones are skipped, and a dir named
+   by both variables is linked once.
 
 Update a split-based install with:
 
@@ -221,9 +223,12 @@ split branch exists, use local mode:
 
 Local mode does not read `origin` or clone `split/<skill-name>`. It
 synchronizes the current checkout's `skills/<skill-name>/` into
-`~/.agents/skills/<skill-name>/`, removes stale files there, and preserves
-an existing `.git` directory if the target is already an installed split
-clone. Claude/Codex harness links still point at `~/.agents/skills/<skill-name>/`.
+`~/.agents/skills/<skill-name>/`: tracked files and untracked files that
+`.gitignore` does not exclude (outside a git checkout, every file except
+`__pycache__`, `.pytest_cache`, `node_modules` and `.venv`). Files the checkout
+no longer has are removed; the target's `.git` (an installed split clone) and
+`.venv` (agent-memory's private venv) are kept. Claude/Codex harness links
+still point at `~/.agents/skills/<skill-name>/`.
 
 For `agent-memory`, `--shadow` or `--primary` also performs the requested
 Claude/Codex/OpenCode integration after installation. It installs the managed
@@ -237,14 +242,17 @@ storage, trust, provider, and lifecycle contracts.
 
 The `split/<skill-name>` branches are produced by
 [`.github/workflows/split.yml`](.github/workflows/split.yml) on every push
-to `main` that touches `skills/`, using `git subtree split`. Maintainers
-edit only `main` in this monorepo — the split branches are derived
+to `main` that touches `skills/`, using `git subtree split`. A push splits the
+skills it changed plus any whose split branch does not match `skills/<name>`
+(an earlier failed run); a manual run or a force-push splits every skill.
+Maintainers edit only `main` in this monorepo — the split branches are derived
 artifacts and must never be committed to directly. The same workflow runs on
-pull requests too: every skill's `tests/run.sh`, `tests/install.sh` and the
-validators on Ubuntu, plus the shell suites (`tests/install.sh`, worktree-cycle,
-peer-review, step-back) on Ubuntu, macOS (`/bin/bash` 3.2) and Windows (Git
-Bash). Only the split job has write access, and a pull request run can never
-cancel a split of `main`.
+pull requests too: the validators (skill packages, evals, plugin manifests and
+`hooks/hooks.json`) and the remaining skills' `tests/run.sh` on Ubuntu, plus
+`tests/install.sh` and the worktree-cycle, step-back, peer-review and
+agent-memory suites on Ubuntu, macOS (`/bin/bash` 3.2) and Windows (Git Bash).
+Only the split job has write access, and a pull request run can never cancel a
+split of `main`.
 
 The script is idempotent — safe to re-run after pulling new skills into
 the monorepo. If `~/.agents/skills/<name>/` is already a clone, it's
@@ -277,10 +285,13 @@ clear error rather than silently degrading to a copy.
 For each skill, this removes:
 
 - `~/.claude/skills/<name>` (harness link, if present)
-- `~/.codex/skills/<name>` (harness link, if present)
+- `$CLAUDE_CONFIG_DIR/skills/<name>` (harness link, if the variable is set and
+  the link is present)
+- `${CODEX_HOME:-~/.codex}/skills/<name>` (harness link, if present)
 - `~/.agents/skills/<name>/` (the installed skill directory, if present)
 - for `agent-memory` only: the hooks `--shadow`/`--primary` wrote into
-  `~/.claude/settings.json` and `~/.codex/hooks.json` and the OpenCode plugin,
+  the Claude `settings.json` and Codex `hooks.json` (under `$CLAUDE_CONFIG_DIR` and
+  `$CODEX_HOME` when set, else `~/.claude` and `~/.codex`) and the OpenCode plugin,
   removed first by the skill's own `integrate --mode off`, one harness at a time
   and only where its file carries an agent-memory entry; then the managed
   `~/.local/bin/agent-memory` launcher. If the hooks cannot be removed the skill

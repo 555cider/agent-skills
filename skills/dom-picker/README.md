@@ -31,7 +31,7 @@ Claim and report work through the ledger:
 
 ```bash
 node scripts/dom-picker.mjs queue --session=/tmp/.../session.json
-node scripts/dom-picker.mjs claim --session=/tmp/.../session.json --consumer=my-agent
+node scripts/dom-picker.mjs claim --session=/tmp/.../session.json --consumer=my-agent --wait-ms=60000
 printf '%s' '{"state":"locating","message":"Locating the owning component"}' |
   node scripts/dom-picker.mjs status --request=/tmp/.../request.json --input=-
 ```
