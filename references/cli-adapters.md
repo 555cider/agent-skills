@@ -8,16 +8,20 @@ needs to know when picking or troubleshooting.
 | CLI | sandbox posture | notes |
 |---|---|---|
 | `codex` | sandbox-enforced read-only | Default reviewer. |
-| `claude` | permission-system gated | Relies on the CLI's interactive permission grants. |
+| `claude` | plan mode, read-only tools | Headless `-p` in `plan` permission mode with only `Read`, `Glob`, `Grep` and an empty strict MCP config — no edit, shell, or MCP tools. |
 | `opencode` | temporary read-only agent | Runs headlessly with a generated `peer-review-readonly-*` agent that denies edit/shell/network/delegation tools. Model names without a slash are automatically prefixed with `opencode/`. ANSI color codes are stripped from output. |
-| `agy` | sandbox-restricted | Runs headlessly via `agy -p` with `--sandbox`. Forward model flag if configured. |
+| `agy` | sandbox-restricted | Runs headlessly via `agy -p` with `--sandbox` in plan mode. Forward model flag if configured. |
 
 The wrapper feeds the prompt over stdin where the CLI supports it; `agy`
 receives the prompt through `-p` (its headless prompt interface). Because the
-whole prompt is passed as an `agy` argv value, a very large plan (approaching
-the OS `ARG_MAX`, ~1–2 MB) can fail with `E2BIG` on `agy` alone; the other
-CLIs read the prompt from stdin and are unaffected. Prefer a stdin-capable
-reviewer for very large plans. Exact flag spellings, model selection, and
+whole prompt is passed as an `agy` argv value, the command-line limit applies
+to `agy` alone; the other CLIs read the prompt from stdin and are unaffected.
+On Windows (Git Bash/MSYS) the whole command line is capped at 32,767
+characters, roughly a 30k-character plan once the review instructions are
+added; the wrapper estimates the line and reports
+`ERROR=<reviewer> prompt too large ...` (exit 2 when it is the only reviewer)
+without starting `agy`. On macOS/Linux the cap is `ARG_MAX` (~1–2 MB, `E2BIG`).
+Prefer a stdin-capable reviewer for large plans. Exact flag spellings, model selection, and
 effort plumbing live in `build_cmd()` — read the function, do not mirror its
 argv here.
 

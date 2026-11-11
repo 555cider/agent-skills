@@ -2,7 +2,7 @@
 name: peer-review
 description: Obtain an external second opinion on a plan, spec, or options when the user asks for peer review or another reviewer; also handle reviewer list/help requests. Do not invoke external reviewers for ordinary recommendations, internal double-checks, or host-agent code review.
 license: MIT
-compatibility: Requires Bash 4 or newer, git, Python 3 for profile config, and at least one supported reviewer CLI.
+compatibility: Requires Bash 4 or newer, git, Python 3.7+ for profile config, and at least one supported reviewer CLI.
 ---
 
 # Peer Review
@@ -43,7 +43,7 @@ adapt headers/labels to match.
 | `codex` `claude` `opencode` `agy` | a known CLI |
 | `<profile>` | a profile name from JSON config |
 | `2` / `1-3` | 1-based index / range into the profile list (config loaded) |
-| `all` | every profile (or every CLI on PATH); pass `--exclude-cli=<host>` from a slash command unless the user explicitly opts into self-review (step 3) |
+| `all` | every profile (or every CLI on PATH) except host-backed ones when `--host` is given; `all,0` adds the host back |
 | `0` | self — host CLI as a fresh-context reviewer; weaker signal when models overlap |
 
 > See: references/cli-adapters.md, references/profile-config.md
@@ -107,8 +107,7 @@ If no file path:
 - If confirmed, pass the plan content to the script over stdin using
   `--stdin-plan`. The script implies `--source=chat`, owns repo-local temp
   file creation and cleanup, and validates reviewer arguments before consuming
-  stdin. Never create a chat temp file yourself unless the script lacks
-  `--stdin-plan`.
+  stdin.
 - If no candidate at all: tell the user no plan was found in chat and ask for a file path. Stop.
 
 ### 3. Invoke the script
@@ -125,21 +124,18 @@ For chat-sourced input, pipe the exact plan content to:
 scripts/run-peer-review.sh --stdin-plan [--reviewer=<list>] [--focus=<v>] [--timeout=<seconds>] --host=<cli>
 ```
 
-Pass `--host=<your-cli>` (`--host=claude` from Claude Code,
-`--host=codex` from Codex CLI) **whenever `--reviewer=0` is in the list** —
-the script needs it to resolve `0` to the host CLI and exits with an error
-if it's missing. For `all`-expansion you still pass `--exclude-cli=<host>`
-(see below) — `--host` does not double as that filter today. Passing
-`--host` in other cases is harmless and recommended for consistency.
+**Always pass `--host=<your-cli>`** (`claude` from Claude Code, `codex` from
+Codex CLI). The script needs it to resolve `0`, and it keeps self-review
+deliberate: an omitted `--reviewer` defaults to `codex` or, when that is the
+host, the first available non-host reviewer; `all` skips host-backed
+reviewers. `--exclude-cli=<cli>` drops one more CLI from `all`.
 
-Reviewer defaults to `codex`, except the script avoids an omitted-reviewer
-default that would match `--host` when another reviewer is available.
-**Avoid accidental self-review** — exclude the host model from the list unless
-the user explicitly opts in via `0` or by name:
-- Inside Claude Code: keep `codex` (default), exclude `claude`. Add others
-  freely (`--reviewer=codex,opencode,agy`).
-- Inside Codex CLI: pass `--host=codex`; omit `--reviewer` for the script's
-  best non-host default, or prefer `--reviewer=claude` when available.
+**Self-review opt-in.** If the user asks for it — `--reviewer=0`, the host
+CLI by name, or "all reviewers including you" (`--reviewer=all,0`) — forward
+it verbatim. Self-review is a deliberate choice.
+
+**Reviewer independence:**
+
 - Reviewers sharing a backing model give weaker signal when paired
   (e.g. `codex` + `opencode` if opencode is configured to a GPT-family model).
   Mix vendors when in doubt.
@@ -148,21 +144,6 @@ the user explicitly opts in via `0` or by name:
   `WARN=reviewer_backend_overlap`. Different effort settings do not make those
   profiles independent. Run every profile the user requested, but count an
   overlapping group as one signal when synthesizing agreement.
-
-**Self-review opt-in.** If the user passes `--reviewer=0` (or names the
-host CLI directly, e.g. `--reviewer=claude` from Claude Code), forward it
-verbatim — do not strip it. Self-review is a deliberate choice.
-
-**Handling `all`:** when the user passes `--reviewer=all` from a slash
-command (or natural language equivalent), pass `--exclude-cli=<host>` to
-the script along with `--reviewer=all` so the script filters by backing
-CLI (works correctly whether or not a config defines profiles):
-- Claude Code → `--reviewer=all --exclude-cli=claude`
-- Codex CLI   → `--reviewer=all --exclude-cli=codex`
-
-If the user explicitly says they want self-review included (e.g. "all reviewers",
-"claude 포함해서"), omit `--exclude-cli` — the script then expands `all`
-without filtering.
 
 The script writes machine-readable lines to stdout. Emission order is
 `WARN=` (if any, before reviewers run), then one `REVIEW=` per successful
@@ -176,7 +157,10 @@ REVIEW=<reviewer-name> <absolute-path-to-saved-review>
 EXCLUDE_NOTE=<optional one-line message about .git/info/exclude update>
 ```
 
-Failures (per reviewer) go to stderr as `ERROR=<reviewer> <message>`.
+Failures (per reviewer) go to stderr as `ERROR=<reviewer> <message>`; a
+reviewer whose command cannot be built (CLI too old, `agy` prompt too large
+for the Windows command line) is reported that way before any reviewer starts
+and does not stop the others.
 Timeouts are reported as `timed out after Ns`; surface that directly instead
 of waiting, retrying silently, or summarizing it as an ordinary reviewer error.
 The script exits 0 if **at least one** reviewer succeeded; non-zero only
@@ -245,8 +229,8 @@ The script's exit codes drive how step 4 reports failure to the user.
 
 ## Common mistakes
 
-- **Omitting `--host` with `--reviewer=0`** (or a named self-review) — the
-  script can't resolve `0` and exits 2. Always forward `--host=<your-cli>`.
+- **Omitting `--host`** — `0` exits 2, and the default and `all` can no
+  longer avoid the host. Always forward `--host=<your-cli>`.
 - **`--list` instead of the `list` subcommand** — only the positional `list`
   is accepted; `--list` errors as an unknown flag.
 - **Hand-writing a chat temp file** — pipe chat-sourced plans through

@@ -51,8 +51,9 @@ different CLIs share a provider or model family.
 2. `${XDG_CONFIG_HOME:-~/.config}/peer-review/config.json` (global)
 3. none
 
-Requires `python3` to parse. Without it, the script logs a warning and
-falls back to the no-config behavior.
+Requires Python 3.7+ to parse (the first of `python3`, `python` that runs).
+Without it, the script logs a warning and falls back to the no-config
+behavior.
 
 ## Profile-name rules
 

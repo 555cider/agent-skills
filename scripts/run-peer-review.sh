@@ -34,11 +34,12 @@
 #   Schema: { "reviewers": { "<profile>": { "cli": "...", "model": "...", "effort": "..." } } }
 #   `cli` may be omitted iff the profile name itself is one of the known CLI names.
 #   Same CLI may back several profiles (e.g., codex-deep + codex-fast).
-#   Requires python3 to parse; without it, config is ignored with a stderr warning.
+#   Requires Python 3.7+ (python3 or python) to parse; without it, config is ignored
+#   with a stderr warning.
 #
 # Shortcut: --reviewer=all expands to every defined profile (or every CLI on PATH if no
-# config). --exclude-cli=<cli> filters that expansion (used by the slash command to
-# avoid self-review on the host model).
+# config). With --host=<cli> the expansion skips host-backed reviewers; name them (or 0)
+# alongside `all` to include them. --exclude-cli=<cli> drops one more CLI from it.
 #
 # Exit codes:
 #   0  ok (at least one reviewer succeeded; partial failures reported via ERROR= lines)
@@ -90,6 +91,7 @@ usage:
   $prog --help
 
 reviewers: <cli>, profile, index/range, all, or 0 with --host=<cli>
+           (all skips host-backed reviewers when --host is given)
 focus: all, feasibility, correctness, assumptions, repo-fit, choice
 timeout: seconds per reviewer, default ${PEER_REVIEW_TIMEOUT_SECONDS:-300} (override with --timeout or PEER_REVIEW_TIMEOUT_SECONDS)
 stdout: REVIEW=<reviewer> <absolute-path>, WARN=<code> ..., EXCLUDE_NOTE=<message>
@@ -250,14 +252,34 @@ declare -A PROFILE_MODEL=()
 declare -A PROFILE_EFFORT=()
 CONFIG_PATH=""
 
-# load_config_from <path>: parse JSON via python3 and populate PROFILE_* arrays.
+# find_python: set PYTHON to the first python3/python that actually runs Python 3.7+.
+# A bare `command -v` is not enough: on Windows `python3` can be the Microsoft Store
+# stub, which is on PATH and fails when run. Same probe as worktree-cycle's
+# start-worktree.sh.
+PYTHON=""
+PYTHON_PROBED=0
+find_python() {
+  local candidate
+  if [ "$PYTHON_PROBED" -eq 0 ]; then
+    PYTHON_PROBED=1
+    for candidate in python3 python; do
+      if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; assert sys.version_info >= (3, 7)' >/dev/null 2>&1; then
+        PYTHON="$candidate"
+        break
+      fi
+    done
+  fi
+  [ -n "$PYTHON" ]
+}
+
+# load_config_from <path>: parse JSON via Python and populate PROFILE_* arrays.
 # Returns 0 on success, non-zero on parse failure (caller may try the next path).
 load_config_from() {
   local path="$1"
   [ -f "$path" ] || return 1
 
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "warning: python3 not found; ignoring config at $path" >&2
+  if ! find_python; then
+    echo "warning: Python 3.7+ not found (tried python3, python); ignoring config at $path" >&2
     return 1
   fi
 
@@ -265,10 +287,17 @@ load_config_from() {
   out_tmp="$(mktemp -t peer-review-cfg-out-XXXXXX)"
   err_tmp="$(mktemp -t peer-review-cfg-err-XXXXXX)"
 
-  if ! python3 - "$path" >"$out_tmp" 2>"$err_tmp" <<'PYEOF'
+  # The program goes in -c, not on stdin: `python -` fed a heredoc has been seen
+  # to hang in Git Bash (Python 3.13 pyrepl probing a console that is not there).
+  local program
+  IFS= read -r -d '' program <<'PYEOF' || true
 import json
 import re
 import sys
+
+# Text-mode stdout on Windows writes "\r\n"; the shell reads "\n"-terminated records,
+# so a CR would stick to the last field (effort) and reach the reviewer CLI argv.
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 
 KNOWN_CLIS = {"codex", "claude", "opencode", "agy"}
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -279,7 +308,7 @@ RESERVED = {"all"}
 
 path = sys.argv[1]
 try:
-    with open(path) as f:
+    with open(path, encoding="utf-8-sig") as f:
         cfg = json.load(f)
 except Exception as e:
     print(f"parse error: {e}", file=sys.stderr)
@@ -320,7 +349,8 @@ for name, p in reviewers.items():
         continue
     print("\x1f".join([name, cli, model, effort]))
 PYEOF
-  then
+
+  if ! "$PYTHON" -c "$program" "$path" >"$out_tmp" 2>"$err_tmp" </dev/null; then
     echo "warning: failed to parse $path:" >&2
     [ -s "$err_tmp" ] && sed 's/^/  /' "$err_tmp" >&2
     rm -f "$out_tmp" "$err_tmp"
@@ -331,6 +361,8 @@ PYEOF
   [ -s "$err_tmp" ] && sed 's/^/config: /' "$err_tmp" >&2
 
   while IFS=$'\037' read -r name cli model effort; do
+    # Belt and braces for the newline="\n" above: never let a CR reach argv.
+    effort="${effort%$'\r'}"
     [ -n "$name" ] || continue
     PROFILE_NAMES+=("$name")
     PROFILE_CLI[$name]="$cli"
@@ -572,13 +604,18 @@ for r in "${_RAW[@]}"; do
   fi
 
   # `all` shortcut: expand to every defined profile (or every known CLI on PATH
-  # if no config). EXCLUDE_CLI filters this expansion only — explicit names are
-  # always honored.
+  # if no config). The host CLI and EXCLUDE_CLI filter this expansion only —
+  # explicit names (and 0) are always honored, so `all,0` or `all,<host>` opts
+  # the host back in.
   if [ "$r" = "all" ]; then
     if [ ${#PROFILE_NAMES[@]} -gt 0 ]; then
       for p in "${PROFILE_NAMES[@]}"; do
         cli="$(profile_cli_for "$p")"
         if [ -n "$EXCLUDE_CLI" ] && [ "$cli" = "$EXCLUDE_CLI" ]; then continue; fi
+        if [ -n "$HOST_CLI" ] && [ "$cli" = "$HOST_CLI" ]; then
+          echo "all: skipping $p (cli=$cli is the host; name it or add 0 to include it)" >&2
+          continue
+        fi
         if is_cli_available "$cli"; then
           add_unique "$p"
           mark_host_warning "$p"
@@ -589,6 +626,10 @@ for r in "${_RAW[@]}"; do
     else
       for c in "${ALL_CLIS[@]}"; do
         [ "$c" = "$EXCLUDE_CLI" ] && continue
+        if [ "$c" = "$HOST_CLI" ]; then
+          echo "all: skipping $c (the host; name it or add 0 to include it)" >&2
+          continue
+        fi
         if is_cli_available "$c"; then
           add_unique "$c"
           mark_host_warning "$c"
@@ -764,23 +805,50 @@ declare -A FINALIZED=()
 declare -A PIDS=()
 CLEANED_UP=0
 
+IS_WINDOWS_SHELL=0
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) IS_WINDOWS_SHELL=1 ;;
+esac
+
 kill_process_tree() {
   local pid="$1"
   local signal="${2:-TERM}"
   local child
   [ -n "$pid" ] || return 0
 
-  # On Git Bash / MSYS there is no pgrep, and `kill` cannot reach the grandchild
-  # processes a reviewer CLI (a native .exe) spawns. Use taskkill to kill the
-  # whole tree by PID. //PID //T //F are escaped so MSYS does not path-convert.
-  case "$(uname -s 2>/dev/null)" in
-    MINGW*|MSYS*|CYGWIN*)
-      if command -v taskkill >/dev/null 2>&1; then
-        MSYS2_ARG_CONV_EXCL='*' taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
-        return 0
+  # On Git Bash / MSYS there is no pgrep, `kill` cannot reach the native .exe a
+  # reviewer CLI starts, and `taskkill /T` does not follow MSYS parentage (a
+  # fork is not a Windows child). So walk the MSYS tree with `ps`, then kill
+  # every member by its Windows PID — /T for anything native below it — and by
+  # its MSYS PID. With argument conversion off the options are /PID, not //PID.
+  if [ "$IS_WINDOWS_SHELL" -eq 1 ]; then
+    local members m_pid m_win
+    members="$(ps -e 2>/dev/null | awk -v root="$pid" '
+      NR > 1 {
+        o = ($1 ~ /^[0-9]+$/) ? 0 : 1
+        n++; id[n] = $(1+o); par[n] = $(2+o); win[n] = $(4+o)
+      }
+      END {
+        # Root first, then each generation: a parent killed after its child
+        # could still react to that death (run its next command).
+        want[root] = 1
+        for (i = 1; i <= n; i++) if (id[i] == root) order[++k] = i
+        do {
+          grew = 0
+          for (i = 1; i <= n; i++)
+            if (!(id[i] in want) && (par[i] in want)) { want[id[i]] = 1; order[++k] = i; grew = 1 }
+        } while (grew)
+        for (j = 1; j <= k; j++) print id[order[j]], win[order[j]]
+      }')" || members=""
+    [ -n "$members" ] || members="$pid -"
+    while read -r m_pid m_win; do
+      if [ "$m_win" != "-" ] && command -v taskkill >/dev/null 2>&1; then
+        MSYS2_ARG_CONV_EXCL='*' taskkill /PID "$m_win" /T /F >/dev/null 2>&1 || true
       fi
-      ;;
-  esac
+      kill -s "$signal" "$m_pid" 2>/dev/null || true
+    done <<<"$members"
+    return 0
+  fi
 
   if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r child; do
@@ -819,7 +887,7 @@ cleanup() {
   # in-flight prompt/marker files; PROMPT_FILE is removed above and timeout
   # markers are removed locally in run_with_timeout.
   for p in "${REVIEWERS_LIST[@]}"; do
-    rm -f "${TMP_OUTS[$p]:-}" "${TMP_ERRS[$p]:-}" 2>/dev/null || true
+    rm -f "${TMP_OUTS[$p]:-}" "${TMP_OUTS[$p]:-}.clean" "${TMP_ERRS[$p]:-}" 2>/dev/null || true
     if [ "${FINALIZED[$p]:-0}" -eq 0 ] && [ -n "${OUT_FILES[$p]:-}" ]; then
       rm -f "${OUT_FILES[$p]}" 2>/dev/null || true
     fi
@@ -915,13 +983,18 @@ run_with_timeout() {
   local seconds="$1"
   shift
 
-  if command -v timeout >/dev/null 2>&1; then
-    timeout -k 5 "$seconds" "$@"
-    return $?
-  fi
-  if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout -k 5 "$seconds" "$@"
-    return $?
+  # Git Bash ships /usr/bin/timeout, but it signals only the MSYS process: a
+  # native reviewer .exe and its children outlive it. Use the watchdog there,
+  # which kills the whole Windows process tree.
+  if [ "$IS_WINDOWS_SHELL" -eq 0 ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout -k 5 "$seconds" "$@"
+      return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+      gtimeout -k 5 "$seconds" "$@"
+      return $?
+    fi
   fi
 
   local marker watcher_pid cmd_pid status
@@ -939,8 +1012,19 @@ run_with_timeout() {
     wait "$sleep_pid"
     if kill -0 "$cmd_pid" 2>/dev/null; then
       : > "$marker"
+      # The command's exit makes the caller stop this watcher. Finish the
+      # tree kill first (or a grandchild survives), then honor the stop
+      # instead of sitting out the grace period.
+      stop_requested=0
+      trap 'stop_requested=1' TERM INT HUP
       kill_process_tree "$cmd_pid" TERM
-      sleep 5
+      [ "$stop_requested" -eq 0 ] || exit 0
+      trap 'kill $sleep_pid 2>/dev/null; exit 0' TERM INT HUP
+      # Grace period in the background so the trap above can cut it short
+      # once the command has exited.
+      sleep 5 &
+      sleep_pid=$!
+      wait "$sleep_pid"
       kill_process_tree "$cmd_pid" KILL
     fi
   ) &
@@ -962,6 +1046,9 @@ run_with_timeout() {
   return "$status"
 }
 
+# Build failures (below) set BUILD_ERROR and return non-zero; they must not
+# exit, because build_cmd runs before any reviewer and a failed build only
+# drops that one reviewer.
 ensure_opencode_readonly_agent() {
   [ -n "$OPENCODE_AGENT_FILE" ] && return 0
 
@@ -971,8 +1058,8 @@ ensure_opencode_readonly_agent() {
   [ -d "$(dirname "$dir")" ] || OPENCODE_CONFIG_DIR_CREATED=1
   [ -d "$dir" ] || OPENCODE_AGENT_DIR_CREATED=1
   mkdir -p "$dir" || {
-    echo "could not create opencode read-only agent directory: $dir" >&2
-    exit 2
+    BUILD_ERROR="could not create opencode read-only agent directory: $dir"
+    return 2
   }
   name="peer-review-readonly-$$"
   file="$dir/$name.md"
@@ -981,10 +1068,10 @@ ensure_opencode_readonly_agent() {
     file="$dir/$name.md"
   fi
   ( set -C; : > "$file" ) 2>/dev/null || {
-    echo "could not create opencode read-only agent file: $file" >&2
-    exit 2
+    BUILD_ERROR="could not create opencode read-only agent file: $file"
+    return 2
   }
-  cat > "$file" <<'EOF'
+  cat > "$file" <<'EOF' || { rm -f "$file"; BUILD_ERROR="could not write opencode read-only agent file: $file"; return 2; }
 ---
 description: Read-only peer reviewer for implementation plans, specs, and design choices.
 mode: primary
@@ -1004,10 +1091,56 @@ EOF
   OPENCODE_AGENT_NAME="$name"
 }
 
-# Build the headless invocation for the named profile. Looks up the backing CLI
-# and any model/effort settings from the profile registry; appends model/effort
-# flags where the CLI exposes them (effort is silently ignored where unsupported,
-# mirroring the CLI's own behavior).
+# `<cli> --help` output, fetched once per CLI so several profiles backed by the
+# same CLI do not each pay for it. Populated in the main shell (never inside
+# $(...), which would drop the cache).
+declare -A CLI_HELP=()
+load_cli_help() {
+  local cli="$1"
+  [ -z "${CLI_HELP[$cli]+set}" ] || return 0
+  case "$cli" in
+    codex) CLI_HELP[$cli]="$(codex exec --help 2>&1 || true)" ;;
+    *)     CLI_HELP[$cli]="$("$cli" --help 2>&1 || true)" ;;
+  esac
+}
+
+# require_flags <cli> <what> <flag>...: fail the build unless --help lists every flag.
+require_flags() {
+  local cli="$1" what="$2" flag
+  shift 2
+  for flag in "$@"; do
+    grep -qF -- "$flag" <<<"${CLI_HELP[$cli]}" || {
+      BUILD_ERROR="$cli CLI lacks required $what flag: $flag"
+      return 3
+    }
+  done
+}
+
+# Windows caps a whole command line at 32,767 UTF-16 units, program path
+# included. agy is the one adapter that takes the prompt as an argument, so a
+# large plan fails there with an opaque spawn error. windows_cmdline_length
+# <args...> estimates the line MSYS builds: each argument quoted and
+# space-separated, with every `"` and `\` possibly escaped. Characters are
+# counted in a UTF-8 locale so a Korean plan is not counted in bytes.
+WINDOWS_CMDLINE_MAX=32767
+windows_cmdline_length() {
+  local LC_ALL=C.UTF-8
+  local total arg specials prog
+  prog="$(command -v "$1" 2>/dev/null || printf '%s' "$1")"
+  total=$(( ${#prog} + 3 ))
+  shift
+  for arg in "$@"; do
+    specials="${arg//[^\"\\]/}"
+    total=$(( total + ${#arg} + ${#specials} + 3 ))
+  done
+  printf '%s' "$total"
+}
+
+# Build the headless invocation for the named profile into CMD. Looks up the
+# backing CLI and any model/effort settings from the profile registry; appends
+# model/effort flags where the CLI exposes them (effort is silently ignored
+# where unsupported, mirroring the CLI's own behavior). On failure sets
+# BUILD_ERROR and returns 3 (CLI too old for the read-only flags) or 2.
 build_cmd() {
   local profile="$1"
   local cli model effort
@@ -1016,16 +1149,11 @@ build_cmd() {
   effort="${PROFILE_EFFORT[$profile]:-}"
 
   CMD=()
+  BUILD_ERROR=""
+  load_cli_help "$cli"
   case "$cli" in
     codex)
-      local codex_help
-      codex_help="$(codex exec --help 2>&1 || true)"
-      for required in --sandbox --ephemeral --ignore-user-config --ignore-rules; do
-        grep -qF -- "$required" <<<"$codex_help" || {
-          echo "codex CLI lacks required read-only reviewer flag: $required" >&2
-          return 3
-        }
-      done
+      require_flags codex "read-only reviewer" --sandbox --ephemeral --ignore-user-config --ignore-rules || return
       CMD=(codex exec --sandbox read-only --ephemeral --ignore-user-config --ignore-rules)
       if [ -z "$REPO_ROOT" ]; then
         CMD+=(--skip-git-repo-check)
@@ -1034,57 +1162,64 @@ build_cmd() {
       [ -n "$effort" ] && CMD+=(-c "model_reasoning_effort=$effort")
       ;;
     claude)
-      local claude_help
-      claude_help="$(claude --help 2>&1 || true)"
-      for required in --permission-mode --tools --strict-mcp-config --mcp-config; do
-        grep -qF -- "$required" <<<"$claude_help" || {
-          echo "claude CLI lacks required read-only reviewer flag: $required" >&2
-          return 3
-        }
-      done
+      require_flags claude "read-only reviewer" --permission-mode --tools --strict-mcp-config --mcp-config || return
       if [ -z "$CLAUDE_MCP_CONFIG" ]; then
-        CLAUDE_MCP_CONFIG="$(mktemp "$OUT_DIR/.peer-review-empty-mcp-XXXXXX")"
-        printf '{"mcpServers":{}}\n' >"$CLAUDE_MCP_CONFIG"
+        CLAUDE_MCP_CONFIG="$(mktemp "$OUT_DIR/.peer-review-empty-mcp-XXXXXX")" \
+          && printf '{"mcpServers":{}}\n' >"$CLAUDE_MCP_CONFIG" \
+          || { BUILD_ERROR="could not write the empty claude MCP config under $OUT_DIR"; return 2; }
       fi
       CMD=(claude -p --permission-mode plan --tools Read,Glob,Grep \
         --mcp-config "$CLAUDE_MCP_CONFIG" --strict-mcp-config)
-      grep -qF -- "--no-session-persistence" <<<"$claude_help" && CMD+=(--no-session-persistence)
+      grep -qF -- "--no-session-persistence" <<<"${CLI_HELP[claude]}" && CMD+=(--no-session-persistence)
       [ -n "$model" ] && CMD+=(--model "$model")
-      [ -n "$effort" ] && grep -qF -- "--effort" <<<"$claude_help" && CMD+=(--effort "$effort")
+      [ -n "$effort" ] && grep -qF -- "--effort" <<<"${CLI_HELP[claude]}" && CMD+=(--effort "$effort")
       ;;
     opencode)
-      local opencode_help
-      opencode_help="$(opencode --help 2>&1 || true)"
-      grep -qF -- "--pure" <<<"$opencode_help" || {
-        echo "opencode CLI lacks required isolated reviewer flag: --pure" >&2
-        return 3
-      }
-      ensure_opencode_readonly_agent
+      require_flags opencode "isolated reviewer" --pure || return
+      ensure_opencode_readonly_agent || return
       CMD=(opencode --pure run --agent "$OPENCODE_AGENT_NAME")
       [ -n "$model" ] && CMD+=(-m "$model")
       [ -n "$effort" ] && CMD+=(--variant "$effort")
       ;;
     agy)
-      local agy_help
-      agy_help="$(agy --help 2>&1 || true)"
-      for required in --sandbox --mode; do
-        grep -qF -- "$required" <<<"$agy_help" || {
-          echo "agy CLI lacks required read-only reviewer flag: $required" >&2
-          return 3
-        }
-      done
+      require_flags agy "read-only reviewer" --sandbox --mode || return
       CMD=(agy -p "$(cat "$PROMPT_FILE")" --sandbox --mode plan)
       [ -n "$model" ] && CMD+=(--model "$model")
+      if [ "$IS_WINDOWS_SHELL" -eq 1 ]; then
+        local len
+        len="$(windows_cmdline_length "${CMD[@]}")"
+        if [ "$len" -ge "$WINDOWS_CMDLINE_MAX" ]; then
+          BUILD_ERROR="prompt too large for the Windows command line (~$len of $WINDOWS_CMDLINE_MAX chars; agy takes the prompt as an argument) — use a stdin reviewer (codex, claude, opencode) or a shorter plan"
+          CMD=()
+          return 2
+        fi
+      fi
       ;;
   esac
   # Explicit success — `[ test ] && cmd` constructs would propagate the test's
-  # non-zero exit when the test fails, and `set -e` would abort the caller.
+  # non-zero exit when the test fails.
   return 0
 }
 
+# --- build every command before spawning any reviewer ---
+# A failed build drops only that reviewer (ERROR= now, status kept for the exit
+# code); building inside the spawn loop would abort the run while earlier
+# reviewers were already running.
+declare -A CMD_LINES=()
+declare -A STATUSES=()
+for p in "${REVIEWERS_LIST[@]}"; do
+  if build_cmd "$p"; then
+    CMD_LINES[$p]="$(printf '%q ' "${CMD[@]}")"
+  else
+    STATUSES[$p]=$?
+    echo "ERROR=$p ${BUILD_ERROR:-could not build the reviewer command}" >&2
+  fi
+done
+
 # --- spawn each reviewer in background ---
 for p in "${REVIEWERS_LIST[@]}"; do
-  build_cmd "$p"
+  [ -n "${CMD_LINES[$p]:-}" ] || continue
+  eval "CMD=(${CMD_LINES[$p]})"
   (
     cd "${REPO_ROOT:-$PWD}"
     run_with_timeout "$REVIEW_TIMEOUT" "${CMD[@]}" > "${TMP_OUTS[$p]}" 2> "${TMP_ERRS[$p]}" < "$PROMPT_FILE"
@@ -1093,8 +1228,8 @@ for p in "${REVIEWERS_LIST[@]}"; do
 done
 
 # --- wait for all (don't let one failure abort the wait loop) ---
-declare -A STATUSES=()
 for p in "${REVIEWERS_LIST[@]}"; do
+  [ -n "${PIDS[$p]:-}" ] || continue
   set +e
   wait "${PIDS[$p]}"
   STATUSES[$p]=$?
@@ -1103,22 +1238,27 @@ for p in "${REVIEWERS_LIST[@]}"; do
 done
 
 # --- ANSI escape stripper (defensive — opencode in particular emits color codes) ---
+# sed only: a Python text-mode rewrite turns LF into CRLF on Windows. On failure
+# the review keeps its original bytes and the temp copy is removed.
 strip_ansi() {
   local f="$1"
   local tmp="${f}.clean"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import sys, re; sys.stdout.write(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", sys.stdin.read()))' < "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f"
+  local esc
+  esc="$(printf '\033')"
+  if sed "s/${esc}\\[[0-9;?]*[A-Za-z]//g" "$f" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$f"
   else
-    local esc
-    esc="$(printf '\033')"
-    sed "s/${esc}\\[[0-9;?]*[A-Za-z]//g" "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f"
+    rm -f "$tmp"
   fi
+  return 0
 }
 
 # --- process results: emit REVIEW= per success, ERROR= per failure ---
 ANY_OK=0
 for p in "${REVIEWERS_LIST[@]}"; do
   status="${STATUSES[$p]}"
+  # Build failures were reported as ERROR= before any reviewer started.
+  [ -n "${CMD_LINES[$p]:-}" ] || continue
   if [ "$status" -ne 0 ]; then
     if [ "$status" -eq 124 ]; then
       if [ "$MULTI" -eq 1 ]; then
