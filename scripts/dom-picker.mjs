@@ -29,6 +29,7 @@ import {
   writeUiState,
 } from "./session-ledger.mjs";
 import { CDP, closeChrome, launchChrome, requireWebSocket } from "./chrome-cdp.mjs";
+import { parseOptions } from "./cli-options.mjs";
 
 /* `stop --session` asks the long-running driver to shut down through files beside the session
    manifest. A signal cannot do it everywhere: on Windows killing the process runs no handler,
@@ -56,14 +57,30 @@ const RUNTIME_PATH = fileURLToPath(new URL("../assets/picker-runtime.js", import
 const RUNTIME_SOURCE = readFileSync(RUNTIME_PATH, "utf8");
 const argv = process.argv.slice(2);
 const command = argv[0];
-const rest = argv.slice(1);
-const positionals = rest.filter((item) => !item.startsWith("--"));
-const hasFlag = (name) => rest.includes(`--${name}`);
-const option = (name, fallback = null) => {
-  const prefix = `--${name}=`;
-  const match = rest.find((item) => item.startsWith(prefix));
-  return match ? match.slice(prefix.length) : fallback;
+const TARGET_OPTIONS = ["target", "match", "port"];
+// The options each command understands; anything else exits 2 instead of being ignored.
+const COMMAND_OPTIONS = {
+  help: {},
+  start: { values: ["port", "user-data-dir", "artifacts"], flags: ["arm", "headless", "no-sandbox"] },
+  attach: { values: [...TARGET_OPTIONS, "artifacts"], flags: ["arm"] },
+  resume: { values: ["session"] },
+  stop: { values: ["session", "timeout-ms"] },
+  queue: { values: ["session"] },
+  claim: { values: ["session", "consumer", "wait-ms"] },
+  status: { values: ["request", "input"] },
+  cancel: { values: ["request", "channel"] },
+  targets: { values: ["port"] },
+  find: { values: ["text", "limit", "session", ...TARGET_OPTIONS] },
+  snapshot: { values: ["instruction-file", "session", "artifacts", ...TARGET_OPTIONS] },
+  reload: { values: ["session", "request", ...TARGET_OPTIONS], flags: ["ignore-cache"] },
+  verify: { values: ["request", "assertions"] },
+  destroy: { values: ["session", "request", ...TARGET_OPTIONS] },
 };
+const commandOptions = Object.hasOwn(COMMAND_OPTIONS, command) ? COMMAND_OPTIONS[command] : null;
+// An unknown command is reported by main(); its arguments are not parsed against any spec.
+const { option, hasFlag, positionals } = commandOptions
+  ? parseOptions(argv.slice(1), { values: commandOptions.values, flags: [...(commandOptions.flags || []), "help"] }, fail)
+  : { option: () => null, hasFlag: () => false, positionals: [] };
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
 function emit(event, payload = {}, extra = {}) {
@@ -1168,8 +1185,39 @@ async function reloadTarget(target) {
   }
 }
 
+/**
+ * The page a one-shot command acts on: the target pinned by --session (manifest) or --request
+ * (its connection), else --target/--match on --port. A pinned target must still be at its
+ * allowed origin.
+ */
+async function commandTarget() {
+  const sessionPath = option("session", null);
+  const requestPath = option("request", null);
+  if (sessionPath && requestPath) fail(`${command} accepts --session or --request, not both`);
+  const pinned = sessionPath || requestPath;
+  if (pinned && TARGET_OPTIONS.some((name) => option(name, null) != null)) {
+    fail(`${command} --${sessionPath ? "session" : "request"} already names the target; drop --target, --match, and --port`);
+  }
+  if (!pinned) {
+    const port = parsePort(option("port", "9222"));
+    return { port, target: await chooseTarget(port, { targetId: option("target", null), match: option("match", null) }), session: null };
+  }
+  const session = sessionPath ? loadSessionManifest(sessionPath) : null;
+  const record = session ? null : readJsonInput(requestPath);
+  const port = parsePort(session ? session.target?.debugPort : record.connection?.port);
+  const target = await chooseTarget(port, { targetId: session ? session.target?.targetId : record.connection?.targetId });
+  const allowedOrigin = session ? session.target.allowedOrigin : record.target?.allowedOrigin;
+  if (!allowedOrigin) fail(`${command} --${sessionPath ? "session" : "request"} records no allowed origin; refusing an unpinned target`);
+  if (urlOrigin(target.url) !== allowedOrigin) {
+    fail(`${command} target origin changed from ${JSON.stringify(allowedOrigin)} to ${JSON.stringify(urlOrigin(target.url))}`);
+  }
+  return { port, target, session };
+}
+
+const CLAIM_POLL_MS = 250;
+
 async function main() {
-  if (!command || command === "help" || hasFlag("help")) {
+  if (!command || command === "help" || command === "--help" || hasFlag("help")) {
     process.stdout.write(
       "usage: node dom-picker.mjs <start <url> | attach | resume | stop | queue | claim | status | cancel | targets | find | snapshot <selector> | reload | verify | destroy>\n" +
       "  start <url> [--arm] [--headless] [--no-sandbox] [--port=0] [--user-data-dir=PATH] [--artifacts=DIR]\n" +
@@ -1177,15 +1225,16 @@ async function main() {
       "  resume --session=PATH\n" +
       "  stop --session=PATH [--timeout-ms=20000]\n" +
       "  queue --session=PATH\n" +
-      "  claim --session=PATH --consumer=ID\n" +
+      "  claim --session=PATH --consumer=ID [--wait-ms=N]\n" +
       "  status --request=PATH --input=PATH|-\n" +
       "  cancel --request=PATH --channel=trusted-chat\n" +
       "  targets [--port=9222]\n" +
       "  find --text=TEXT [--limit=20] [--session=PATH] [--target=ID|--match=TEXT] [--port=9222]\n" +
       "  snapshot <selector> [--instruction-file=PATH|-] [--session=PATH|--artifacts=DIR] [--target=ID|--match=TEXT] [--port=9222]\n" +
-      "  reload [--ignore-cache] [--target=ID|--match=TEXT] [--port=9222]\n" +
+      "  reload [--ignore-cache] [--session=PATH|--request=PATH|--target=ID|--match=TEXT] [--port=9222]\n" +
       "  verify --request=PATH --assertions=PATH|-\n" +
-      "  destroy [--target=ID|--match=TEXT] [--port=9222]\n"
+      "  destroy [--session=PATH|--request=PATH|--target=ID|--match=TEXT] [--port=9222]\n" +
+      "  Options take --name=value or --name value; an unknown option exits 2.\n"
     );
     process.exit(0);
   }
@@ -1224,8 +1273,21 @@ async function main() {
     const consumer = option("consumer", null);
     if (!sessionPath) fail("claim requires --session=<session.json>");
     if (!consumer) fail("claim requires --consumer=<id>");
+    const rawWait = option("wait-ms", "0");
+    const waitMs = Number(rawWait);
+    if (!/^\d+$/.test(rawWait) || !Number.isSafeInteger(waitMs)) fail("claim --wait-ms must be a non-negative integer");
     const session = listQueue(sessionPath).session;
-    emit("claim", claimNextRequest(sessionPath, consumer), { sessionId: session.sessionId, target: session.target });
+    // Wait in-process for work instead of a shell polling loop. Returns as soon as a request is
+    // claimed (including this consumer's own active claim, so a cancel_requested phase surfaces
+    // at once); while the queue is empty or another consumer is busy it keeps waiting, then
+    // reports the last result with timedOut: true.
+    const deadline = Date.now() + waitMs;
+    let result = claimNextRequest(sessionPath, consumer);
+    while (!result.claimed && Date.now() < deadline) {
+      await delay(Math.min(CLAIM_POLL_MS, Math.max(0, deadline - Date.now())));
+      result = claimNextRequest(sessionPath, consumer);
+    }
+    emit("claim", { ...result, ...(waitMs ? { timedOut: !result.claimed } : {}) }, { sessionId: session.sessionId, target: session.target });
     return;
   }
   if (command === "status") {
@@ -1313,8 +1375,7 @@ async function main() {
     return;
   }
   if (command === "reload") {
-    const port = parsePort(option("port", "9222"));
-    const target = await chooseTarget(port, { targetId: option("target", null), match: option("match", null) });
+    const { target } = await commandTarget();
     await reloadTarget(target);
     emit("reloaded", { url: target.url, ignoreCache: hasFlag("ignore-cache") }, { target: targetSummary(target) });
     return;
@@ -1325,15 +1386,7 @@ async function main() {
     const rawLimit = option("limit", "20");
     const limit = Number(rawLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) fail("find --limit must be between 1 and 50");
-    const sessionPath = option("session", null);
-    const session = sessionPath ? loadSessionManifest(sessionPath) : null;
-    const port = session ? parsePort(session.target?.debugPort) : parsePort(option("port", "9222"));
-    const target = await chooseTarget(port, session
-      ? { targetId: session.target?.targetId }
-      : { targetId: option("target", null), match: option("match", null) });
-    if (session && urlOrigin(target.url) !== session.target.allowedOrigin) {
-      fail(`find target origin changed from ${JSON.stringify(session.target.allowedOrigin)} to ${JSON.stringify(urlOrigin(target.url))}`);
-    }
+    const { target, session } = await commandTarget();
     const result = await oneShotRuntime(target, async (connection, contextId) => {
       const found = await evaluate(
         connection,
@@ -1349,17 +1402,8 @@ async function main() {
     return;
   }
   if (command === "snapshot" || command === "destroy") {
-    const snapshotSessionPath = command === "snapshot" ? option("session", null) : null;
-    const snapshotSession = snapshotSessionPath ? loadSessionManifest(snapshotSessionPath) : null;
-    const port = snapshotSession
-      ? parsePort(snapshotSession.target?.debugPort)
-      : parsePort(option("port", "9222"));
-    const target = await chooseTarget(port, snapshotSession
-      ? { targetId: snapshotSession.target?.targetId }
-      : { targetId: option("target", null), match: option("match", null) });
-    if (snapshotSession && urlOrigin(target.url) !== snapshotSession.target.allowedOrigin) {
-      fail(`snapshot target origin changed from ${JSON.stringify(snapshotSession.target.allowedOrigin)} to ${JSON.stringify(urlOrigin(target.url))}`);
-    }
+    const { port, target, session } = await commandTarget();
+    const snapshotSession = command === "snapshot" ? session : null;
     if (command === "snapshot") {
       const selector = positionals[0];
       if (!selector) fail("snapshot requires a CSS selector");

@@ -3,20 +3,11 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { parseOptions } from "./cli-options.mjs";
 
-const argv = process.argv.slice(2);
-const option = (name, fallback = null) => {
-  const prefix = `--${name}=`;
-  const match = argv.find((item) => item.startsWith(prefix));
-  if (match) return match.slice(prefix.length);
-  const index = argv.indexOf(`--${name}`);
-  if (index >= 0) {
-    const value = argv[index + 1];
-    if (!value || value.startsWith("--")) fail(`--${name} requires a value`);
-    return value;
-  }
-  return fallback;
-};
+const cli = parseOptions(process.argv.slice(2), { values: ["repo", "input"] }, fail);
+if (cli.positionals.length) fail(`unexpected argument ${JSON.stringify(cli.positionals[0])}`);
+const { option } = cli;
 
 function fail(message) {
   process.stderr.write(`locate-source: ${message}\n`);
