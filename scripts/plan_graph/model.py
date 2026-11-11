@@ -16,6 +16,7 @@ FRONTMATTER_RE = re.compile(
 )
 H1_RE = re.compile(r"^# (?P<title>\S.*)$", re.MULTILINE)
 H2_RE = re.compile(r"^## (?P<title>[^\r\n]+)[ \t]*$", re.MULTILINE)
+FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 REQUIRED_SECTIONS = (
     "Outcome",
     "Evidence",
@@ -241,6 +242,54 @@ def validate_plan(plan: Plan) -> list[Diagnostic]:
     return diagnostics
 
 
+def mask_fences(body: str) -> str:
+    """`body` with fenced code block lines blanked, offsets and line breaks kept.
+
+    A `# comment` line inside a ``` or ~~~ block is code, not a heading. Matching
+    headings against the masked text and slicing the original keeps a shell
+    snippet from becoming a second H1 or a phantom section. An opener that never
+    closes is left as text: a stray ``` in one section must not swallow every
+    section after it.
+    """
+    out: list[str] = []
+    fence: str | None = None
+    opened_at = 0
+    for line in body.splitlines(keepends=True):
+        text = line.rstrip("\r\n")
+        match = FENCE_RE.match(text)
+        if fence is None:
+            # A backtick fence's info string may not contain a backtick (inline code).
+            if match and not (match.group("fence")[0] == "`" and "`" in match.group("info")):
+                fence = match.group("fence")
+                opened_at = len(out)
+                out.append(_blank(line))
+            else:
+                out.append(line)
+            continue
+        out.append(_blank(line))
+        if (
+            match
+            and match.group("fence")[0] == fence[0]
+            and len(match.group("fence")) >= len(fence)
+            and not match.group("info").strip()
+        ):
+            fence = None
+    if fence is not None:
+        lines = body.splitlines(keepends=True)
+        out[opened_at:] = lines[opened_at:]
+    return "".join(out)
+
+
+def _blank(line: str) -> str:
+    text = line.rstrip("\r\n")
+    return " " * len(text) + line[len(text):]
+
+
+def heading_matches(pattern: re.Pattern[str], body: str) -> list[re.Match[str]]:
+    """Heading matches outside fenced code; offsets index into `body` itself."""
+    return list(pattern.finditer(mask_fences(body)))
+
+
 def parse_plan(path: Path, root: Path) -> tuple[Plan | None, list[Diagnostic]]:
     diagnostics: list[Diagnostic] = []
     relative = repo_relative(root, path)
@@ -355,7 +404,7 @@ def parse_plan(path: Path, root: Path) -> tuple[Plan | None, list[Diagnostic]]:
     status = raw_status if raw_status in VALID_STATUSES else "active"
 
     body = content[match.end():]
-    h1_matches = list(H1_RE.finditer(body))
+    h1_matches = heading_matches(H1_RE, body)
     h1 = h1_matches[0] if h1_matches else None
     if h1 is None:
         diagnostics.append(
@@ -386,7 +435,7 @@ def parse_plan(path: Path, root: Path) -> tuple[Plan | None, list[Diagnostic]]:
             )
 
     sections = extract_sections(body)
-    section_headings = [match.group("title").strip() for match in H2_RE.finditer(body)]
+    section_headings = [match.group("title").strip() for match in heading_matches(H2_RE, body)]
     duplicate_sections = sorted(
         {title for title in section_headings if section_headings.count(title) > 1}
     )
@@ -436,7 +485,7 @@ def unfilled_sections(plan: Plan, sections: Iterable[str] = REQUIRED_SECTIONS) -
 
 
 def extract_sections(body: str) -> dict[str, str]:
-    matches = list(H2_RE.finditer(body))
+    matches = heading_matches(H2_RE, body)
     sections: dict[str, str] = {}
     for index, match in enumerate(matches):
         title = match.group("title").strip()
@@ -481,7 +530,8 @@ def make_plan(
 
 
 def replace_title(plan: Plan, title: str) -> Plan:
-    match = H1_RE.search(plan.body)
+    matches = heading_matches(H1_RE, plan.body)
+    match = matches[0] if matches else None
     if not match:
         raise PlanGraphError(f"{plan.id} has no H1 title", code="missing_title")
     body = plan.body[: match.start()] + f"# {title.strip()}" + plan.body[match.end():]
@@ -516,7 +566,36 @@ def compile_scope(pattern: str) -> re.Pattern[str]:
 
 
 def scope_matches(pattern: str, path: str) -> bool:
+    """Whether `pattern` matches `path`; a path ending in `/` is a directory.
+
+    A directory matches when the scope could own something inside it, or the
+    directory itself sits inside the scope: `apps/checkout/` selects
+    `apps/checkout/**` and `apps/checkout/api/*.py`, and `apps/` selects both.
+    """
     normalized = path.replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
+    if normalized.endswith("/"):
+        return _scope_reaches_directory(pattern, normalized.rstrip("/"))
     return bool(compile_scope(pattern).fullmatch(normalized))
+
+
+def _scope_reaches_directory(pattern: str, directory: str) -> bool:
+    if not directory:
+        return True
+    pattern_parts = pattern.split("/")
+    directory_parts = directory.split("/")
+    for index, segment in enumerate(directory_parts):
+        if index >= len(pattern_parts):
+            return False
+        glob = pattern_parts[index]
+        if glob == "**":
+            return True
+        if "**" in glob:
+            # `check**` crosses segment boundaries after its prefix: the directory
+            # reaches the scope only when its segment can start that match.
+            return bool(compile_scope(glob.split("**", 1)[0] + "*").fullmatch(segment))
+        if not compile_scope(glob).fullmatch(segment):
+            return False
+    # Every directory segment matched; the scope continues below (or names) it.
+    return True

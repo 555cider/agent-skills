@@ -60,7 +60,9 @@ constants are errors.
 
 - The filename stem is the plan ID. It must be lowercase kebab-case and is not
   duplicated in metadata.
-- The single H1 is the title and must be the first body content.
+- The single H1 is the title and must be the first body content. Lines inside
+  ```` ``` ```` or `~~~` fenced code blocks are never headings, so a `# comment`
+  in a shell snippet is neither a title nor a section.
 - Each of the six H2 sections above occurs exactly once.
 - `status` is `active` or `done`. Readiness is derived, never persisted.
 - `requires` lists prerequisite plan IDs. Every target must exist, self-links
@@ -95,7 +97,10 @@ For `A requires B`, B is read and completed before A becomes ready.
 Selection is deterministic and read-only:
 
 1. Explicit `--plan` IDs are selected.
-2. Every plan whose `scope` matches an input path is selected.
+2. Every plan whose `scope` matches an input path is selected. A directory
+   path selects every plan whose scope reaches into it (`apps/` selects
+   `apps/checkout/**`) or contains it (`apps/checkout/src/` selects
+   `apps/checkout/**`).
 3. A query scores title phrases, title tokens, tags, scope segments, then tokens
    from Outcome and Decisions. Query-only matches require a title/tag/scope hit
    or at least two body tokens; at most the top three are selected.
@@ -118,6 +123,8 @@ about them is stored in frontmatter, so they can never drift.
   threshold (default `5`, `doctor --stale-after N`) makes it `stale`. A plan
   file that is itself dirty or untracked is `fresh` — it is being revised right
   now. No scope, no anchor, or no usable git means `unknown`, never a warning.
+  `doctor` warns only for active plans; a done plan's staleness appears only
+  when `context` or `why` reads it.
   Git `:(glob)` semantics approximate the scope matcher; treat the count as a
   heuristic, not an exact file diff.
 - **Overlap**: two active plans conflict only when their scopes match at least
