@@ -23,9 +23,9 @@
 # Ports: branch isolation is not isolation while every worktree runs its dev servers on the
 # same default ports. Each worktree therefore also gets a reserved block of 10 ports, written
 # to <worktree git-dir>/worktree-ports as sourceable KEY=VALUE. Start only the stack you are
-# changing on those ports and leave the shared instances alone. The block is derived from the
-# repository path and branch name select a preferred block. A per-user registry serializes
-# allocations across repositories, and current listeners are checked before assignment.
+# changing on those ports and leave the shared instances alone. The repository path and branch
+# name select a preferred block. A per-user registry serializes allocations across
+# repositories, and current listeners are checked before assignment.
 # The sockets are then released, so strict server binding remains mandatory.
 #
 # If the local base trails its remote counterpart, that is reported and the run continues:
@@ -207,8 +207,15 @@ if [ -n "$PYTHON" ] && ASSIGNED="$("$PYTHON" "$SCRIPT_DIR/reserve-ports.py" "${P
   PORT_BASE="$ASSIGNED"
   PORTS_FILE="$WT_GITDIR/worktree-ports"
 else
-  echo "⚠️  worktree created at $WTPATH, but no verified port reservation (Python 3.10+ required)." >&2
-  echo "    Retry reserve-ports.py for this git-dir; do not rerun worktree creation." >&2
+  if [ -n "$PYTHON" ]; then
+    echo "⚠️  worktree created at $WTPATH, but the port allocator failed (its error is above)." >&2
+  else
+    echo "⚠️  worktree created at $WTPATH, but no port reservation: Python 3.10+ not found (tried python3, python)." >&2
+  fi
+  # %q keeps the retry pasteable when a path holds spaces.
+  retry="$(printf '%q ' "${PYTHON:-python3}" "$SCRIPT_DIR/reserve-ports.py" "${PORT_ARGS[@]}")"
+  echo "    Do not rerun start. Reserve ports for this worktree with:" >&2
+  echo "      ${retry% }" >&2
   [ -z "$PORT_BASE" ] || exit 1
   PORT_BASE=""
 fi

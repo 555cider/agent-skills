@@ -29,8 +29,8 @@
 # A relative -w resolves against the directory you invoked the script from.
 #
 # Base (the branch merged into), first match wins: --base; the base start-worktree.sh recorded on
-# the branch (git config branch.<branch>.worktreeCycleBase); git config worktree-cycle.base; the
-# branch checked out in the main worktree.
+# the branch (git config branch.<branch>.worktreeCycleBase); git config worktree-cycle.base. With
+# none of them the run stops and asks for --base; it never guesses from the main worktree's branch.
 #
 # Typical flow:
 #   1) implement and commit inside the worktree (tests green)
@@ -400,6 +400,8 @@ WT_LEFTOVER=""          # directory that survived; decides which recovery advice
 WT_REGISTERED=0         # 1 = git still considers it a worktree (the junction case)
 WT_RESIDUE=""           # empty, deregistered directory that could not be removed — not a failure
 BRANCH_LEFTOVER=0
+WT_GONE=0               # 1 = the directory was already missing (deleted by hand), registration stale
+if [ -n "$WT" ] && [ ! -e "$WT" ]; then WT_GONE=1; fi
 if [ -n "$WT" ] && [ -d "$WT" ]; then
   if git worktree remove --force "$WT"; then
     info "worktree removed: $WT"
@@ -437,6 +439,12 @@ if [ -n "$WT" ] && [ -d "$WT" ]; then
 fi
 
 # 4) Delete the branch with -D: a squash merge is not recorded as a merge, so -d refuses it.
+#    A worktree directory deleted by hand is still registered, and git will not delete a branch
+#    checked out in a registered worktree. Drop that one stale registration first — `remove
+#    --force` on a missing directory deregisters just it, unlike a repository-wide prune.
+if [ "$WT_GONE" = "1" ]; then
+  git worktree remove --force "$WT" >/dev/null 2>&1 && info "dropped the registration of the missing worktree: $WT"
+fi
 if git branch -D "$BRANCH"; then
   info "branch deleted: $BRANCH"
 else
@@ -467,10 +475,20 @@ if [ "$cleanup_failed" -ne 0 ]; then
     echo "        destroy the original directory), then:" >&2
     echo "          git -C \"$MAIN\" worktree remove --force \"$WT_LEFTOVER\"" >&2
   elif [ -n "$WT_LEFTOVER" ]; then
+    # Content that survived deregistration is usually the worktree's own node_modules, which
+    # may hold junctions. A recursive delete that follows them destroys their targets.
+    wt_native="$WT_LEFTOVER"
+    if command -v cygpath >/dev/null 2>&1; then wt_native="$(cygpath -w "$WT_LEFTOVER" 2>/dev/null)" || wt_native="$WT_LEFTOVER"; fi
     echo "      - git already deregistered this worktree, so 'git worktree remove' will answer" >&2
-    echo "        \"is not a working tree\". Only the directory is left; close whatever holds it" >&2
-    echo "        open and delete it:" >&2
-    echo "          rmdir \"$WT_LEFTOVER\"   (if it still has content, check for a junction first)" >&2
+    echo "        \"is not a working tree\". Only the directory is left, with content in it." >&2
+    echo "        1. confirm every link inside points into the worktree itself:" >&2
+    echo "             PowerShell: Get-ChildItem -Force \"$wt_native\" -Recurse -Depth 2 -Attributes ReparsePoint | % Target" >&2
+    echo "             POSIX:      find \"$WT_LEFTOVER\" -maxdepth 3 -type l -exec ls -l {} +" >&2
+    echo "        2. stop anything you started there, then from a shell outside it delete it once" >&2
+    echo "           with a command that does not follow links (never rm -rf / Remove-Item -Recurse on Windows):" >&2
+    echo "             Windows: cmd //c rmdir //s //q \"$wt_native\"   (Git Bash; from PowerShell: cmd /c rmdir /s /q \"$wt_native\")" >&2
+    echo "             POSIX:   rm -rf \"$WT_LEFTOVER\"" >&2
+    echo "        3. git -C \"$MAIN\" worktree prune" >&2
   fi
   [ "$BRANCH_LEFTOVER" = "1" ] && echo "      - git -C \"$MAIN\" branch -D $BRANCH" >&2
   [ "$tracked_restore_failed" = "1" ] && echo "      - your tracked changes are still stashed: git -C \"$MAIN\" stash pop stash@{0}" >&2
