@@ -232,10 +232,30 @@ else
     "$(head -c 300 "$WORK/auth1/.screen-map/storage-state.json" 2>/dev/null)"
 fi
 
+# A live session sits next to a map that is meant to be committed. The crawl names it in a
+# `.gitignore` of its own, and neither file makes the app look changed.
+if grep -qx 'storage-state.json' "$WORK/auth1/.screen-map/.gitignore" 2>/dev/null \
+  && [ -z "$(git -C "$WORK/auth1" status --porcelain -- .screen-map/storage-state.json)" ] \
+  && [ "$(node "$CLI" status --dir "$WORK/auth1/.screen-map" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).status))')" = fresh ]; then
+  pass "storage-state.json is git-ignored by a .gitignore the crawl writes, and the map stays fresh"
+else
+  fail "storage-state.json is git-ignored by a .gitignore the crawl writes" \
+    "$(cat "$WORK/auth1/.screen-map/.gitignore" 2>&1; git -C "$WORK/auth1" status --porcelain)"
+fi
+
 if [ "$(node -e 'fetch(process.argv[1] + "/__clicks").then(r => r.json()).then(c => process.stdout.write(String(c.login)))' "$BASE")" = "1" ]; then
   pass "the credentials were actually posted, once"
 else
   fail "the credentials were actually posted, once" "server counted a different number of logins"
+fi
+
+# After the login count above: this second crawl logs in again.
+printf 'custom\n' > "$WORK/auth1/.screen-map/.gitignore"
+node "$CLI" crawl --config "$WORK/auth1/.screen-map/config.json" --quiet > /dev/null 2>&1
+if [ "$(cat "$WORK/auth1/.screen-map/.gitignore")" = custom ]; then
+  pass "an existing .gitignore is left as the user wrote it"
+else
+  fail "an existing .gitignore is left as the user wrote it" "$(cat "$WORK/auth1/.screen-map/.gitignore")"
 fi
 
 # The documented difference, as a pair. Same page, same steps, only the click kind
@@ -666,6 +686,65 @@ if record_session "$APPSEED" "${SEEDED_WALK[@]}"; then
   pass "a recording extends an existing crawl map"
   run_suite assert-record-seeded node "$HERE/assert-record.mjs" \
     --map "$APPSEED/.screen-map/map.json" --mode seeded --before "$WORK/seed-before.json"
+fi
+
+# Crawling again over a map a recording extended. The crawl rebuilds what it walks; before
+# `carryRecorded` it also threw away every edge it had not walked itself, so the submit
+# the recording learned — the one thing the crawl cannot reach — vanished, and with it the
+# `recordings` history that said it had ever been watched.
+if [ -s "$APPSEED/.screen-map/map.json" ]; then
+  cp "$APPSEED/.screen-map/map.json" "$WORK/recrawl-before.json"
+  reset_fixture
+  if node "$CLI" crawl --config "$APPSEED/.screen-map/config.json" --quiet > "$WORK/recrawl.json" 2> "$WORK/recrawl.err"; then
+    if node -e '
+      const fs = require("node:fs");
+      const before = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const after = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+      const result = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+      const routeIn = map => id => (map.states.find(s => s.id === id) || {}).route;
+      const learned = m => m.transitions.filter(t => t.status === "observed" && t.class === "mutating")
+        .map(t => routeIn(m)(t.from) + " :: " + t.action.key + " -> " + routeIn(m)(t.to)).sort();
+      const was = learned(before), now = learned(after);
+      if (!was.length) throw new Error("the recording left no mutating observed edge to carry");
+      if (JSON.stringify(was) !== JSON.stringify(now)) throw new Error("recorded edges lost: " + JSON.stringify({ was, now }));
+      if ((after.recordings || []).length !== (before.recordings || []).length) throw new Error("recordings history dropped");
+      if (after.run.kind === "record") throw new Error("the run block is still the recording");
+      const ids = after.states.map(s => s.id);
+      if (new Set(ids).size !== ids.length) throw new Error("duplicate state ids");
+      if (!after.transitions.some(t => t.status === "verified")) throw new Error("the crawl proved nothing");
+      if (!(result.carriedFromRecordings > 0)) throw new Error("carriedFromRecordings not reported: " + JSON.stringify(result.carriedFromRecordings));
+    ' "$WORK/recrawl-before.json" "$APPSEED/.screen-map/map.json" "$WORK/recrawl.json" 2> "$WORK/recrawl-check.err"; then
+      pass "re-crawling keeps what a recording learned, and its recordings history"
+    else
+      fail "re-crawling keeps what a recording learned" "$(cat "$WORK/recrawl-check.err")"
+    fi
+  else
+    fail "a crawl over a recorded map completes" "$(cat "$WORK/recrawl.json" "$WORK/recrawl.err" 2>/dev/null | tr '\n' ' ' | head -c 400)"
+  fi
+fi
+
+# A single-page app moves between screens with pushState and the back button's popstate,
+# so no document ever loads. A recorder woken only by document navigations kept the screen
+# it had left as `lastState` after a back, and filed the next click from there.
+APPSPA="$WORK/app-spa"
+fixture_app "$APPSPA" "{ \"baseUrl\": \"$BASE\", \"entrypoints\": [\"/spa\"] }"
+reset_fixture
+if record_session "$APPSPA" --goto "$BASE/spa" --wait 600 --click "SPA 둘로" --wait 600 \
+    --back --wait 600 --click "SPA 셋으로" --wait 600 --close; then
+  if node -e '
+    const map = require(process.argv[1]);
+    const route = id => (map.states.find(s => s.id === id) || {}).route;
+    const observed = map.transitions.filter(t => t.status === "observed")
+      .map(t => route(t.from) + " :: " + t.action.name + " -> " + route(t.to));
+    const want = ["/spa :: SPA 둘로 -> /spa/two", "/spa/two :: back -> /spa", "/spa :: SPA 셋으로 -> /spa/three"];
+    const missing = want.filter(edge => !observed.includes(edge));
+    if (missing.length) throw new Error("missing " + JSON.stringify(missing) + " in " + JSON.stringify(observed));
+    if (observed.some(edge => edge.startsWith("/spa/two :: SPA 셋으로"))) throw new Error("a click was filed from the screen the back button left");
+  ' "$APPSPA/.screen-map/map.json" 2> "$WORK/spa.err"; then
+    pass "in a single-page app, back and the next click are filed from the screen actually shown"
+  else
+    fail "in a single-page app, back and the next click are filed from the screen actually shown" "$(cat "$WORK/spa.err")"
+  fi
 fi
 
 # A tab pointed somewhere outside allowHosts is not recorded, and the refusal is counted

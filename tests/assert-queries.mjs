@@ -1,7 +1,8 @@
 /** End-to-end checks of the query surface against a crawled fixture map. */
 
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,9 +23,17 @@ function check(name, condition, detail = '') {
   else { fail += 1; console.log('FAIL  ' + name + (detail ? '\n        ' + detail : '')); }
 }
 
-function cli(...argv) {
+function cli(...argv) { return cliWith({}, ...argv); }
+
+/** `env` entries set to `undefined` are removed, so a test can run as if outside Git Bash. */
+function cliWith(env, ...argv) {
+  const merged = { ...process.env };
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) delete merged[key]; else merged[key] = value;
+  }
+  const target = argv.includes('--map') ? [] : ['--map', mapPath];
   try {
-    const stdout = execFileSync('node', [CLI, ...argv, '--map', mapPath], { encoding: 'utf8' });
+    const stdout = execFileSync('node', [CLI, ...argv, ...target], { encoding: 'utf8', env: merged });
     return { code: 0, json: JSON.parse(stdout) };
   } catch (error) {
     let json = null;
@@ -83,6 +92,46 @@ const verify = cli('verify', '--to', '/cart');
 check('the stored route still walks end to end in a real browser',
   verify.code === 0 && verify.json?.reached === true, JSON.stringify(verify.json));
 
+// verify used to run its own search: no `--from`, and edges seen to land in two places
+// were allowed. It could then prove a path route never hands out.
+const routedFrom = cli('route', '--to', '/cart', '--from', '/items');
+const verifiedFrom = cli('verify', '--to', '/cart', '--from', '/items');
+const routedIds = (routedFrom.json?.steps || []).slice(1).map(step => step.transition);
+const walkedIds = (verifiedFrom.json?.walked || []).map(step => step.transition);
+check('verify --from replays exactly the path route --from hands out',
+  routedFrom.code === 0 && verifiedFrom.json?.reached === true
+    && routedIds.length > 0 && JSON.stringify(walkedIds) === JSON.stringify(routedIds),
+  JSON.stringify({ routed: routedIds, walked: walkedIds, verify: verifiedFrom.json?.detail }));
+
+// ---------- --from starts at the page, not at a menu left open ----------
+//
+// An overlay shares its page's route. Picking it as the origin hands back a first step that
+// assumes a dropdown the caller does not have open.
+{
+  // Outside the app repository: an untracked file there would make the map below stale.
+  const dir = mkdtempSync(join(tmpdir(), 'screen-map-synthetic-'));
+  const stamp = { source: 'crawl', commit: null, recordedAt: null, lastObservedCommit: null, lastObservedAt: null };
+  const screen = (id, route, kind) => ({ id, ...stamp, route, signature: 'h:' + id, kind, title: route, evidence: { urlSample: route } });
+  const edge = (id, from, to, name) => ({
+    id, ...stamp, from, to, class: 'safe', classifiedBy: 'test', status: 'verified',
+    action: { kind: 'click', role: 'link', name, key: 'click:link:' + name, cssFallback: null },
+  });
+  const synthetic = {
+    schema: 2, app: { baseUrl: 'http://127.0.0.1:1', commit: null },
+    run: { finishedAt: null, budgetHit: null },
+    states: [screen('s0', '/a', 'page'), screen('s1', '/a', 'overlay'), screen('s2', '/b', 'page')],
+    transitions: [edge('t0', 's0', 's1', 'menu'), edge('t1', 's1', 's2', 'b')],
+    entrypoints: ['s0'],
+  };
+  const syntheticMap = join(dir, 'map.json');
+  writeFileSync(syntheticMap, JSON.stringify(synthetic));
+  const fromPage = cli('route', '--to', '/b', '--from', '/a', '--map', syntheticMap);
+  check('route --from starts at the page screen, not the overlay that shares its route',
+    fromPage.code === 0 && JSON.stringify((fromPage.json?.steps || []).slice(1).map(step => step.transition)) === '["t0","t1"]',
+    JSON.stringify(fromPage.json?.steps || fromPage.json));
+  rmSync(dir, { recursive: true, force: true });
+}
+
 // ---------- report ----------
 
 const reportPath = join(appDir, '.screen-map', 'generated.md');
@@ -105,6 +154,10 @@ check('invalidate downgrades the transition',
 check('invalidate never adds states or transitions',
   after.states.length === before.states.length && after.transitions.length === before.transitions.length,
   JSON.stringify({ states: after.states.length, transitions: after.transitions.length }));
+const renderedAfter = readFileSync(join(appDir, '.screen-map', 'map.md'), 'utf8');
+check('invalidate rewrites map.md so the human copy stops offering the step',
+  renderedAfter.includes('selector drifted') && invalidate.json?.report?.endsWith('map.md'),
+  JSON.stringify(invalidate.json));
 
 // ---------- the shell rewrote the argument ----------
 //
@@ -112,12 +165,34 @@ check('invalidate never adds states or transitions',
 // sees it. "unknown route" is a true statement and a useless one — it sends the reader
 // hunting through the map for a route that was never asked for.
 
-const rewritten = cli('route', '--to', 'C:/Program Files/Git/settings');
+const NOT_MSYS = { MSYSTEM: undefined, EXEPATH: undefined };
+const rewritten = cliWith(NOT_MSYS, 'route', '--to', 'C:/Program Files/Git/settings');
 check('a route argument the shell turned into a path still fails',
   rewritten.code === 1, 'exit ' + rewritten.code);
 check('and the failure blames the shell rather than the map',
   /MSYS_NO_PATHCONV|without a leading slash/.test(rewritten.json?.hint || ''),
   JSON.stringify(rewritten.json?.hint));
+const fromRewritten = cliWith(NOT_MSYS, 'route', '--to', '/cart', '--from', 'C:/Program Files/Git/items');
+check('a rewritten --from gets the same hint',
+  fromRewritten.code === 1 && /without a leading slash/.test(fromRewritten.json?.hint || ''),
+  JSON.stringify(fromRewritten.json));
+
+// Under Git Bash (`MSYSTEM` set) the rewrite is undone: the install directory comes from
+// EXEPATH, or from the `…/Git/` shape when the shell did not export it.
+const MSYS = { MSYSTEM: 'MINGW64', EXEPATH: String.raw`C:\Program Files\Git\bin` };
+const undone = cliWith(MSYS, 'route', '--to', 'C:/Program Files/Git/cart', '--from', 'C:/Program Files/Git/items');
+check('under Git Bash a rewritten --to and --from are turned back into routes',
+  undone.code === 0 && undone.json?.to === '/cart' && undone.json?.steps?.[0]?.state === '/items',
+  JSON.stringify(undone.json?.steps?.[0] || undone.json));
+const undonePattern = cliWith({ MSYSTEM: 'MINGW64', EXEPATH: undefined }, 'state', '--route', 'D:/Tools/Git/items');
+check('without EXEPATH the …/Git/ prefix is still recognised',
+  undonePattern.code === 0 && undonePattern.json?.states?.[0]?.route === '/items',
+  JSON.stringify(undonePattern.json));
+const foreign = cliWith(MSYS, 'route', '--to', 'D:/work/settings');
+check('a Windows path that is not under Git is left alone and still gets the hint',
+  foreign.code === 1 && /without a leading slash/.test(foreign.json?.hint || ''),
+  JSON.stringify(foreign.json));
+
 check('an ordinary unknown route gets no such hint',
   cli('route', '--to', '/nowhere').json?.hint === undefined,
   JSON.stringify(cli('route', '--to', '/nowhere').json?.hint));

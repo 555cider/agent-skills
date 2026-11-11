@@ -37,7 +37,23 @@ function check(name, condition, detail = '') {
 
 const html = '<!doctype html><html><body><main><h1>Final</h1>'
   + '<button id="target" type="button">Old name</button></main></body></html>';
+// A controlled input the way React builds one: `value` is shadowed on the node to track the
+// last rendered value, and an `input` event that leaves the real value equal to it is not
+// a change. Assigning `el.value` updates the tracker too, so the change is never seen.
+const controlled = '<!doctype html><html><body><main><h1>Login</h1><input id="email">'
+  + '<script>const el=document.getElementById("email");'
+  + 'const native=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value");'
+  + 'let tracked=el.value;window.__changes=[];'
+  + 'Object.defineProperty(el,"value",{configurable:true,get(){return native.get.call(this)},'
+  + 'set(v){tracked=String(v);native.set.call(this,v)}});'
+  + 'el.addEventListener("input",()=>{const real=native.get.call(el);'
+  + 'if(real!==tracked){tracked=real;window.__changes.push(real)}});</script></main></body></html>';
 const server = createServer((req, res) => {
+  if (req.url === '/controlled') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(controlled);
+    return;
+  }
   if (req.url === '/redirect') {
     res.writeHead(302, { location: '/final' });
     res.end();
@@ -69,6 +85,14 @@ try {
   const clicked = await page.click(action.key, action.cssFallback);
   check('a CSS fallback reports its provenance to the crawler', clicked.ok && clicked.via === 'css',
     JSON.stringify(clicked));
+
+  await page.navigate(base + '/controlled');
+  await page.settle({ timeout: 1200, interval: 50, stableRounds: 1, quietMs: 100 });
+  await page.fill('#email', 'crawler@example.invalid');
+  const changes = await page.evaluateJson('window.__changes');
+  check('fill reaches a React-style controlled input as a change, not a silent assignment',
+    Array.isArray(changes) && changes.length === 1 && changes[0] === 'crawler@example.invalid',
+    JSON.stringify(changes));
 } catch (error) {
   check('browser regression setup completes', false, error?.stack || String(error));
 } finally {

@@ -23,7 +23,7 @@ scripts/browser.mjs    Chrome launch or attach + page operations
 scripts/chrome-cdp.mjs Chrome launch, process-tree cleanup, CDP client; identical copy shared with ui-audit and dom-picker
 scripts/record.mjs     the recorder: watches a session it does not drive, and files what it sees
 scripts/harvest.js     injected into the page: describes the screen, resolves an action, reports clicks
-references/            action policy and the map.json schema
+references/            action policy, map.json schema, building a map, recording a session
 tests/                 fixture app, pure-model tests, crawl assertions, query assertions, an external driver
 ```
 
@@ -46,7 +46,9 @@ connecting. `invalidate` may downgrade a transition during use; nothing else wri
 **Provenance instead of snapshots.** The map used to be one crawl pinned to one commit, and merging
 was banned outright because mixed-version observations could not be told apart. They can now: every
 entry carries when it was first seen, last seen, and last proved. The ban that remains is on
-hand-editing and on concatenating two maps.
+hand-editing and on concatenating two maps. A re-crawl rebuilds what it walks and carries the
+rest forward through `carryRecorded` (model.mjs): `observed` edges, recording-found screens and
+`recordings` survive, matched to the new crawl's screens by identity rather than by id.
 
 **Recording never touches the page.** No input dispatched, no dialog answered, no popup closed, no
 viewport set — `Page.attach` exists to make that structural rather than a matter of discipline. It
@@ -98,7 +100,8 @@ bash skills/screen-map/tests/run.sh
 ```
 
 Needs Node 22+ and Chrome. The suite starts a fixture app on a random port, crawls it twice (default
-and `--allow-mutating`), records two sessions against it, and asserts the map.
+and `--allow-mutating`), records sessions against it (including a single-page app and a re-crawl over a
+recorded map), and asserts the map.
 
 The fixture counts every state-changing request it receives, which is how the suite proves a
 negative: `clicks.delete` must stay at `0` because the crawler never pressed the destructive button.
