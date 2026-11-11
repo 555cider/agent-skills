@@ -45,6 +45,7 @@ WCAG text contrast is a confirmed `Fail` below 4.5:1 for normal text or 3:1 for 
 - `nonTextContrast` recognizes a transparent, borderless input whose immediate wrapper provides a measured 3:1 field boundary; check the wrapper before changing an intentional chip-input design.
 - The keyboard probe also measures a changed outline on the focused control's immediate wrapper, as used by `:focus-within` row links and selects; a distant ancestor highlight is not sufficient.
 - Keyboard traversal counts the summary of closed `<details>` and excludes its hidden descendants; counting those descendants makes a valid dialog focus trap look incomplete.
+- Phone cells (`isMobile: true`) are touch-emulated: `(hover: hover)` and `(pointer: fine)` styles do not apply there, so hover-gated reveals render as they do on a phone.
 
 ### Cautions when reading results
 
@@ -676,7 +677,8 @@ Korean verbs and verbal nouns are valid labels; this rule checks an explicitly c
 - **Threshold:** verb endings (`~합니다`, `~해요`, `~하세요`, `~하다`), `~하기`/`~되기`, a native
   verb stem + `기` (보기, 가기, 열기, 닫기, 내려받기), or `~함`/`~됨`.
 - **FP guards:** `-음` is never matched (다음, 처음); box nouns ending in 함 (보관함, 편지함) and
-  two-syllable 기 nouns (기기, 크기, 주기) pass; English labels are out of scope. Teams can allow
+  two-syllable 기 nouns (기기, 크기, 주기) pass; a record opener (below) is skipped; English labels
+  are out of scope. Teams can allow
   specific words with `auditConfig.copy.koButtonAllow`. Natural standalone actions
   더보기, 닫기, 열기, 보기, 바로가기 always pass.
 - **Suggested fix:** consider a noun (저장하기 → 저장, 서식 고치기 → 서식 수정, 고르기 → 선택,
@@ -689,6 +691,12 @@ Korean verbs and verbal nouns are valid labels; this rule checks an explicitly c
   `copy.buttonMaxChars` (25), or a label whose text wraps onto a second line box.
 - **FP guards:** a trailing `…`/`...` is the "opens a further step" convention and passes;
   icon-only controls are skipped.
+
+**Record openers.** Both button-wording rules above skip a button that wraps a whole list row or
+card: one with two or more visible block-level children holding text, stacked on separate lines (a
+title over a meta line). Its text is the record's data, not an action label, so a date-only title
+or a meta line ending in 수정하기 is not a wording finding. `genericConfirmLabel` reads only a
+dialog's exact generic words and needs no such guard.
 
 ## genericConfirmLabel — `Polish` / `Risk` — auto-measured
 - **Method:** a visible `dialog`/`alertdialog` offering both a generic affirmative

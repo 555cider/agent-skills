@@ -28,6 +28,21 @@ contract checks measured findings and review advisories independently.
 | `uninspected-surfaces.html` | light-DOM coverage boundaries | open shadow root, iframe, canvas, object, and embed advisories plus reasoned exemption precision |
 | `copy-conventions.html` | Korean button wording, button punctuation/length, generic confirm dialogs, free-form badges, mixed date and empty-value formats | each copy rule plus precision guards (다음/보관함/크기, tabs, ellipsis, outcome labels, enum/counter badges, input chips, footer legal copy) |
 | `copy-register.html` | 해요체 and 합니다체 on one screen | `mixedSpeechLevel` |
+| `drift.html` | mixed radii, shadows, and hues on peer components | `designSystemDrift` |
+| `paleprimary.html` | an enabled primary button painted like a disabled one | `disabledLookingPrimary` |
+| `modern-color-functions.html` | oklab/oklch/color-mix colours as Tailwind v4 emits them | `effectiveContrast` measured, not silently skipped |
+| `modal-front-overlay.html` | a modal with no backdrop over live content | `missingModalBackdrop` |
+| `escape-exempt.html` | a documented non-dismissible dialog | reasoned `data-ui-audit-escape-exempt` keeps `modalEscapeUnhandled` quiet |
+| `widget-contract.html` | broken tabs, placeholder-only labels, lone radio, toggle in a submit form, orphaned error, hidden desktop nav | each widget-contract rule; Risk/Polish only, so exit 0 |
+| `widget-contract-dialogs.html` | stacked dialogs that ignore Escape | `stackedDialogs`, `modalEscapeUnhandled` (trusted Escape) |
+| `widget-contract-clean.html` | the same widgets built to contract | **nothing** from the widget-contract rules |
+| `krds-content.html` | images, data tables, contact details | `imageMissingAlt`, `emptyDataCell`, `numericColumnAlignment`, `unlinkedContactInfo`; `alt=""`, account numbers, dates stay quiet |
+| `krds-forms.html` | selection components | `selectAutoSubmit`, `missingIndeterminateState`, `accordionPanelScroll` |
+| `krds-modal-actions.html` | dialog actions below the visible area | `modalActionsOutOfView` |
+| `krds-navigation.html` | skip link, current page, popups, tabs, language flags | `skipLinkMissing`, `navCurrentUnmarked`, `popupExceedsViewport`, `disabledTab`, `nestedTabs`, `flagAsLanguageIndicator` |
+| `state-and-reach.html` | form attributes and a control cut by its scroller | `invalidAriaState`, `controlCutByScroller`, `readonlyLooksEditable` |
+| `whitelist.html` / `adbanners.html` | low-contrast controls under a whitelisted selector (run.sh only) | every matching instance and its subtree suppressed |
+| `runner-input.html` | input emulation and key presses (run.sh only) | phone cells report touch/coarse pointer at the configured `innerHeight`; `press` Enter/Space activate a button; a full-page screenshot |
 | `clean.html` | a well-built version of the same screens | **nothing** (zero findings) |
 
 `expected.json` uses `mustHit`, `mustNotHit`, `mustAdvise`, and `mustNotAdvise`, plus
@@ -53,12 +68,14 @@ require trusted runner pointer movement; dispatching `mouseover` in the page is 
 inject `audit.js` via MCP/DevTools and call `__uiAudit({isMobile:true})`.
 
 The automated suite also verifies schema v2, non-empty matrix configuration, custom-theme
-drivers, per-rule state interception proof (method and minimum match count), per-scroll-report
-expected-vs-run rule completeness, worker determinism, browser-context isolation, suppression behavior, and
-honest incomplete-probe coverage.
+drivers, pre-launch rejection of invalid setups/probes/init scripts, CLI route rewriting under Git Bash,
+per-rule state interception proof (method and minimum match count), per-scroll-report
+expected-vs-run rule completeness, worker determinism, browser-context isolation, suppression behavior,
+screenshot output, and honest incomplete-probe coverage.
 
 ## Gotcha (handled by the canonical runner)
 
 Do **not** create a mobile context with `is_mobile=True` + `device_scale_factor>1` — Chromium
 then reports a bogus `innerHeight` (`height × (dpr+1)`), silently breaking every geometry
-rule. Use `has_touch` / CDP `mobile:false` and pass `isMobile` to the audit config instead.
+rule. The runner keeps CDP `mobile:false`, turns on touch emulation for `isMobile` cells, and
+passes `isMobile` to the audit config instead.

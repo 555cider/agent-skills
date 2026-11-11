@@ -155,9 +155,9 @@
   }
 
   function plan(whitelist, maxTargets, denseGapPx) {
-    // Headless Chrome exposes `(hover: none)` even when the runner is driving a
-    // desktop mouse. A zero-touch document is still a fine-pointer audit cell;
-    // runners separately mark configured mobile/touch viewports not-applicable.
+    // Some headless Chrome builds answer `(hover: none)` while the runner drives a
+    // desktop mouse, so a zero-touch document still counts as a fine-pointer cell.
+    // Mobile cells are touch-emulated, and the runner skips them before planning.
     var hoverCapable = !!((root.matchMedia && root.matchMedia('(hover: hover) and (pointer: fine)').matches) ||
       !(root.navigator && root.navigator.maxTouchPoints > 0));
     var all = qsa(TARGETS).filter(candidate).filter(function (el) {

@@ -18,7 +18,7 @@ Use the user's language in reports. Group results by failure mode, not discovery
 - Run `scripts/audit-chrome.mjs` before judging a rendered UI. A screenshot alone cannot prove contrast, clipping, focus traversal, target spacing, or sticky overlap.
 - Do not claim completion or “no findings” unless every configured matrix cell is `checked` in `coverage.json`.
 - Treat `findings.json` as measured defects. Do not downgrade a computed `Fail` by taste.
-- Resolve every `required` item in `advisories.json` with a screenshot/pixel check, a corrected implementation, or a deliberate baseline entry. Optional advisories do not block completion.
+- Resolve every `required` item in `advisories.json` by fixing it or by a `baseline` entry for its `rule + selector`. A pixel check that clears it is recorded as that baseline entry: the exit gate counts nothing else, so rerunning without one blocks again. Optional advisories do not block completion.
 - Use the trusted keyboard and pointer probes supplied by the runner. Synthetic DOM events do not prove sequential focus or `:hover` behavior.
 - A review-only request authorizes reporting; a build/edit/finish request authorizes safe fixes to in-scope defects.
 
@@ -46,44 +46,28 @@ and evidence gates. Do not remove a failed cell merely to make the report green.
 
 ## Workflow
 
-1. Render the real route, story, or preview. Configure mobile and desktop viewports, supported themes, meaningful data states, and interaction states. When the real route sits behind login, an app shell, or a backend you cannot seed, build a harness page instead (see "Harness pages" below).
+1. Render the real route, story, or preview. Configure mobile and desktop viewports, supported themes, meaningful data states, and interaction states. When the real route sits behind login, an app shell, or a backend you cannot seed, audit a harness page served by the project's own harness server, which copies the app entry's stylesheet and script tags into a `<!-- ui-audit:app-head -->` marker at serve time; read `references/harness-pages.md` first.
 2. Run the canonical Node/CDP runner:
 
    ```bash
    node scripts/audit-chrome.mjs http://localhost:3000 --config audit-config.json
    ```
 
-   `run-ui-audit.py` and `capture.py` are compatibility shims that forward to this implementation. They do not require Playwright.
+   Outputs go to `--out-dir` (default `.ui-audit`): three JSON files and `screens/*_{top,bottom,full}.png` (`full` is the whole page, `none` cells only; old runner PNGs are cleared each run). `--routes /a,/b` overrides the configured routes; `--no-screenshots` skips the PNGs.
 3. Inspect all three schema-v2 outputs:
 
    - `findings.json`: high-confidence measured defects.
    - `advisories.json`: `required` or `optional` review signals.
    - `coverage.json`: exact matrix, state proof, probe counts, rule coverage, suppression, and timings.
 4. Resolve Fail findings and required advisories. Apply `baseline` only to an intentionally accepted `rule + selector`; do not use it to hide unverified coverage.
-5. Apply `references/scrutiny-checklist.md` to composition, thumbnail/squint hierarchy, purposeful color, typography, microcopy, brand coherence, key/value sheets (inspectors and property panels), and other subjective residue. Judge composition on the full-height screenshot of the finished page, not a crop around the changed element: moving one block can strand a counter, collapse a grid, or make two cards touch elsewhere on the page.
+5. Apply the sections of `references/scrutiny-checklist.md` that match the surface (its index maps surfaces to sections). Judge composition on the `*_full.png` screenshot of the finished page, not a crop around the changed element: moving one block can strand a counter, collapse a grid, or make two cards touch elsewhere on the page.
 6. Report the verified matrix, findings, advisories, and any unverified cells.
 
 ## Matrix and state proof
 
 Copy `scripts/audit-config.default.json` and narrow it to the surface under review. The bundled full configuration includes two workers plus desktop `zoom-200` and `reflow-320` adaptations. Force data states with `stateMocks` (CDP Fetch interception; a mock counts only when it actually intercepts) and interaction states with `stateSetups` (structured `click`, `fill`, `press`, `hover`, `check`, `selectOption`, `upload` actions plus a visible `expect`). Configuration, authenticated routes, file-picker uploads, `timeoutMs`, and nested scroll containers are specified in `references/findings-schema.md` under "State setup and proof".
 
-A populated fixture proves only that data reached the DOM:
-
-- Data presence also does not prove data density. Include a credible high-density fixture (maximum item counts, longest localized strings, mixed or null values). Treat interaction reachability and content density as separate matrix requirements; prove both when the surface has both risks.
-- A state below the fold in an independently scrolling pane needs the real product action, a visible post-action expectation, and a scroller you confirmed moved; document `top`/`bottom` positions scroll `window` only.
-- The final response also does not prove asynchronous mutation feedback. Hold the exact mutation request, drive the real control, and require visible progress plus a single-flight control state; add a functional interaction test for request count when repeated activation could duplicate work.
-
-Leave a cell unverified when no deterministic action can reach its state.
-
-## Harness pages
-
-Use a harness page when the real route cannot be reached or seeded per cell. A harness page mounts the screen's own module with fixture data, and the runner audits it like any route. Such a page is only evidence while it renders the way the app does:
-
-- **Take the head from the app entry when the page is served.** The server copies the app entry's stylesheet and classic-script tags, in order, into a marker in the harness. Do not copy the head into each harness by hand. A hand copy drifts: one stylesheet goes missing (a base widget sheet, so button heights differ), or a theme sheet moves ahead of the component sheets (so other rules win). Either way the harness measures a screen the app never draws.
-- **Use the width the module gets, not the window width.** Inside the shell, a rail or sidebar takes part of the window, so a 1000 px window leaves the content roughly 760 px. Add those content widths as viewports, alongside the window widths.
-- **Make fixtures cover the states and the density at once.** Include every status chip and badge. Include the longest names, the second language, and an empty variant as its own route.
-- **Drive a data-attribute theme with `themeInitScripts`.** Examples are `data-style="field"` or `data-theme="dark"`. Do not drive it with a query parameter the harness reads by itself. That way the theme stays a matrix axis, and `coverage.json` records which theme driver ran.
-- **Name the harness as the route.** The report must say the harness was audited. It does not cover the shell itself or the live data path. Keep the harness pages and fixtures in a project-specific skill or test folder, outside the module's source.
+A populated fixture proves only that data reached the DOM. Content density, a decision state inside a nested scroller, and pending mutation feedback each need their own proof, as specified in the same section. Leave a cell unverified when no deterministic action can reach its state.
 
 ## Adaptations, exemptions, and rule cautions
 
@@ -130,11 +114,11 @@ Not verified: <cells/rules, or none>
 - `scripts/audit.js`: DOM/CSSOM/geometry detector and finding/advisory classifier.
 - `scripts/rule-coverage.mjs`: per-report rule-manifest completeness validator.
 - `scripts/keyboard-probe.js`, `pointer-probe.js`: trusted-input planning and evidence helpers.
-- `scripts/run-ui-audit.py`, `capture.py`: compatibility shims that forward to the Node runner.
 - `scripts/audit-config.default.json`: full default matrix to copy and narrow.
 - `references/audit-rules.md`: exact rules, thresholds, false-positive guards, exemptions, and per-rule cautions.
 - `references/findings-schema.md`: configuration, state setup and proof, and the schema-v2 contract.
 - `references/scrutiny-checklist.md`: subjective residue reviewed after the measured pass.
+- `references/harness-pages.md`: requirements for a harness page standing in for an unreachable route.
 - `tests/fixtures/` and `tests/expected.json`: recall and precision regression corpus.
 
 When adding a failure mode, put deterministic measurement in code and add `mustHit`/`mustNotHit` coverage. Put heuristics in the advisory channel with `mustAdvise`/`mustNotAdvise` coverage.

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Runner input emulation</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 24px; color: #111; background: #fff; }
+  button { min-height: 44px; padding: 8px 16px; font: inherit; }
+  .panel { display: none; margin: 8px 0 16px; }
+  .panel.open { display: block; }
+  .tall { height: 1600px; border-top: 1px solid #767676; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Runner input</h1>
+  <!-- The runner's key presses must run the browser default action: Enter and Space activate a button. -->
+  <button id="enter-target" type="button">Open details</button>
+  <div class="panel" id="enter-panel">Opened by Enter</div>
+  <button id="space-target" type="button">Show notes</button>
+  <div class="panel" id="space-panel">Opened by Space</div>
+  <!-- Content below the first viewport, so a full-page screenshot is taller than the viewport. -->
+  <div class="tall"><p>End of page</p></div>
+</main>
+<script>
+  // What the page sees of its input devices and viewport, read by stateSetups expectations.
+  var root = document.documentElement;
+  root.dataset.pointer = matchMedia('(pointer: coarse)').matches ? 'coarse' : 'fine';
+  root.dataset.hover = matchMedia('(hover: hover)').matches ? 'hover' : 'none';
+  root.dataset.touch = navigator.maxTouchPoints > 0 ? 'yes' : 'no';
+  root.dataset.innerHeight = String(innerHeight);
+  document.getElementById('enter-target').addEventListener('click', function () {
+    document.getElementById('enter-panel').classList.add('open');
+  });
+  document.getElementById('space-target').addEventListener('click', function () {
+    document.getElementById('space-panel').classList.add('open');
+  });
+</script>
+</body>
+</html>
