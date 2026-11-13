@@ -1,0 +1,102 @@
+[
+  {
+    "query": "고객이 보낸 IFC 파일 첨부했어. 이거 열면 벽이 다 사라지는데 고쳐줘",
+    "should_trigger": true
+  },
+  {
+    "query": "이 DWG 도면에서 블록 참조가 깨져. 재현 테스트 넣고 고쳐줘 (C:/Users/me/Downloads/site-plan.dwg)",
+    "should_trigger": true
+  },
+  {
+    "query": "Here's a PDF our parser chokes on (attached). Can you add support for it and a test so it doesn't regress?",
+    "should_trigger": true
+  },
+  {
+    "query": "이 xlsx 넣으면 import 가 병합 셀에서 터져요. 테스트 추가해서 막아 주세요",
+    "should_trigger": true
+  },
+  {
+    "query": "Add a test using this file: ~/Downloads/customer-export.sqlite — the migration fails on it.",
+    "should_trigger": true
+  },
+  {
+    "query": "이 pcap 캡처로 디코더가 잘못 파싱하는 거 재현돼. 회귀 테스트로 남겨줘",
+    "should_trigger": true
+  },
+  {
+    "query": "운영 로그 파일 하나 줄게. 이 포맷 줄을 파서가 못 읽는데 지원 추가하고 테스트도",
+    "should_trigger": true
+  },
+  {
+    "query": "Our CSV importer mangles this vendor file's encoding. Sample is attached, please fix and cover it with a test.",
+    "should_trigger": true
+  },
+  {
+    "query": "I'm about to commit tests/fixtures/full-building.ifc (14 MB) so the new test has something to read. OK to git add it?",
+    "should_trigger": true
+  },
+  {
+    "query": "이 테스트 CI 에서 계속 skip 돼. 샘플 파일이 gitignore 돼 있어서 그런 거 같은데 어떻게 해?",
+    "should_trigger": true
+  },
+  {
+    "query": "The parser test reads samples/big-model.ifc but only checks that two doors exist. Can we stop depending on the whole file?",
+    "should_trigger": true
+  },
+  {
+    "query": "고객 도면이라 레포에 못 올리는데, 이 버그 재현 테스트는 커밋하고 싶어",
+    "should_trigger": true
+  },
+  {
+    "query": "This test only passes on my machine because it reads D:/samples/plant.dwg. Make it work on CI.",
+    "should_trigger": true
+  },
+  {
+    "query": "회귀 코퍼스에 실파일 30개 추가하고 전체 돌리는 게이트 만들어줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Benchmark the loader on this 800 MB point cloud and tell me where the time goes.",
+    "should_trigger": false
+  },
+  {
+    "query": "렌더러 바꿨더니 스냅샷 테스트 깨졌어. 골든 이미지 갱신해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Write unit tests for the parseHeader function in src/io/header.ts.",
+    "should_trigger": false
+  },
+  {
+    "query": "이 DWG 열어서 레이어 목록만 보여줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Convert this PDF to DOCX for me.",
+    "should_trigger": false
+  },
+  {
+    "query": "이 엑셀에서 중복 행 지우고 날짜 형식 통일해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Update the expected JSON output of the exporter tests after the schema change.",
+    "should_trigger": false
+  },
+  {
+    "query": "메모리 사용량이 큰 IFC 에서 얼마나 되는지 재보고 싶어",
+    "should_trigger": false
+  },
+  {
+    "query": "이 CSV 가 몇 행인지, 컬럼별 결측치가 얼마인지 요약해줘",
+    "should_trigger": false
+  },
+  {
+    "query": "Add property-based tests for the date utilities.",
+    "should_trigger": false
+  },
+  {
+    "query": "이 로그 파일에서 오늘 에러만 골라서 원인 분석해줘",
+    "should_trigger": false
+  }
+]
