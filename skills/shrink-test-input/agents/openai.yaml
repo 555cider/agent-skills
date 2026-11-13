@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shrink Test Input"
+  short_description: "Turn a handed-over sample file into the smallest committed test input that still carries what the test needs."
+  default_prompt: "Use $shrink-test-input when the user hands over a sample file to reproduce a bug or add support, when a test is about to read a large, external or gitignored file, or when an existing test pins a whole sample but asserts only a few things. Find the repository's own recipe first, write the feature list before cutting, pin the verdict on the original, choose the lightest form (built in test code, generator script, reduced cut, original kept outside), reduce against the test plus the format's authoritative reader, scrub, run the mutation check, and leave provenance and the recipe behind. Not for regression corpora, performance or scale tests, or golden snapshots of the program's own output."

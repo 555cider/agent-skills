@@ -1,0 +1,104 @@
+{
+  "skill_name": "shrink-test-input",
+  "evals": [
+    {
+      "id": "feature-list-before-cutting",
+      "prompt": "첨부한 IFC(9 MB) 를 열면 창이 벽에서 1 m 떠 있어. 고치고 테스트 남겨줘.",
+      "expected_output": "Finds the failing path first, writes a feature list of observable features (the window, its host wall, the placement chain, the producer and units) before reducing anything, and uses that list as the test's assertions.",
+      "files": [],
+      "assertions": [
+        "Writes the feature list before cutting or editing the file.",
+        "States each feature as something the test will observe, with exact kinds and values.",
+        "Pins the test on the original outside the repo before reducing."
+      ]
+    },
+    {
+      "id": "multiplicity-kept",
+      "prompt": "The bug only shows when a block definition in this DWG is inserted more than once. Reduce the sample to a fixture.",
+      "expected_output": "Lists multiplicity as a feature (one definition with at least two inserts) and keeps it in the fixture, and the mutation check removes the second insert to show the test then fails.",
+      "files": [],
+      "assertions": [
+        "Includes 'definition shared by at least two users' in the feature list.",
+        "Does not reduce to a single insert.",
+        "Mutation check covers the multiplicity feature."
+      ]
+    },
+    {
+      "id": "predicate-includes-validator",
+      "prompt": "I wrote a loop that deletes chunks of the file while the test still fails. It got the file down to 3 KB. Done?",
+      "expected_output": "Checks that the predicate also requires the format's authoritative reader to open the candidate without new errors; otherwise the reduction may now hit a parse-error path, so re-check the verdict reason and the reader.",
+      "files": [],
+      "assertions": [
+        "Requires the authoritative reader to open the candidate as part of the predicate.",
+        "Requires the same verdict for the same reason, not just pass or fail.",
+        "Does not accept the 3 KB file on the test result alone."
+      ]
+    },
+    {
+      "id": "mutation-check-before-done",
+      "prompt": "픽스처 만들었고 원본이랑 픽스처 둘 다 테스트 통과해. 커밋할게.",
+      "expected_output": "Before committing, alters or removes each listed feature in a scratch copy and confirms the test fails each time; a feature whose removal stays green means the test is fixed, not the fixture.",
+      "files": [],
+      "assertions": [
+        "Runs a mutation check per listed feature.",
+        "Treats a green after removal as a test defect.",
+        "Reopens the final file with the authoritative reader."
+      ]
+    },
+    {
+      "id": "repo-recipe-first-and-left-behind",
+      "prompt": "Turn this customer's .xlsx into a test fixture for the import bug.",
+      "expected_output": "Looks for the repository's test-data recipe, existing generators, sample policy and trusted reader first and follows them; when none exists it works ad hoc and writes down what worked where the repo keeps such notes.",
+      "files": [],
+      "assertions": [
+        "Searches the repo for a test-data doc, repo skill or generator before cutting.",
+        "Follows a found recipe instead of inventing one.",
+        "Leaves a recipe or note behind when none existed."
+      ]
+    },
+    {
+      "id": "form-ladder-prefers-lightest",
+      "prompt": "The bug is in how we read a CSV whose header has a duplicated column name. The sample is a 40 MB export. Add a test.",
+      "expected_output": "Chooses the lightest form: a few CSV lines built in test code (or a tiny generator), not a cut of the 40 MB export and not the original kept outside.",
+      "files": [],
+      "assertions": [
+        "Uses built-in test data or a generator rather than committing a cut of the export.",
+        "Explains why the lighter form keeps every listed feature.",
+        "Does not reference the original by path in the test."
+      ]
+    },
+    {
+      "id": "scrub-and-ask-once-without-policy",
+      "prompt": "이 도면은 고객사 실제 현장 파일인데 잘라서 픽스처로 쓰려고 해. 레포에는 고객 데이터 관련 규칙이 없어.",
+      "expected_output": "Scrubs names, addresses, metadata, paths, thumbnails and real-world coordinates the feature list does not need, and asks the user once before committing a cut of the customer's file; notes forms 1 and 2 would need no such answer.",
+      "files": [],
+      "assertions": [
+        "Scrubs content not in the feature list, moving coordinates to the origin unless georeferencing is a feature.",
+        "Asks the user once before committing a derived customer cut.",
+        "Does not ask when the fixture is built in test code or generated."
+      ]
+    },
+    {
+      "id": "corpus-and-perf-stay-whole",
+      "prompt": "Our load-time benchmark reads a 600 MB model from the shared drive. Should I reduce it to a fixture too?",
+      "expected_output": "Keeps the performance input whole and outside the repo; the test must state that it skips when the file is absent and its green elsewhere is not evidence.",
+      "files": [],
+      "assertions": [
+        "Does not reduce a performance or corpus input.",
+        "Requires the test to say it skips when the file is absent.",
+        "Does not commit the large file."
+      ]
+    },
+    {
+      "id": "no-machine-paths-and-provenance",
+      "prompt": "Fixture is ready at tests/fixtures/door-offset.ifc. The test opens C:/Users/me/samples/door-offset.ifc for comparison. Finish up.",
+      "expected_output": "Repoints the test to the repo-relative fixture path, removes the machine path, and writes provenance beside the fixture: feature list, source description plus content hash, form and why, and the regenerate or re-reduce command.",
+      "files": [],
+      "assertions": [
+        "Removes every machine path from the test.",
+        "Records the source as a description and content hash, not a private path or customer name.",
+        "Leaves the regenerate or re-reduce command next to the fixture."
+      ]
+    }
+  ]
+}

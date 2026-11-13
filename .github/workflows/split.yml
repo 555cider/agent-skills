@@ -71,7 +71,7 @@ jobs:
           set -euo pipefail
           for suite in skills/*/tests/run.sh; do
             case "$suite" in
-              skills/agent-memory/*|skills/peer-review/*|skills/step-back/*|skills/worktree-cycle/*) continue ;;
+              skills/agent-memory/*|skills/peer-review/*|skills/shrink-test-input/*|skills/step-back/*|skills/worktree-cycle/*) continue ;;
             esac
             bash "$suite"
           done
@@ -135,7 +135,7 @@ jobs:
           fi
           bash --version | head -n 1
           bash tests/install.sh
-      - name: worktree-cycle and step-back suites (macOS uses /bin/bash 3.2)
+      - name: worktree-cycle, step-back and shrink-test-input suites (macOS uses /bin/bash 3.2)
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -145,6 +145,7 @@ jobs:
           fi
           bash skills/worktree-cycle/tests/run.sh
           bash skills/step-back/tests/run.sh
+          bash skills/shrink-test-input/tests/run.sh
       - name: Provide bash 4+ for peer-review on macOS
         if: runner.os == 'macOS'
         run: |

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "555cider-agent-skills",
-  "description": "Agent skills shared across coding-agent harnesses: durable memory, plan graph, peer review, UI audit, DOM picker, screen map, worktree lifecycle, step-back.",
+  "description": "Agent skills shared across coding-agent harnesses: durable memory, plan graph, peer review, UI audit, DOM picker, screen map, worktree lifecycle, step-back, shrink-test-input.",
   "owner": {
     "name": "555cider"
   },
@@ -91,6 +91,16 @@
       "license": "MIT",
       "description": "Countable tripwires that force a reassessment before work is declared done, and before effort stops being proportional to the job.",
       "category": "productivity"
+    },
+    {
+      "name": "shrink-test-input",
+      "source": "./skills/shrink-test-input",
+      "skills": ["."],
+      "version": "1.0.0",
+      "author": { "name": "555cider" },
+      "license": "MIT",
+      "description": "Turn a sample file handed over for a bug or new support into the smallest committed test input that still carries the features the test reads, proven by a mutation check, with the repository's cutting recipe followed or left behind.",
+      "category": "development"
     }
   ]
 }

@@ -128,6 +128,21 @@ directories yourself.
   user, not the count alone. Prompt only — no
   scripts, no hooks — and explicitly not permission to narrow the scope the user
   asked for.
+- [`skills/shrink-test-input/`](skills/shrink-test-input/) — a sample file the user
+  hands over to show a bug or ask for support is evidence, not test input. A test
+  pinned to the whole file needs that file forever: a customer's file cannot be
+  committed, a gitignored copy makes the test skip on every other machine and CI (a
+  green that means nothing), and a few megabytes hide which three objects the test is
+  about. So the skill writes the **feature list** first — what the test will observe,
+  multiplicity included — pins the verdict on the original, and takes the lightest
+  form that keeps every feature: data built in the test, a generator script, a
+  reduced cut, and only for size-bound tests the original kept outside. Reduction runs
+  against a predicate that includes the format's own reader, so it cannot drift into
+  a parse-error path, and a **mutation check** removes each feature in turn to prove
+  the test notices. How to cut a given format is each repository's knowledge, not the
+  skill's: it looks for that recipe first and, when there is none, leaves one behind
+  so the second sample is cheap. Regression corpora, performance inputs and golden
+  snapshots stay out of scope. Prompt only.
 
 ## Install
 
@@ -249,8 +264,9 @@ Maintainers edit only `main` in this monorepo — the split branches are derived
 artifacts and must never be committed to directly. The same workflow runs on
 pull requests too: the validators (skill packages, evals, plugin manifests and
 `hooks/hooks.json`) and the remaining skills' `tests/run.sh` on Ubuntu, plus
-`tests/install.sh` and the worktree-cycle, step-back, peer-review and
-agent-memory suites on Ubuntu, macOS (`/bin/bash` 3.2) and Windows (Git Bash).
+`tests/install.sh` and the worktree-cycle, step-back, shrink-test-input,
+peer-review and agent-memory suites on Ubuntu, macOS (`/bin/bash` 3.2) and
+Windows (Git Bash).
 Only the split job has write access, and a pull request run can never cancel a
 split of `main`.
 
