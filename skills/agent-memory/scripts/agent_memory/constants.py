@@ -34,7 +34,7 @@ HARNESSES = {"claude", "codex", "opencode", "generic"}
 # External memory `adopt` can read. Named by the file family rather than the
 # harness because CLAUDE.md and AGENTS.md are separate files with separate
 # lifetimes even when one machine keeps both in sync by hand.
-ADOPT_SOURCES = ("claude-md", "codex-agents", "codex-memory", "remember")
+ADOPT_SOURCES = ("claude-md", "claude-memory", "codex-agents", "codex-memory", "remember")
 # Evidence kinds an import writes so a batch stays addressable afterwards.
 # `evidence.kind` is the only per-record label the v2 schema already has room
 # for, and bumping SCHEMA_VERSION to add a column would strand every existing

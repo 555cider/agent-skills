@@ -13,10 +13,27 @@ agent-memory adopt --cwd "$PWD" --format json               # adopt into the que
 
 Sources are `claude-md` (`~/.claude/CLAUDE.md`, `<repo>/CLAUDE.md`,
 `<repo>/CLAUDE.local.md`), `codex-agents` (`AGENTS.md`), `codex-memory`
-(`~/.codex/memories/MEMORY.md`, `memory_summary.md`), and `remember`
-(`.remember/core-memories.md`). Pass `--source` to narrow, `--scan <repo>` to
-read another checkout's project files, and `--llm` to let the configured
-provider classify and restate what the parser delimited.
+(`~/.codex/memories/MEMORY.md`, `memory_summary.md`), `remember`
+(`.remember/core-memories.md`), and `claude-memory` — Claude Code's
+auto-memory, `<config>/projects/<slug>/memory/*.md` under `~/.claude`,
+`$CLAUDE_CONFIG_DIR` (ignored when `--home` is given), and every
+`--claude-config-dir <dir>` (one per extra profile). Pass `--source` to narrow,
+`--scan <repo>` to read another checkout's project files, and `--llm` to let the
+configured provider classify and restate what the parser delimited.
+
+**Claude auto-memory.** It covers every project the harness ran in, so it is read
+only with `--source claude-memory`, `--source all`, or `--claude-config-dir`; a
+plain `adopt --cwd "$PWD"` does not touch it. The `<slug>` folder names the
+directory the session ran in; it is resolved against the disk (case-insensitively
+on Windows and macOS) and keyed the way recall keys that directory (git
+repository key, or the path identity of a non-git checkout). A slug whose
+directory no longer exists is skipped as `unknown-project`. Frontmatter
+`type: user` facts are global preferences; every other type stays with its
+repository. `MEMORY.md` is the index and is not read. `**Why:**` paragraphs go
+into the evidence summary; `**How to apply:**` becomes its own statement; a
+block over 600 characters is skipped as `too-long`. Re-running is a one-way
+sync: identical facts merge, an edited fact arrives as a new record beside the
+old one.
 
 **Scope is decided per record, never in bulk.** Home files are global; repo
 files are keyed to that repository; a Codex `Task Group` is routed by its

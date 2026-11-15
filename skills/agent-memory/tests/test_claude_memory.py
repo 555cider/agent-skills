@@ -1,0 +1,205 @@
+"""Adopting Claude Code's own auto-memory (`<config>/projects/<slug>/memory/*.md`).
+
+Each folder names its checkout only by a lossy slug, and a machine can hold
+several config directories (one per `CLAUDE_CONFIG_DIR` profile). What is
+defended: a slug resolves to the key recall computes in that checkout, a slug
+whose checkout is gone is skipped instead of widened, and the frontmatter's
+`type` and the `Why`/`How to apply` convention shape the record.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from agent_memory.cli import main
+from agent_memory.sources import build_payload, directory_for_slug, discover
+from agent_memory.util import repo_key
+
+FEEDBACK = """\
+---
+name: verify-chart-interaction
+description: charts are done only after hover/Tab/Escape are driven in a browser
+metadata:
+  type: feedback
+---
+
+Charts count as done only after hover, Tab and Escape were driven in a real browser.
+
+**Why:** static screenshots missed a broken tooltip twice.
+**How to apply:** drive the interaction before reporting a chart change; see [[ui-checks|the UI checks]].
+"""
+
+USER = """\
+---
+name: user-role
+description: who the user is
+type: user
+---
+
+The user reviews diffs in Korean and prefers short reports that lead with the result.
+"""
+
+INDEX = "- [Verify chart interaction](verify-chart-interaction.md) — drive it first\n"
+
+
+def _slug(path: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path.resolve()))
+
+
+def _git_init(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+
+def _memory_dir(config: Path, checkout: Path) -> Path:
+    folder = config / "projects" / _slug(checkout) / "memory"
+    folder.mkdir(parents=True)
+    return folder
+
+
+@pytest.fixture
+def layout(tmp_path: Path):
+    home = tmp_path / "home"
+    repo = tmp_path / "work" / "chart-app"
+    _git_init(repo)
+    plain = tmp_path / "work" / "svn.checkout"
+    plain.mkdir(parents=True)
+    profile = tmp_path / "profiles" / "p1"
+
+    main_memory = _memory_dir(home / ".claude", repo)
+    (main_memory / "MEMORY.md").write_text(INDEX, encoding="utf-8")
+    (main_memory / "verify-chart-interaction.md").write_text(FEEDBACK, encoding="utf-8")
+    (main_memory / "user-role.md").write_text(USER, encoding="utf-8")
+
+    (_memory_dir(profile, plain) / "svn-rule.md").write_text(
+        "---\nname: svn-rule\ntype: project\n---\n\nCommit to SVN only after the narrow tests pass.\n",
+        encoding="utf-8",
+    )
+    (_memory_dir(profile, tmp_path / "gone") / "lost.md").write_text(
+        "---\nname: lost\ntype: project\n---\n\nThis checkout was deleted long ago, keep it out.\n",
+        encoding="utf-8",
+    )
+    return {"home": home, "repo": repo, "plain": plain, "profile": profile, "tmp": tmp_path}
+
+
+def _built(layout, *profiles: Path):
+    sources = discover(home=layout["home"], claude_configs=profiles, claude_memory=True)
+    return build_payload([item for item in sources if item.source == "claude-memory"])
+
+
+def _find(built, fragment: str) -> dict:
+    for record in built["payload"]["memories"]:
+        if fragment in record["statement"]:
+            return record
+    raise AssertionError(f"no record contains {fragment!r}")
+
+
+def test_slug_resolves_to_the_directory_it_was_made_from(layout):
+    assert directory_for_slug(_slug(layout["repo"])) == layout["repo"].resolve()
+    # `.` and `-` both slug to `-`; the disk decides which one is there.
+    assert directory_for_slug(_slug(layout["plain"])) == layout["plain"].resolve()
+    assert directory_for_slug(_slug(layout["tmp"] / "gone")) is None
+
+
+def test_feedback_stays_with_its_repository(layout):
+    built = _built(layout)
+    record = _find(built, "Charts count as done")
+    assert record["scope"] == "project"
+    assert record["repo_key"] == repo_key(layout["repo"])
+    assert record["conditions"] == ["verify-chart-interaction"]
+
+
+def test_why_becomes_evidence_and_how_to_apply_loses_its_label(layout):
+    built = _built(layout)
+    assert not any("static screenshots" in item["statement"] for item in built["payload"]["memories"])
+    rule = _find(built, "drive the interaction before reporting")
+    assert not rule["statement"].lower().startswith("how to apply")
+    assert "the UI checks" in rule["statement"] and "[[" not in rule["statement"]
+    assert "why: static screenshots missed" in rule["evidence"][0]["summary"]
+
+
+def test_user_type_is_a_global_preference(layout):
+    record = _find(_built(layout), "reviews diffs in Korean")
+    assert record["scope"] == "global"
+    assert record["repo_key"] is None
+    assert record["kind"] == "preference"
+
+
+def test_the_index_file_is_not_a_fact(layout):
+    built = _built(layout)
+    assert not any("drive it first" in item["statement"] for item in built["payload"]["memories"])
+
+
+def test_profile_dirs_are_read_only_when_named(layout):
+    assert not any("SVN" in item["statement"] for item in _built(layout)["payload"]["memories"])
+    record = _find(_built(layout, layout["profile"]), "Commit to SVN")
+    # A non-git checkout gets the path identity recall uses when standing there.
+    assert record["repo_key"] == repo_key(layout["plain"])
+
+
+def test_a_profile_named_twice_is_read_once(layout):
+    built = _built(layout, layout["profile"], layout["profile"])
+    assert sum("Commit to SVN" in item["statement"] for item in built["payload"]["memories"]) == 1
+
+
+def test_claude_config_dir_env_is_read_unless_home_is_explicit(layout, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(layout["profile"]))
+    assert not any("SVN" in item["statement"] for item in _built(layout)["payload"]["memories"])
+    monkeypatch.setenv("HOME", str(layout["home"]))
+    sources = [item for item in discover(claude_memory=True) if item.source == "claude-memory"]
+    _find(build_payload(sources), "Commit to SVN")
+
+
+def test_plain_adopt_does_not_read_every_project(layout, monkeypatch):
+    monkeypatch.setenv("HOME", str(layout["home"]))
+    assert not [item for item in discover() if item.source == "claude-memory"]
+
+
+@pytest.mark.skipif(sys.platform not in ("win32", "darwin"), reason="case-folding filesystems only")
+def test_slug_case_follows_the_filesystem(layout):
+    assert directory_for_slug(_slug(layout["repo"]).lower()) is not None
+
+
+def test_frontmatter_edge_cases(layout):
+    folder = layout["home"] / ".claude" / "projects" / _slug(layout["repo"]) / "memory"
+    (folder / "edge.md").write_text(
+        "\n---\nname: edge-rule\nmetadata:\n  name: nested-name-ignored\n  type: project\n---\n\n"
+        "- Rebuild the parser fixtures whenever the grammar file changes.\n"
+        "  - **Why:** stale fixtures hid a regression for a week.\n",
+        encoding="utf-8",
+    )
+    built = _built(layout)
+    rule = _find(built, "Rebuild the parser fixtures")
+    assert rule["conditions"] == ["edge-rule"]
+    assert "Why" not in rule["statement"] and "stale fixtures" not in rule["statement"]
+    assert "why: stale fixtures hid" in rule["evidence"][0]["summary"]
+    assert not any("name:" in item["statement"] for item in built["payload"]["memories"])
+
+
+def test_a_deleted_checkout_is_skipped_not_widened(layout):
+    built = _built(layout, layout["profile"])
+    assert not any("deleted long ago" in item["statement"] for item in built["payload"]["memories"])
+    assert any(
+        item["reason"] == "unknown-project" and "lost" in item["statement"] for item in built["skipped"]
+    )
+
+
+def test_cli_adopts_a_profile_into_the_review_queue(layout, capsys):
+    store = layout["tmp"] / "store"
+    args = ["--memory-home", str(store), "adopt", "--source", "claude-memory",
+            "--home", str(layout["home"]), "--claude-config-dir", str(layout["profile"]),
+            "--format", "json"]
+    assert main(args) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["imported"] == report["review_queued"] == 4
+    assert {item["source"] for item in report["groups"]} == {"claude-memory"}
+
+    assert main(args) == 0  # re-running is the sync: it merges, never duplicates
+    again = json.loads(capsys.readouterr().out)
+    assert again["imported"] == 0

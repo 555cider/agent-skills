@@ -17,7 +17,9 @@ statement.
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -89,6 +91,21 @@ RULE_VOICE_RE = re.compile(
 PREFERENCE_RE = re.compile(
     r"(?i)\b(?:prefer|favor|rather than|default to|instead of)\b|선호|우선한다|기본으로"
 )
+
+# Claude Code's own auto-memory: `<config>/projects/<slug>/memory/<fact>.md`, one
+# fact per file under YAML frontmatter, indexed by a `MEMORY.md` of pointers.
+FRONTMATTER_RE = re.compile(
+    r"\A﻿?(?:[ \t]*\r?\n)*---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.S
+)
+FRONTMATTER_LINE_RE = re.compile(r"^(\s*)([A-Za-z_][\w-]*)\s*:\s*(.*?)\s*$")
+# `type` sits at the top level in older files and under `metadata:` in newer
+# ones; every other key is read only at the top level.
+NESTED_FRONTMATTER_KEYS = {"type"}
+WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+WHY_RE = re.compile(r"^\s*(?:\*\*|__)?\s*why\s*:\s*(?:\*\*|__)?\s*", re.I)
+HOW_RE = re.compile(r"^\s*(?:\*\*|__)?\s*how to apply\s*:\s*(?:\*\*|__)?\s*", re.I)
+LABEL_BULLET_RE = re.compile(r"^\s*[-*+]\s+(?=(?:\*\*|__)?\s*(?:why|how to apply)\s*:)", re.I)
+WINDOWS_SLUG_RE =re.compile(r"^([A-Za-z])--(.*)$")
 
 
 @dataclass(frozen=True)
@@ -376,20 +393,158 @@ def _project_files(root: Path, project: str) -> list[SourceFile]:
     return found
 
 
+def _slugify(name: str) -> str:
+    """Claude Code's project-folder rule: every non-alphanumeric becomes `-`."""
+    return re.sub(r"[^A-Za-z0-9]", "-", name)
+
+
+# The slug keeps the case of the cwd string the harness saw (`cd c:\users\…`
+# works in PowerShell), so on a case-folding filesystem the comparison folds too.
+_FOLD_CASE = os.name == "nt" or sys.platform == "darwin"
+
+
+def _fold(value: str) -> str:
+    return value.casefold() if _FOLD_CASE else value
+
+
+def _walk_slug(directory: Path, rest: str, depth: int = 0) -> Path | None:
+    if not rest:
+        return directory
+    if depth > 32:
+        return None
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return None
+    folded = _fold(rest)
+    matches = []
+    # Name test first, `is_dir()` only for the few that match: a `%TEMP%` with
+    # thousands of entries would otherwise cost a stat each per lookup.
+    for name in names:
+        slug = _fold(_slugify(name))
+        if folded == slug:
+            entry = directory / name
+            if entry.is_dir():
+                return entry
+        elif folded.startswith(slug + "-"):
+            entry = directory / name
+            if entry.is_dir():
+                matches.append((entry, rest[len(slug) + 1 :]))
+    # The longest name first: `agent-skills` beats `agent` + `skills` because
+    # the folder that is really there is the one whose whole name matched.
+    for entry, remainder in sorted(matches, key=lambda item: len(item[1])):
+        found = _walk_slug(entry, remainder, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def directory_for_slug(slug: str) -> Path | None:
+    """The directory a Claude Code project slug was made from, if it still exists.
+
+    The slug is lossy (`C:\\a.b\\c-d` and `C:\\a-b\\c\\d` share one), so the disk
+    decides: walk from the root through entries whose slugified name is a prefix
+    of what is left. A checkout that was moved or deleted resolves to None.
+    """
+    windows = WINDOWS_SLUG_RE.match(slug)
+    if windows:
+        root, rest = Path(f"{windows.group(1)}:/"), windows.group(2)
+    elif slug.startswith("-"):
+        root, rest = Path("/"), slug[1:]
+    else:
+        return None
+    if not root.is_dir():
+        return None
+    return _walk_slug(root, rest)
+
+
+def claude_config_dirs(
+    home: Path, extra: Iterable[Path] = (), *, use_env: bool = True
+) -> list[Path]:
+    """`~/.claude`, `$CLAUDE_CONFIG_DIR`, and any profile directories named.
+
+    A profile started with `CLAUDE_CONFIG_DIR` keeps its own `projects/` tree, so
+    the same machine can hold several unrelated auto-memory stores. An explicit
+    `--home` turns the environment off: it asks for that home and nothing else.
+    """
+    candidates = [home / ".claude"]
+    env = os.environ.get("CLAUDE_CONFIG_DIR") if use_env else None
+    if env:
+        candidates.append(expand_user_path(env))
+    candidates.extend(expand_user_path(item) for item in extra)
+    out: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        key = os.path.normcase(str(resolved))
+        if key in seen or not resolved.is_dir():
+            continue
+        seen.add(key)
+        out.append(resolved)
+    return out
+
+
+def _claude_memory_files(home: Path, config_dirs: Sequence[Path]) -> list[SourceFile]:
+    found: list[SourceFile] = []
+    resolved: dict[str, str | None] = {}
+    for config in config_dirs:
+        projects = config / "projects"
+        if not projects.is_dir():
+            continue
+        for memory in sorted(projects.glob("*/memory")):
+            if not memory.is_dir():
+                continue
+            facts = [path for path in sorted(memory.glob("*.md")) if path.name != "MEMORY.md"]
+            if not facts:  # most folders are empty; resolving their slug is the cost
+                continue
+            slug = memory.parent.name
+            if slug not in resolved:
+                # The slug is a directory the harness actually ran in, so it gets
+                # the key recall computes when standing there — a git repository's
+                # key, or the path identity of a non-git (SVN, plain) checkout.
+                directory = directory_for_slug(slug)
+                resolved[slug] = repo_key(directory) if directory is not None else None
+            for path in facts:  # `MEMORY.md` is the index of pointers, not a fact
+                found.append(
+                    SourceFile(
+                        "claude-memory",
+                        path,
+                        "mixed",
+                        resolved[slug],
+                        False,
+                        display_path(path, home),
+                    )
+                )
+    return found
+
+
 def discover(
     *,
     home: Path | None = None,
     cwd: Path | None = None,
     scan_roots: Iterable[Path] = (),
+    claude_configs: Iterable[Path] = (),
+    claude_memory: bool = False,
 ) -> list[SourceFile]:
     """List the external memory files present on this machine.
 
     Project-scoped files are read from the repositories the caller names, never
     by walking the disk: which repositories matter is a question only the user
     can answer, and guessing would pull a stranger's checkout into their memory.
+    Claude Code's auto-memory spans every project the harness ran in, so it is
+    read only when `claude_memory` asks for it (`--source claude-memory|all`);
+    each folder names its checkout by slug, and a slug whose checkout is gone is
+    skipped as `unknown-project`.
     """
+    explicit_home = home is not None
     home = home or user_home()
     found: list[SourceFile] = []
+    if claude_memory:
+        configs = claude_config_dirs(home, claude_configs, use_env=not explicit_home)
+        found.extend(_claude_memory_files(home, configs))
 
     for relative, source in (
         (Path(".claude") / "CLAUDE.md", "claude-md"),
@@ -579,6 +734,110 @@ def _codex_records(source: SourceFile, text: str) -> tuple[list[dict[str, Any]],
     return records, skipped
 
 
+def _frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """Flat `key: value` pairs of a YAML header (nesting ignored) and the body."""
+    match = FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    meta: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        pair = FRONTMATTER_LINE_RE.match(line)
+        if not pair or not pair.group(3):
+            continue
+        key = pair.group(2).lower()
+        if pair.group(1) and key not in NESTED_FRONTMATTER_KEYS:
+            continue
+        meta.setdefault(key, pair.group(3).strip("\"'"))
+    return meta, text[match.end() :]
+
+
+def _claude_memory_records(
+    source: SourceFile, text: str
+) -> tuple[list[dict[str, Any]], list[dict]]:
+    """One auto-memory file → its rules.
+
+    `type: user` describes the person, so it is global wherever it was written;
+    every other type stays with the repository its folder names. `**Why:**`
+    paragraphs justify a rule rather than state one, so they ride along as the
+    evidence summary; `**How to apply:**` is the rule and loses only its label.
+    """
+    meta, body = _frontmatter(text)
+    name = meta.get("name") or source.path.stem
+    memory_type = meta.get("type", "").lower()
+    if memory_type == "user":
+        scope, project = "global", None
+    elif source.project:
+        scope, project = "project", source.project
+    else:
+        return [], [
+            {
+                "statement": f"{name} ({source.label})"[:200],
+                "reason": "unknown-project",
+                "source": source.source,
+            }
+        ]
+
+    body = WIKILINK_RE.sub(lambda m: m.group(2) or m.group(1), body)
+    # The convention writes `**Why:**` and `**How to apply:**` on adjacent lines
+    # (sometimes as bullets, sometimes nested under the rule), which the
+    # paragraph parser would join into one block; give each its own paragraph.
+    lines = []
+    for line in body.splitlines():
+        bare = LABEL_BULLET_RE.sub("", line, count=1)
+        if WHY_RE.match(bare) or HOW_RE.match(bare):
+            lines.extend(["", bare.strip(), ""])
+        else:
+            lines.append(line)
+    body = "\n".join(lines)
+    blocks: list[Block] = []
+    why: list[str] = []
+    for block in parse_blocks(body):
+        if WHY_RE.match(block.text):
+            why.append(_clean_statement(normalize_home_paths(WHY_RE.sub("", block.text))))
+            continue
+        rule = HOW_RE.sub("", block.text)
+        blocks.append(
+            Block(
+                text=rule,
+                headings=(name, *block.headings),
+                commands=block.commands,
+                ordered=block.ordered,
+            )
+        )
+
+    records: list[dict[str, Any]] = []
+    skipped: list[dict] = []
+    reason = "; ".join(item for item in why if item)
+    for block in blocks:
+        statement = _clean_statement(normalize_home_paths(block.text))
+        if len(statement) > MAX_STATEMENT_CHARS:
+            skipped.append(
+                {"statement": statement[:200], "reason": "too-long", "source": source.source}
+            )
+            continue
+        record = _record(
+            block=block,
+            source=source.source,
+            label=source.label,
+            scope=scope,
+            project=project,
+            heading=name,
+        )
+        if record is None:
+            continue
+        if memory_type == "user" and record["kind"] not in {"constraint", "caveat"}:
+            record["kind"] = "preference"
+        if reason:
+            record["evidence"][0]["summary"] = f"{source.label} — why: {reason}"[:500]
+        if _unsafe(record):
+            skipped.append(
+                {"statement": record["statement"][:200], "reason": "unsafe", "source": source.source}
+            )
+            continue
+        records.append(record)
+    return records, skipped
+
+
 def build_payload(
     sources: Sequence[SourceFile],
     *,
@@ -602,6 +861,8 @@ def build_payload(
             "memory_summary.md",
         }:
             found, dropped = _codex_records(source, text)
+        elif source.source == "claude-memory":
+            found, dropped = _claude_memory_records(source, text)
         else:
             found, dropped = _plain_records(source, text)
         kept = 0

@@ -88,6 +88,14 @@
     "should_trigger": true
   },
   {
+    "query": "프로필마다 따로 쌓인 Claude 메모리를 공용 메모리로 동기화해줘.",
+    "should_trigger": true
+  },
+  {
+    "query": "Export my agent memory so I can import it on my new laptop.",
+    "should_trigger": true
+  },
+  {
     "query": "Open CLAUDE.md and fix the typo in the third bullet of the ports section.",
     "should_trigger": false
   },

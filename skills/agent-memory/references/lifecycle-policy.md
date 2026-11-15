@@ -139,7 +139,8 @@ records into that checkout, or someone else's project memory into a local one.
 
 ## Adoption
 
-`adopt` reads memory another agent already holds — CLAUDE.md, AGENTS.md,
+`adopt` reads memory another agent already holds — CLAUDE.md, Claude Code auto-memory
+(`projects/*/memory/*.md` of each config dir), AGENTS.md,
 `~/.codex/memories`, `.remember/core-memories.md` — and hands it to `import`
 without `--trust`. It has no separate policy: adopted records enter `inferred`,
 activation caps them at `provisional`, tombstones still block them, and identity
