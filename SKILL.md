@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: Use when work may depend on durable context from past sessions or other agents (preferences, repo rules, decisions, procedures, handoffs), or the user asks to remember, forget, review, import, or manage memory. Not for self-contained requests, secrets, or facts derivable from code, git, or tool output.
+description: Use when work may depend on durable context from past sessions or other agents (preferences, repo rules, decisions, procedures, handoffs), or the user asks to remember, forget, review, import, export, sync, or manage memory. Not for self-contained requests, secrets, or facts derivable from code, git, or tool output.
 license: MIT
 compatibility: Requires Python 3.11+, SQLite FTS5, and local filesystem access. sqlite-vec and model providers are optional.
 ---
@@ -105,6 +105,24 @@ agent-memory review approve|reject <id> --format json
 Rejection hard-deletes like forget. To bring in memory Claude Code, Codex, or a
 `.remember` directory already hold, follow references/adopt.md: preview, show
 the grouped table, and resolve accepted groups by `--batch`, never one by one.
+
+## Sync and move memory
+
+- **Claude Code auto-memory → this store.** `adopt --source claude-memory`
+  (never part of a plain `adopt`) reads `projects/*/memory/*.md` under `~/.claude` and `$CLAUDE_CONFIG_DIR`;
+  add `--claude-config-dir <dir>` per other profile. Re-running it is the sync:
+  unchanged facts merge, new or edited ones queue for review. An edited file
+  adds a record and leaves the old one; `forget` it if it now misleads.
+- **Another machine or a backup.** `export --scope all > memory.json`, then
+  `import --trust memory.json` on the other side for your own export. Without
+  `--trust` (someone else's file) everything lands in the review queue. Import
+  only adds and merges, and forgotten records stay forgotten.
+
+```bash
+agent-memory adopt --source claude-memory --claude-config-dir "<profile>" --dry-run --format json
+agent-memory export --scope all --format json > memory.json
+agent-memory import --trust memory.json --format json
+```
 
 To stop automatic observation without deleting memory, use
 `agent-memory session pause --cwd "$PWD" --harness <harness>`.

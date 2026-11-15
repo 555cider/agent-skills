@@ -285,7 +285,16 @@ def command_adopt(args: argparse.Namespace) -> int:
     from .sources import build_payload, discover, group_counts, refine_with_provider, select
 
     home = expand_user_path(args.home).resolve() if args.home else None
-    sources = discover(home=home, cwd=_cwd(args), scan_roots=[Path(item) for item in args.scan or []])
+    sources = discover(
+        home=home,
+        cwd=_cwd(args),
+        scan_roots=[Path(item) for item in args.scan or []],
+        claude_configs=[Path(item) for item in args.claude_config_dir or []],
+        # Auto-memory spans every project on the machine, so a plain
+        # `adopt --cwd .` keeps reading only what it always read.
+        claude_memory=bool({"claude-memory", "all"} & set(args.source or []))
+        or bool(args.claude_config_dir),
+    )
     selected = select(sources, args.source or [])
 
     if args.action == "list":
@@ -392,7 +401,17 @@ def command_export(args: argparse.Namespace) -> int:
 
 
 def command_import(args: argparse.Namespace) -> int:
-    raw = Path(args.file).read_text(encoding="utf-8") if args.file else sys.stdin.read()
+    if args.file:
+        data = Path(args.file).read_bytes()
+        # Windows PowerShell's `>` writes a BOM (UTF-8, or UTF-16 in 5.1 by
+        # default), so an export redirected there must still import.
+        if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+            raw = data.decode("utf-16")
+        else:
+            raw = data.decode("utf-8-sig")
+    else:
+        raw = sys.stdin.read()
+    raw = raw.lstrip("﻿")
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -836,6 +855,12 @@ def build_parser(*, hook_only: bool = False) -> argparse.ArgumentParser:
     adopt.add_argument("--cwd", help="Repository whose project-scoped files are read")
     adopt.add_argument("--scan", action="append", help="Additional repository root, repeatable")
     adopt.add_argument("--home", help="Override the home directory the global files are read from")
+    adopt.add_argument(
+        "--claude-config-dir",
+        action="append",
+        help="Extra Claude Code config dir (a CLAUDE_CONFIG_DIR profile) whose "
+        "projects/*/memory is read; repeatable",
+    )
     adopt.add_argument("--llm", action="store_true", help="Let the provider classify and restate")
     adopt.add_argument(
         "--include-episodic",

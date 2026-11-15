@@ -267,6 +267,21 @@ def test_cli_round_trips_global_memory_through_a_file(tmp_path, capsys, monkeypa
     assert [item["statement"] for item in restored] == ["Never add co-author trailers."]
 
 
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16"])
+def test_cli_imports_an_export_redirected_by_powershell(tmp_path, capsys, monkeypatch, encoding):
+    # `agent-memory export > file` in Windows PowerShell writes a BOM.
+    monkeypatch.setenv("AGENT_MEMORY_HOME", str(tmp_path / "source"))
+    assert main(["remember", "Never add co-author trailers.", "--scope", "global"]) == 0
+    capsys.readouterr()
+    assert main(["export", "--scope", "global", "--format", "json"]) == 0
+    dump = tmp_path / "global.json"
+    dump.write_text(capsys.readouterr().out, encoding=encoding)
+
+    monkeypatch.setenv("AGENT_MEMORY_HOME", str(tmp_path / "target"))
+    assert main(["import", str(dump), "--trust", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["imported"] == 1
+
+
 def test_forget_reports_structured_deletion_and_retained_surfaces(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("AGENT_MEMORY_HOME", str(tmp_path / "memory"))
     assert main(["remember", "Prefer targeted checks", "--scope", "global", "--format", "json"]) == 0

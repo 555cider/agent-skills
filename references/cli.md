@@ -62,10 +62,12 @@ import [FILE]
   --trust                    restore the exported state instead of queueing review
   --dry-run
 adopt [list]
-  --source NAME              claude-md|codex-agents|codex-memory|remember|all; repeatable
+  --source NAME              claude-md|claude-memory|codex-agents|codex-memory|remember|all; repeatable
   --cwd PATH                 repository whose project-scoped files are read
   --scan PATH                additional repository root; repeatable
   --home PATH                override the home the global files are read from
+  --claude-config-dir PATH   extra Claude Code config dir (profile) whose
+                             projects/*/memory is read; repeatable
   --llm                      let the provider classify and restate parsed blocks
   --include-episodic         also read session narrative
   --dry-run
@@ -121,7 +123,10 @@ the source), `unknown-project` (project-scoped with no repo key and no
 
 `adopt` reads another agent's markdown memory — `CLAUDE.md`, `CLAUDE.local.md`,
 `AGENTS.md`, `~/.codex/memories/{MEMORY.md,memory_summary.md}`,
-`.remember/core-memories.md` — converts it to an `agent-memory.export.v2`
+`.remember/core-memories.md`, Claude Code auto-memory
+(`<config>/projects/<slug>/memory/*.md` for `~/.claude`, `$CLAUDE_CONFIG_DIR`
+and each `--claude-config-dir`; read only when `--source claude-memory|all` or
+`--claude-config-dir` is given) — converts it to an `agent-memory.export.v2`
 payload and feeds it to `import` without `--trust`; records always land in the
 review queue. `adopt list` only reports what the machine has and writes nothing.
 Scope is decided per record: home files are global, repository files are keyed
