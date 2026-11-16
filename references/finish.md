@@ -86,9 +86,20 @@ would refuse to delete a branch checked out there, so finish drops that one regi
 Behavior once the merge starts:
 
 - A merge conflict restores the main worktree and stops (`reset --hard`, safe because of the
-  clean guard; `git merge --abort` does not apply to a squash, which records no `MERGE_HEAD`).
+  clean guard; `git merge --abort` does not apply to a squash, which records no `MERGE_HEAD`,
+  and `reset --hard` clears `MERGE_HEAD` for `--strategy merge` too).
+- `--strategy merge` runs `git merge --no-ff --no-commit` and commits with `-F`, so a merge
+  commit and a squash commit go through the same commit step and the same hook-failure path.
+- `--strategy ff` runs `git merge --ff-only` and makes no commit. When base has moved on it is
+  refused before anything changes; rebase the branch onto base in its worktree, verify, re-run.
+- `--strategy pr` merges nothing. Landed means the branch is an ancestor of the ref (merge or
+  fast-forward PR), or merging it into the ref in memory (`git merge-tree --write-tree`, git
+  2.38+) gives back the ref's own tree (squash or rebase PR, whose commits were rewritten). It
+  tries `<remote>/<base>` first, then the local base, from refs already fetched. A base that
+  later changed the same lines again can hide a landed PR from this test; the refusal says to
+  remove the worktree and branch by hand then.
 - A failed commit (rejecting hook, or an empty diff because the changes are already in base)
   stops with the staged state and the recovery command spelled out. Nothing is removed.
 - A failed worktree removal or branch deletion prints what is left over and **exits non-zero**.
-  The squash commit is already on base at that point, so the run must not be repeated. The
+  The merge is already on base at that point, so the run must not be repeated. The
   empty-directory residue above is the one exception: it exits zero.

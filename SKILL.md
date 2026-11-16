@@ -1,14 +1,14 @@
 ---
 name: worktree-cycle
-description: Use when starting or finishing work in a git worktree ("워크트리 시작/생성/정리", "dev/main 으로 squash merge 후 정리"). Start branches from the local integration branch HEAD and reserves a dev-server port block; finish squash-merges back and removes the branch and worktree. Never pushes.
+description: Use when starting or finishing work in a git worktree ("워크트리 시작/생성/정리", "dev/main 으로 merge·squash merge 후 정리"), or when work done in a worktree is ready to report. Start branches from the local integration branch HEAD and reserves a dev-server port block; finish lands the branch the way the repository does (squash, merge commit, fast-forward, or a pull request merged on the server) and removes the branch and worktree — only after the user approves. The scripts never push.
 license: MIT
-compatibility: Bash, git, and Python 3.10+ for coordinated port allocation. Works on Windows through Git Bash. No network access, no push.
+compatibility: Bash, git (2.38+ for --strategy pr on squash-merged PRs), and Python 3.10+ for coordinated port allocation. Works on Windows through Git Bash. No network access, no push.
 ---
 
 # worktree-cycle
 
 Open an isolated git worktree from the local integration branch HEAD, and close it back into
-that branch as a single squash commit. The deterministic git sequence and its guards live in
+that branch the way the repository lands work. The deterministic git sequence and its guards live in
 the scripts, not in prose. `<skill-dir>` is the directory holding this file.
 
 Use the user's language when reporting. Report cleanup exactly as it happened — the finish
@@ -19,12 +19,18 @@ result, not a success.
 
 - **Base is the LOCAL integration branch HEAD.** Branching from the remote default
   (`origin/main`, …) drops recent local commits, so the work sits on a stale base and collides
-  at squash-merge time. `start` branches only from the local HEAD and asserts it immediately
+  at merge time. `start` branches only from the local HEAD and asserts it immediately
   after creating the worktree.
-- **Never push.** The merge lands on the local integration branch only. Publishing is a
-  separate human step — the separation matters most in repositories where the integration
-  branch is what actually runs.
-- **Squash merge.** `feature/* → integration` as one commit: `git merge --squash` plus a commit.
+- **The scripts never push.** Publishing is a separate step the user asks for — in a
+  pull-request repository, pushing the branch and opening the PR.
+- **Finishing is the user's call.** "Done" means verified *in the worktree*; base is untouched
+  until the user says to land it. End the report with the worktree path, its ports and one
+  question — "land on `<base>` (<strategy>)?", or "push the branch and open a PR?" — never
+  about pushing base. Not satisfied, keep working in the same worktree. A landing asked for in
+  this turn ("다 됐으면 dev 에 넣어") is the approval.
+- **Land the way the repository does**: `--strategy squash|merge|ff|pr`, recorded once in
+  `git config worktree-cycle.strategy` (or per base). How to choose it, and the pull-request
+  flow: [references/landing.md](references/landing.md).
 - **Runtime isolation is part of the worktree.** Branch and filesystem isolation buys nothing
   while every worktree runs its dev servers on the same default ports: the second stack fails
   to bind, or binds elsewhere and quietly talks to the wrong backend. `start` therefore
@@ -37,9 +43,10 @@ result, not a success.
 | --- | --- |
 | 1. Start | `scripts/start-worktree.sh <name>` — branch `worktree-<name>` from the local integration branch HEAD, then assert the base. |
 | 2. Work | `cd <path>`, implement, test. Run the stack you are changing on the **reserved port block**, not on the defaults. **Commit before finishing** so the worktree is clean. |
-| 3. Return | Move back to the integration branch (main worktree), **as its own step**. Required: `finish` refuses to run from inside the worktree it is about to delete — and on Windows a shell that merely *started* inside it still locks the directory (see Traps). |
-| 4. Finish | `scripts/finish-worktree.sh -b worktree-<name> -m "…"` — squash merge, then remove worktree and branch. |
-| 5. Publish | After verifying: `git push <remote> <base>` (manual). |
+| 3. Report | Report done-in-the-worktree and ask whether to land it (Principles). **Stop here until the user answers.** |
+| 4. Return | Move back to the integration branch (main worktree), **as its own step**. Required: `finish` refuses to run from inside the worktree it is about to delete — and on Windows a shell that merely *started* inside it still locks the directory (see Traps). |
+| 5. Finish | `scripts/finish-worktree.sh -b worktree-<name> -m "…"` — land with the repository's strategy, then remove worktree and branch. Pull-request repository: push and open the PR instead, and finish `--strategy pr` after the server merged it ([landing](references/landing.md)). |
+| 6. Publish | Only when the user asks: `git push <remote> <base>`. |
 
 ## Start
 
@@ -128,6 +135,7 @@ yours:
 ```bash
 <skill-dir>/scripts/finish-worktree.sh -b <worktree-branch> -m "feat(scope): summary" [-m "body"]
 # repeated -m become paragraphs, as with git commit
+# how it lands: --strategy squash|merge|ff|pr (references/landing.md)
 # preview: --dry-run  |  explicit worktree path: -w <path>
 # integration branch: --base <branch> (default: the base recorded at start, then
 #   git config worktree-cycle.base; with neither, --base is required)
@@ -139,9 +147,9 @@ Guards — any violation stops the run **before anything is modified**:
 
 - The caller is not standing inside the worktree being removed.
 - The main worktree is on the base branch with a clean **tracked** tree (untracked scratch
-  files are allowed), so the squash cannot swallow unrelated staged work and conflict recovery
+  files are allowed; `pr` merges nothing locally and skips this), so the merge cannot swallow unrelated staged work and conflict recovery
   cannot destroy it. `--autostash-tracked` trades this stop for parking those changes and
-  putting them back after the squash commit; a pop conflict leaves them in the stash and fails
+  putting them back after the merge; a pop conflict leaves them in the stash and fails
   the run.
 - The target branch exists and has commits beyond base, and shares a common ancestor with it.
 - The target worktree is clean, so nothing uncommitted is lost. A branch whose worktree is
@@ -157,7 +165,7 @@ Once the merge starts:
 - **A merge conflict restores the main worktree** and stops; a refusal before git touched
   anything leaves the tree exactly as found (no blind `reset --hard`).
 - **A failed commit** stops with the merged changes staged and the recovery command printed.
-- **A cleanup failure** means the squash already landed: the run exits non-zero and must not be
+- **A cleanup failure** means the merge already landed: the run exits non-zero and must not be
   re-run — finish by hand as printed. An empty, deregistered directory left by a Windows lock
   is the exception: reported, exit zero.
 - A base that trails its remote is reported, never blocked. Nothing fetches or pushes.
@@ -182,6 +190,9 @@ Full explanations: [references/traps.md](references/traps.md).
 ## Common Mistakes
 
 The guards above already stop the scripted mistakes; these are the ones they cannot see.
+
+- **Finishing on your own, then reporting "done".** The user first sees the work after it is on
+  base, where other sessions and the running app already pick it up.
 
 - **Drifting into the main worktree to work, and restarting its dev server there.** The change
   leaves the isolation the skill exists to provide, and the shared instance other sessions
