@@ -26,6 +26,41 @@
       ]
     },
     {
+      "id": "report-from-the-worktree-and-ask-before-landing",
+      "prompt": "워크트리에서 로그인 오류 문구 고쳐 줘. 통합 브랜치는 dev.",
+      "expected_output": "Implements and verifies the fix inside the worktree, commits there, and reports with the worktree path and ports and one closing question asking whether to land it on dev with the repository's strategy. dev is untouched and finish is not run.",
+      "files": [],
+      "assertions": [
+        "Does not run scripts/finish-worktree.sh or any merge into dev in this turn.",
+        "Reports the work as done in the worktree, not as landed.",
+        "Ends with a single question about landing on dev that names the strategy, not a push question.",
+        "Leaves the worktree and branch in place for further changes."
+      ]
+    },
+    {
+      "id": "finish-uses-the-repository-strategy",
+      "prompt": "좋아, dev 에 넣어. 이 레포 CONTRIBUTING 은 'feature 브랜치는 --no-ff merge' 라고 돼 있어.",
+      "expected_output": "Finishes with --strategy merge (or sets git config worktree-cycle.strategy merge first) so dev gets a merge commit with the branch history, instead of the default squash.",
+      "files": [],
+      "assertions": [
+        "Runs finish with --strategy merge or after setting worktree-cycle.strategy to merge.",
+        "Does not squash the branch.",
+        "Reports that the branch landed as a merge commit and that nothing was pushed."
+      ]
+    },
+    {
+      "id": "pull-request-repository-asks-before-pushing-and-cleans-up-after-merge",
+      "prompt": "이 레포는 main 보호돼 있고 PR 로만 들어가. 워크트리에서 README 오타 고쳐 줘.",
+      "expected_output": "Fixes and commits in the worktree, then asks whether to push the branch and open a PR into main — without pushing. It does not run finish with a local strategy, and explains that after the PR is merged the cleanup is git fetch plus finish --strategy pr.",
+      "files": [],
+      "assertions": [
+        "Does not push the branch or open a PR before the user approves.",
+        "Does not merge the branch into local main.",
+        "Names --strategy pr (after git fetch) as the cleanup once the PR is merged.",
+        "Suggests recording git config worktree-cycle.strategy pr for the repository."
+      ]
+    },
+    {
       "id": "finish-requires-returning-to-the-main-worktree",
       "prompt": "다 됐어. 지금 워크트리 안이야 — 여기서 바로 squash merge 하고 정리해줘.",
       "expected_output": "Returns to the main worktree before running scripts/finish-worktree.sh, because the finish guard refuses to delete the worktree the caller is standing in.",

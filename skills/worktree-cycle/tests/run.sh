@@ -415,6 +415,204 @@ assert_exit "finish accepts repeated -m" 0
 assert_eq "the first -m is the subject" "feat(x): title" "$(git -C "$repo" log -1 --format=%s dev)"
 assert_eq "a later -m becomes the body" "body line" "$(git -C "$repo" log -1 --format=%b dev | tr -d '\r')"
 
+echo "== finish-worktree: strategies =="
+
+# merge keeps the branch history under a merge commit carrying the -m message.
+repo="$(new_repo finish-merge)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt" work.txt "one" "wip 1"
+commit_in "$wt" work.txt "two" "wip 2"
+before="$(count_commits "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): merged" --strategy merge
+assert_exit "finish --strategy merge lands and cleans up" 0
+assert_eq "merge keeps both branch commits plus a merge commit" "$((before + 3))" "$(count_commits "$repo" dev)"
+assert_eq "the merge commit has two parents" "2" \
+  "$(git -C "$repo" rev-list --parents -n 1 dev | awk '{print NF - 1}')"
+assert_eq "the merge commit uses the given message" "feat(x): merged" "$(git -C "$repo" log -1 --format=%s dev)"
+assert_eq "merge brings the worktree content over" "two" "$(cat "$repo/work.txt" 2>/dev/null)"
+assert_no_dir "merge removes the worktree" "$wt"
+
+# ff moves base onto the branch tip: no new commit, and no -m needed.
+repo="$(new_repo finish-ff)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt" work.txt "one" "feat(x): first"
+tip="$(head_of "$repo" worktree-feat1)"
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy ff
+assert_exit "finish --strategy ff runs without -m" 0
+assert_eq "ff moves base to the branch tip" "$tip" "$(head_of "$repo" dev)"
+assert_no_dir "ff removes the worktree" "$wt"
+if branch_exists "$repo" worktree-feat1; then fail "ff deletes the branch" "branch still present"; else
+  pass "ff deletes the branch"; fi
+
+# ff refuses when base moved on, and changes nothing.
+repo="$(new_repo finish-ff-diverged)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt"   work.txt  "one"  "wip"
+commit_in "$repo" other.txt "dev"  "dev moved"
+head_before="$(head_of "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy ff --dry-run
+assert_exit_nonzero "ff --dry-run already reports a base that moved on"
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy ff
+assert_exit_nonzero "ff refuses a base that moved on"
+assert_stderr_contains "the ff refusal says to rebase" "Rebase the branch onto 'dev'"
+assert_eq "a refused ff leaves base where it was" "$head_before" "$(head_of "$repo" dev)"
+assert_eq "a refused ff leaves a clean main worktree" "" "$(git -C "$repo" status --porcelain)"
+assert_dir "a refused ff keeps the worktree" "$wt"
+
+# The repository's convention, set once, is what finish uses without --strategy.
+repo="$(new_repo finish-strategy-config)"
+git -C "$repo" config worktree-cycle.strategy merge
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): by config"
+assert_exit "finish reads worktree-cycle.strategy" 0
+assert_eq "the configured strategy makes a merge commit" "2" \
+  "$(git -C "$repo" rev-list --parents -n 1 dev | awk '{print NF - 1}')"
+
+# A per-base value wins over the repository value.
+repo="$(new_repo finish-strategy-per-base)"
+git -C "$repo" config worktree-cycle.strategy merge
+git -C "$repo" config branch.dev.worktreeCycleStrategy squash
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): per base"
+assert_exit "finish reads branch.<base>.worktreeCycleStrategy" 0
+assert_eq "the per-base strategy wins (one parent = squash)" "1" \
+  "$(git -C "$repo" rev-list --parents -n 1 dev | awk '{print NF - 1}')"
+
+# Nothing recorded, but base keeps merge commits: finish asks instead of squashing.
+repo="$(new_repo finish-strategy-unset-merges)"
+git -C "$repo" checkout -q -b side
+commit_in "$repo" side.txt "side" "side work"
+git -C "$repo" checkout -q dev
+git -C "$repo" merge -q --no-ff -m "Merge branch 'side'" side
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+head_before="$(head_of "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): guessed"
+assert_exit_nonzero "finish will not guess squash over a base with merge commits"
+assert_stderr_contains "the refusal asks for --strategy" "Pass --strategy"
+assert_eq "the refusal changes nothing" "$head_before" "$(head_of "$repo" dev)"
+
+repo="$(new_repo finish-strategy-bad)"
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+head_before="$(head_of "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): bad" --strategy rebase
+assert_exit_nonzero "finish rejects an unknown strategy"
+assert_stderr_contains "the rejection lists the strategies" "use squash, merge, ff or pr"
+assert_eq "an unknown strategy changes nothing" "$head_before" "$(head_of "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy merge
+assert_exit_nonzero "merge still requires -m"
+assert_stderr_contains "the -m refusal names the strategy" "-m/--message required for strategy merge"
+
+# pr: the server merged the pull request; finish only cleans up, and only once it has landed.
+repo="$(new_repo finish-pr-not-landed)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt" work.txt "one" "wip"
+head_before="$(head_of "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy pr
+assert_exit_nonzero "pr refuses a branch that has not landed"
+assert_stderr_contains "the pr refusal says to fetch" "Fetch first"
+assert_dir "an unlanded pr keeps the worktree" "$wt"
+assert_eq "an unlanded pr leaves base alone" "$head_before" "$(head_of "$repo" dev)"
+
+# Squash-merged on the server: only the remote-tracking base has it, under a new commit, and the
+# main worktree sits elsewhere with local edits — none of which matters to a cleanup.
+repo="$(new_repo finish-pr-squashed)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt" work.txt "one" "wip 1"
+commit_in "$wt" work.txt "two" "wip 2"
+git -C "$repo" checkout -q -b scratch
+git -C "$repo" merge -q --squash worktree-feat1 >/dev/null
+git -C "$repo" commit -qm "feat(x): squashed by the server (#1)"
+git -C "$repo" update-ref refs/remotes/origin/dev scratch
+git -C "$repo" reset -q --hard dev
+git -C "$repo" checkout -q dev
+git -C "$repo" checkout -q -b elsewhere
+printf 'local edit\n' > "$repo/file.txt"
+dev_before="$(head_of "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy pr
+assert_exit "pr cleans up a squash-merged branch found on origin/dev" 0
+assert_no_dir "pr removes the worktree" "$wt"
+if branch_exists "$repo" worktree-feat1; then fail "pr deletes the branch" "branch still present"; else
+  pass "pr deletes the branch"; fi
+assert_eq "pr does not move local base" "$dev_before" "$(head_of "$repo" dev)"
+assert_eq "pr leaves the main worktree's edits alone" "local edit" "$(cat "$repo/file.txt")"
+
+# Merge-commit PR already pulled into local base: ancestry is enough.
+repo="$(new_repo finish-pr-merged-local)"
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
+git -C "$repo" merge -q --no-ff -m "Merge pull request #2" worktree-feat1
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy pr
+assert_exit "pr cleans up a branch merged into local base" 0
+assert_no_dir "pr on a local merge removes the worktree" "$repo/.worktrees/feat1"
+if branch_exists "$repo" worktree-feat1; then fail "pr on a local merge deletes the branch" "branch still present"; else
+  pass "pr on a local merge deletes the branch"; fi
+
+# Partial landing: the server squashed only the first of two commits. pr must refuse — deleting
+# here would lose the second commit.
+repo="$(new_repo finish-pr-partial)"
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt" a.txt "a" "add a"
+first="$(head_of "$repo" worktree-feat1)"
+commit_in "$wt" b.txt "b" "add b"
+git -C "$repo" checkout -q -b scratch
+git -C "$repo" merge -q --squash "$first" >/dev/null
+git -C "$repo" commit -qm "feat(x): only a (#3)"
+git -C "$repo" update-ref refs/remotes/origin/dev scratch
+git -C "$repo" checkout -q dev
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy pr
+assert_exit_nonzero "pr refuses a branch that only partly landed"
+assert_dir "a partly landed pr keeps the worktree" "$wt"
+
+# merge=ours keeps base's side in an in-memory merge, so the branch's edit to that file would look
+# landed. pr must still refuse when the file differs.
+repo="$(new_repo finish-pr-merge-ours)"
+printf 'c.txt merge=ours\n' > "$repo/.gitattributes"
+printf 'base\n' > "$repo/c.txt"
+git -C "$repo" add .gitattributes c.txt
+git -C "$repo" commit -qm "attrs"
+git -C "$repo" config merge.ours.driver true
+run_in "$repo" "$START" feat1
+wt="$repo/.worktrees/feat1"
+commit_in "$wt"   c.txt "from branch" "branch edits c"
+commit_in "$repo" c.txt "from dev"    "dev edits c"
+run_in "$repo" "$FINISH" -b worktree-feat1 --strategy pr
+assert_exit_nonzero "pr refuses a branch whose merge=ours file never landed"
+assert_dir "a merge=ours false landing keeps the worktree" "$wt"
+
+# The branch checked out in the main worktree is not a worktree to remove.
+repo="$(new_repo finish-pr-main-checkout)"
+git -C "$repo" checkout -q -b feature-x
+commit_in "$repo" work.txt "one" "wip"
+git -C "$repo" checkout -q dev
+git -C "$repo" merge -q --no-ff -m "Merge pull request #4" feature-x
+git -C "$repo" checkout -q feature-x
+run_in "$repo" "$FINISH" -b feature-x --base dev --strategy pr
+assert_exit_nonzero "pr refuses a branch checked out in the main worktree"
+assert_stderr_contains "the refusal names the main worktree" "checked out in the main worktree"
+assert_dir "the main worktree is untouched" "$repo"
+
+# A merge conflict is recovered the same way as a squash conflict.
+repo="$(new_repo finish-merge-conflict)"
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" file.txt "from worktree" "worktree edit"
+commit_in "$repo"                  file.txt "from dev"      "dev edit"
+head_before="$(head_of "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): conflicting" --strategy merge
+assert_exit_nonzero "finish stops on a merge conflict"
+assert_eq "merge conflict recovery leaves dev at its previous commit" "$head_before" "$(head_of "$repo" dev)"
+assert_eq "merge conflict recovery leaves a clean main worktree" "" "$(git -C "$repo" status --porcelain)"
+assert_no_file "merge conflict recovery clears MERGE_HEAD" "$repo/.git/MERGE_HEAD"
+
 # Untracked scratch files in the main tree are explicitly allowed by the guard.
 repo="$(new_repo finish-untracked-ok)"
 run_in "$repo" "$START" feat1

@@ -72,7 +72,11 @@ directories yourself.
   integration branch HEAD (by default the branch checked out in the main worktree,
   never the remote default) and asserts that base right
   after creation, so stale-base collisions surface at creation instead of at
-  merge time; **finish** squash-merges back and removes the worktree and branch.
+  merge time; **finish** — run once the user approves landing — merges back the way
+  the repository does (`--strategy squash|merge|ff`, or `git config
+  worktree-cycle.strategy`; squash when unset) and removes the worktree and branch. In
+  pull-request repositories `--strategy pr` merges nothing and cleans up only once the
+  server-merged PR is in base.
   Every guard runs before anything is modified, a merge conflict restores the
   main worktree untouched, untracked files the merge would overwrite are stashed
   rather than deleted, and incomplete cleanup exits non-zero with the remedy that
