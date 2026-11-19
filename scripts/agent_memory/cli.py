@@ -549,12 +549,22 @@ def _launch_worker(args: argparse.Namespace) -> None:
         finally:
             db.close()
         return
+    _spawn_detached(args, ["worker", "--once"])
+
+
+def _spawn_detached(args: argparse.Namespace, argv: list[str], stdin: bytes | None = None) -> None:
+    """Start `memory.py <argv>` in the background, outliving this process.
+
+    `stdin`, when given, is written to the child and closed; nothing of this
+    process's own stdio is inherited, so the host that ran the hook is not kept
+    waiting on the child.
+    """
     command = [sys.executable, str(Path(__file__).resolve().parents[1] / "memory.py")]
     if args.memory_home:
         command.extend(["--memory-home", args.memory_home])
-    command.extend(["worker", "--once"])
+    command.extend(argv)
     kwargs: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
+        "stdin": subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
@@ -563,7 +573,48 @@ def _launch_worker(args: argparse.Namespace) -> None:
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen(command, **kwargs)
+    child = subprocess.Popen(command, **kwargs)
+    if stdin is not None and child.stdin is not None:
+        try:
+            child.stdin.write(stdin)
+        finally:
+            child.stdin.close()
+
+
+DEFERRED_CAPTURE_ENV = "AGENT_MEMORY_DEFERRED_CAPTURE"
+
+
+def _defer_capture(args: argparse.Namespace, data: dict[str, Any], kind: str) -> None:
+    """Record a hook event the shared store was too busy to take in time.
+
+    The hook itself gives up on the write lock after HOOK_BUSY_TIMEOUT_MS so the
+    host's prompt is never held; the event (and any "remember …" in the prompt)
+    is handed to a background run of the same hook that waits as long as an
+    ordinary command does. That run only captures: it prints nothing and does
+    not defer again.
+    """
+    argv = ["hook", "--harness", args.harness, "--event", kind]
+    if args.cwd:
+        argv.extend(["--cwd", args.cwd])
+    payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    if os.environ.get("AGENT_MEMORY_SYNC_WORKER") in {"1", "true", "yes"}:
+        deferred = argparse.Namespace(**{**vars(args), "event": kind})
+        db, service = _open(deferred)
+        try:
+            cwd = resolve_cwd(str(data.get("cwd") or args.cwd or os.getcwd()))
+            service.capture_event(harness=args.harness, kind=kind, data=data, cwd=cwd)
+        finally:
+            db.close()
+        return
+    previous = os.environ.get(DEFERRED_CAPTURE_ENV)
+    os.environ[DEFERRED_CAPTURE_ENV] = "1"
+    try:
+        _spawn_detached(args, argv, stdin=payload)
+    finally:
+        if previous is None:
+            os.environ.pop(DEFERRED_CAPTURE_ENV, None)
+        else:
+            os.environ[DEFERRED_CAPTURE_ENV] = previous
 
 
 def detect_hook_harness(data: dict[str, Any]) -> str:
@@ -617,16 +668,44 @@ def command_hook(args: argparse.Namespace) -> int:
         event_name = args.event or str(data.get("hook_event_name") or data.get("event") or "")
         kind = MemoryService.normalize_hook_kind(event_name)
         cwd = resolve_cwd(str(data.get("cwd") or args.cwd or os.getcwd()))
+        # The background run `_defer_capture` starts: capture only, waiting on
+        # the lock as long as any command does, and never deferring again.
+        deferred = os.environ.get(DEFERRED_CAPTURE_ENV) == "1"
         # A hook blocks the host's prompt loop, so it waits on the shared store's
         # write lock for a bounded moment and then gives up — see
-        # HOOK_BUSY_TIMEOUT_MS. The `except` below already turns that into a
-        # silent, empty result, which is the right failure for a hook.
-        db, service = _open(args, busy_timeout_ms=HOOK_BUSY_TIMEOUT_MS)
+        # HOOK_BUSY_TIMEOUT_MS.
+        if deferred:
+            db, service = _open(args)
+        else:
+            db, service = _open(args, busy_timeout_ms=HOOK_BUSY_TIMEOUT_MS)
+        project = repo_key(cwd)
         try:
-            capture = service.capture_event(
-                harness=args.harness, kind=kind, data=data, cwd=cwd
-            )
-            if kind == "user_prompt" and not capture.get("paused"):
+            try:
+                capture = service.capture_event(
+                    harness=args.harness, kind=kind, data=data, cwd=cwd, project=project
+                )
+            except sqlite3.OperationalError:
+                # Another session, Codex or the worker holds the write lock. Losing
+                # the write must not cost the prompt its recall too: reading works
+                # under WAL while someone else writes, so recall goes ahead on what
+                # can be read, and the event is recorded in the background.
+                if deferred:
+                    raise
+                # The store is known to be busy: recall's own bookkeeping write
+                # (it fails open) should not wait out the same lock a second time.
+                db.conn.execute("PRAGMA busy_timeout=0")
+                _defer_capture(args, data, kind)
+                session_id = service._session_id(data, args.harness, project)
+                capture = {
+                    "captured": False,
+                    "deferred": True,
+                    "paused": service._session_paused(session_id, args.harness, project),
+                    "session_id": session_id,
+                    "repo_key": project,
+                }
+            if deferred:
+                print("{}")
+            elif kind == "user_prompt" and not capture.get("paused"):
                 prompt = str(data.get("prompt") or data.get("user_prompt") or data.get("message") or "")
                 if isinstance(data.get("message"), dict):
                     prompt = str(data["message"].get("content") or data["message"].get("text") or prompt)

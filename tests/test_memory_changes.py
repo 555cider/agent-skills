@@ -102,6 +102,78 @@ def test_prompt_hook_reports_forget_and_hides_leftover_matches(tmp_path, capsys)
     assert ids == {neighbour["id"]}
 
 
+def test_prompt_hook_still_recalls_when_another_process_holds_the_write_lock(
+    tmp_path, capsys, monkeypatch
+):
+    import agent_memory.cli as cli
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    db = Database(tmp_path / "store")
+    from agent_memory.service import MemoryService
+
+    MemoryService(db).create_memory(
+        candidate("Release notes are written in Korean."), project=repo_key(repo)
+    )
+    db.close()
+    deferred: list[tuple[str, str]] = []
+    monkeypatch.setattr(cli, "_defer_capture", lambda args, data, kind: deferred.append((kind, data["event_id"])))
+    monkeypatch.setattr(cli, "HOOK_BUSY_TIMEOUT_MS", 50)
+    holder = Database(tmp_path / "store")
+    holder.conn.execute("BEGIN IMMEDIATE")
+    try:
+        output = _hook(tmp_path, capsys, "what language are the release notes in", "u-locked")
+    finally:
+        holder.conn.execute("ROLLBACK")
+        holder.close()
+    # The write lost to the lock; the recall did not.
+    assert "Release notes are written in Korean." in output["context"]
+    assert deferred == [("user_prompt", "u-locked")]
+    db = Database(tmp_path / "store")
+    try:
+        assert db.conn.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+    finally:
+        db.close()
+
+
+def test_deferred_capture_records_the_event_and_prints_nothing(tmp_path, capsys, monkeypatch):
+    import agent_memory.cli as cli
+
+    (tmp_path / "repo").mkdir()
+    monkeypatch.setenv(cli.DEFERRED_CAPTURE_ENV, "1")
+    output = _hook(tmp_path, capsys, "remember that release notes are written in Korean", "u-later")
+    assert output == {}
+    db = Database(tmp_path / "store")
+    try:
+        assert db.conn.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+        statements = [row[0] for row in db.conn.execute("SELECT statement FROM memories")]
+    finally:
+        db.close()
+    assert any("release notes are written in Korean" in s for s in statements)
+
+
+def test_defer_capture_hands_the_payload_to_a_background_hook(tmp_path, monkeypatch):
+    import argparse
+
+    import agent_memory.cli as cli
+
+    started: list[tuple[list[str], bytes | None, str | None]] = []
+    monkeypatch.delenv("AGENT_MEMORY_SYNC_WORKER", raising=False)
+    monkeypatch.delenv(cli.DEFERRED_CAPTURE_ENV, raising=False)
+    monkeypatch.setattr(
+        cli,
+        "_spawn_detached",
+        lambda args, argv, stdin=None: started.append((argv, stdin, os.environ.get(cli.DEFERRED_CAPTURE_ENV))),
+    )
+    args = argparse.Namespace(memory_home=str(tmp_path), harness="codex", cwd=None)
+    cli._defer_capture(args, {"prompt": "한글 prompt"}, "user_prompt")
+    assert started == [
+        (["hook", "--harness", "codex", "--event", "user_prompt"], '{"prompt": "한글 prompt"}'.encode("utf-8"), "1")
+    ]
+    # Only the child sees the switch.
+    assert cli.DEFERRED_CAPTURE_ENV not in os.environ
+
+
 def test_hook_change_lines_name_an_unapplied_forget():
     lines = hook_change_lines({"forgotten": [], "forget_skipped": 4})
     assert lines and "4 records matched" in lines[0] and "forget --id" in lines[0]

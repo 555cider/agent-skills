@@ -107,10 +107,13 @@ def repo_root(cwd: Path) -> Path:
     `.git/modules/` -- keeps the toplevel, which is what it was keyed on before.
     """
 
-    top = _git_value(cwd, "rev-parse", "--show-toplevel")
+    # One git for both answers: starting a process is the expensive part on
+    # Windows (~0.2 s under load), and hooks pay it on every prompt.
+    lines = _git_value(cwd, "rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir").splitlines()
+    top = lines[0].strip() if lines else ""
     if not top:
         return cwd.resolve()
-    common = _git_value(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    common = lines[1].strip() if len(lines) > 1 else ""
     if common:
         common_path = Path(common).resolve()
         if common_path.name == ".git":
