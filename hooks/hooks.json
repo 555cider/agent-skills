@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/skills/agent-memory/bin/agent-memory\" hook --harness auto --event user_prompt",
-            "timeout": 5,
+            "timeout": 10,
             "statusMessage": "Agent Memory user_prompt"
           }
         ]

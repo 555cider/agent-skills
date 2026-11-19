@@ -89,6 +89,10 @@ but retained for possible verification.
 ## Failure model
 
 - Hook exceptions return `{}` and exit zero.
+- A hook waits on the write lock for at most 1 s. When another session or the
+  worker holds it longer, the prompt hook still recalls (reads go on under WAL)
+  and hands the event to a background run of the same hook, which records it
+  once the lock is free.
 - Prompt-time recall never requires a provider.
 - Missing/broken sqlite-vec leaves FTS/trigram active.
 - Provider failures retry with an expiring DB lease and exponential delay.

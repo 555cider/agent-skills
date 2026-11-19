@@ -396,14 +396,17 @@ class MemoryService:
         kind: str,
         data: dict[str, Any],
         cwd: Path,
+        project: str | None = None,
     ) -> dict[str, Any]:
+        """`project` is `repo_key(cwd)` when the caller already has it (it costs
+        git processes)."""
         harness = harness.casefold()
         if harness not in HARNESSES:
             raise MemoryError(f"unsupported harness: {harness}")
         kind = self.normalize_hook_kind(kind)
         if kind not in EVENT_KINDS:
             raise MemoryError(f"unsupported event kind: {kind}")
-        project = repo_key(cwd)
+        project = project or repo_key(cwd)
         session_id = self._session_id(data, harness, project)
         if self._session_paused(session_id, harness, project):
             return {"captured": False, "paused": True, "session_id": session_id, "repo_key": project}
