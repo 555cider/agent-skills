@@ -116,7 +116,11 @@ directories yourself.
   rather than after. What recording adds to that is the browser's own back button — the one
   screen change with no control behind it, caught by the tab's session-history index
   falling, because a back navigation to another document never reaches a listener inside
-  the page it lands on.
+  the page it lands on. An app whose URL never moves is mapped too: on request the header's
+  icon-only verbs split screens that share every landmark, a fixture query such as `?empty=1`
+  can be kept in the route, and `route --to s7` names a screen by id. `route --all` hands back
+  every screen with its path, which turns "screenshot every screen and state" into a loop
+  instead of a hand-written navigation script.
 - [`skills/step-back/`](skills/step-back/) — the two ways effort goes wrong, treated
   as one dial: shipping the first thing that worked, and still verifying something
   that was fine forty tool calls ago. The premise is that the judgment already

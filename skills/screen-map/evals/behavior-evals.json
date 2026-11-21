@@ -185,6 +185,17 @@
         "May record the user-driven session without claiming replay verification."
       ],
       "files": []
+    },
+    {
+      "id": "visit-every-screen-from-the-map",
+      "prompt": "Take a screenshot of every screen of the local app, phone width, light and dark. Screens change without the URL changing.",
+      "expected_output": "Builds or reads a map configured for a URL-less app (phone-width viewport, signature.chrome, identityQuery for fixture states, replayMutating only for a disposable or in-memory environment), then loops over `route --all` with a fresh page per screen and reports the screen counts with the screenshots.",
+      "files": [],
+      "assertions": [
+        "Uses `route --all` (or per-screen `route --to <state id>`) instead of hand-writing a navigation script per screen.",
+        "Sets actionPolicy.replayMutating only after establishing the environment is disposable or resets on reload, and says so.",
+        "Reports how many screens the map holds, how many were captured, and which were unreachable or failed, rather than presenting the screenshots as full coverage."
+      ]
     }
   ]
 }

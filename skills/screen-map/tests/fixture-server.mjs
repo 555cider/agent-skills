@@ -129,6 +129,7 @@ const server = createServer((req, res) => {
   if (path === '/hazards') return send(res, 200, page('hazards.html'));
   if (path === '/leaf') return send(res, 200, page('leaf.html'));
   if (path === '/spa' || path.startsWith('/spa/')) return send(res, 200, page('spa.html'));
+  if (path === '/shell') return send(res, 200, page('shell.html'));
   // Visited once and it is never that screen again. The crawl therefore cannot replay
   // its way back, which is the case `replayFailures` exists to stop paying for.
   if (path === '/wizard') {

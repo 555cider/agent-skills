@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Shell</title></head>
+<body>
+  <!-- An app shell whose URL never moves: every screen change is a plain button that
+       re-renders in place, no link, no pushState. The home list and a folder list share
+       landmarks and fields, so only the header's icon verbs tell them apart. Row buttons
+       carry labelled icons, so a name built from innerText misses words the accessible
+       name has. "모두 잠금" changes the rows in place and survives nothing but this
+       document, like an in-memory mock. `?mode=empty` is a fixture state with the same
+       structure as home. Not linked from anywhere else. -->
+  <div id="app"></div>
+  <script>
+    const empty = new URLSearchParams(location.search).get('mode') === 'empty';
+    const state = { screen: 'home', folder: null, locked: false, sheet: false };
+    const folders = empty ? [] : ['서류', '사진'];
+
+    function el(tag, attrs = {}, ...children) {
+      const node = document.createElement(tag);
+      for (const [key, value] of Object.entries(attrs)) {
+        if (key === 'onclick') node.addEventListener('click', value);
+        else node.setAttribute(key, value);
+      }
+      for (const child of children) node.append(child);
+      return node;
+    }
+    const icon = label => el('span', { 'aria-label': label, role: 'img' }, '▪');
+    const go = patch => { Object.assign(state, patch); render(); };
+
+    function row(name) {
+      // "서류 항목 2" to a screen reader; "서류 2" to innerText.
+      return el('button', { type: 'button', onclick: () => go({ screen: 'folder', folder: name, sheet: false }) },
+        state.locked ? `${name}, 잠김 ` : `${name} `, icon('항목'), ' 2');
+    }
+
+    function header(buttons, title) {
+      return el('header', {}, ...buttons.map(([label, onclick]) =>
+        el('button', { type: 'button', 'aria-label': label, onclick }, el('span', { 'aria-hidden': 'true' }, '◇'))),
+        el('h1', {}, title));
+    }
+
+    function render() {
+      const app = document.getElementById('app');
+      app.innerHTML = '';
+      if (state.screen === 'home') {
+        app.append(header([['새 폴더', () => {}], ['설정', () => go({ screen: 'settings' })]], '셸 홈'));
+        // "모두 잠금" comes first so the crawl presses it before the rows: every row it
+        // queued is then renamed on a screen whose signature did not change.
+        const main = el('main', {});
+        main.append(el('button', { type: 'button', onclick: () => go({ locked: true }) }, '모두 잠금'));
+        if (!folders.length) main.append(el('p', {}, '폴더 없음'));
+        // Locked rows move into a section, so neither the name nor the CSS position
+        // resolves any more — the case where the CSS fallback cannot rescue the click.
+        const rows = state.locked ? main.appendChild(el('section', { 'aria-label': '잠긴 폴더' })) : main;
+        for (const name of folders) rows.append(row(name));
+        main.append(el('button', { type: 'button', onclick: () => go({ sheet: true }) }, '전체 보기'));
+        app.append(main);
+      } else if (state.screen === 'folder') {
+        app.append(header([['뒤로', () => go({ screen: 'home' })], ['폴더 메뉴', () => {}]], state.folder));
+        app.append(el('main', {}, el('p', {}, `${state.folder} 안의 항목`),
+          el('button', { type: 'button', onclick: () => go({ screen: 'leaf' }) }, '첫 항목 열기')));
+      } else if (state.screen === 'leaf') {
+        app.append(header([['뒤로', () => go({ screen: 'folder' })], ['항목 메뉴', () => {}]], '항목'));
+        app.append(el('main', {}, el('p', {}, '항목 내용')));
+      } else {
+        app.append(header([['뒤로', () => go({ screen: 'home' })]], '셸 설정'));
+        app.append(el('main', {}, el('p', {}, '설정 화면')));
+      }
+      app.append(el('footer', {}, el('textarea', { 'aria-label': '메모' })));
+      if (state.sheet) {
+        const sheet = el('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '모든 폴더' },
+          ...folders.map(row),
+          el('button', { type: 'button', onclick: () => go({ sheet: false }) }, '닫기'));
+        app.append(sheet);
+      }
+    }
+    render();
+  </script>
+</body>
+</html>

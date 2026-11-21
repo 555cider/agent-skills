@@ -203,7 +203,7 @@ export async function recordSession({
         // map does not contain and does not admit to missing.
         drop('no-screen-yet');
       } else if (outstanding.length === 1 && outstanding[0].pathname
-        && routeTemplate(outstanding[0].pathname, config) !== outstanding[0].from.route) {
+        && routeTemplate(outstanding[0].pathname, config, outstanding[0].search) !== outstanding[0].from.route) {
         // The page says the click happened on a different route than the screen this tab
         // last settled on: the screen changed underneath (an in-document navigation that
         // had not been observed yet), so `from` is wrong and the edge would be invented.

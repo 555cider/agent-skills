@@ -40,6 +40,30 @@ as one screen.
    body is never read is the usual culprit: the stream stays open, the request never finishes, and
    every action waits out the whole timeout on a screen that was ready in milliseconds.
 
+   **An app whose screens change without the URL** — plain buttons that re-render in place, a router
+   that keeps the stack in `history.state` — needs these settings, all in the config so the map carries
+   them:
+
+   - `signature: { "chrome": true }`. Without it a list and the list one level down share landmarks
+     and fields and merge into one node; the crawl then believes it never left and every action queued
+     on the merged screen goes astray. With it the icon-only verbs in the header (`뒤로`, `그룹 메뉴`)
+     enter the signature. Off by default because nearly every app has some icon button in a header,
+     and turning it on changes those maps' signatures.
+
+   - `viewport` at the width the app is used at. A split layout above some width puts a list and a
+     detail on screen at once, and every pairing becomes its own node; a phone-width crawl of the same
+     app found 73 screens where the desktop width produced 16 combinations and missed most screens.
+   - `routeTemplates.identityQuery: ["empty", "stt"]` when screen states are switched by query (mock
+     fixtures, `?error=1`). List each state as an entrypoint (`"/?empty=1"`); without the parameter in
+     the route that state merges into the default screen.
+   - `actionPolicy.replayMutating: true`, with `--allow-mutating`, when navigation is all buttons the
+     policy cannot prove safe. Without it the crawl presses a list row once and can never walk back to
+     the screen behind it, so that screen's own controls are never explored. Only for an environment
+     whose state does not survive a reload (an in-memory mock) or that is disposable: every replay
+     presses those controls again, and `route` hands out paths that do the same. Only edges the crawl
+     itself proved are replayed: never a destructive one, never one a recording merely watched, and
+     `verify` asks for `--allow-mutating` again before pressing them.
+
    Credentials come from the environment through `${VAR}`. Never write one into the file.
 
    `storageSeed` is written before every document renders, so a welcome card or product tour that

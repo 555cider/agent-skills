@@ -48,6 +48,10 @@
     "should_trigger": true
   },
   {
+    "query": "Screenshot every screen and sheet of the local mock app in light and dark mode so I can review the UI; the URL never changes between screens.",
+    "should_trigger": true
+  },
+  {
     "query": "Watch my browser session and turn what I walk through into a map I can reuse.",
     "should_trigger": true
   },
@@ -133,6 +137,10 @@
   },
   {
     "query": "List every URL the router declares so I can paste them into a spreadsheet.",
+    "should_trigger": false
+  },
+  {
+    "query": "Check the contrast and tap target sizes on the settings screen I just changed.",
     "should_trigger": false
   }
 ]
