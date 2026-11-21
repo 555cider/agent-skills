@@ -1049,10 +1049,27 @@ run_with_timeout() {
 # Build failures (below) set BUILD_ERROR and return non-zero; they must not
 # exit, because build_cmd runs before any reviewer and a failed build only
 # drops that one reviewer.
+# ensure_opencode_readonly_agent [v1|v2]: v1 denies the opencode 1.x write,
+# shell, network and delegation tools by name. v2 (opencode 2.x) denies every
+# tool and allows only read/grep/glob/list: 2.x adds tools a name list misses
+# (`execute` code mode, `opencode_worktree_create`, `opencode_session_move`,
+# image generation). Its rules apply in order and the last match wins, so the
+# `"*": deny` comes first and .env files stay unreadable.
 ensure_opencode_readonly_agent() {
   [ -n "$OPENCODE_AGENT_FILE" ] && return 0
 
-  local base dir name file
+  local style="${1:-v1}" base dir name file allow_rules="" wildcard_rule=""
+  if [ "$style" = "v2" ]; then
+    wildcard_rule='  "*": deny'
+    allow_rules='  read:
+    "*": allow
+    "*.env": deny
+    "*.env.*": deny
+    "*.env.example": allow
+  grep: allow
+  glob: allow
+  list: allow'
+  fi
   base="${REPO_ROOT:-$PWD}"
   dir="$base/.opencode/agent"
   [ -d "$(dirname "$dir")" ] || OPENCODE_CONFIG_DIR_CREATED=1
@@ -1071,22 +1088,18 @@ ensure_opencode_readonly_agent() {
     BUILD_ERROR="could not create opencode read-only agent file: $file"
     return 2
   }
-  cat > "$file" <<'EOF' || { rm -f "$file"; BUILD_ERROR="could not write opencode read-only agent file: $file"; return 2; }
----
-description: Read-only peer reviewer for implementation plans, specs, and design choices.
-mode: primary
-permission:
-  bash: deny
-  edit: deny
-  webfetch: deny
-  websearch: deny
-  task: deny
-  todowrite: deny
-  lsp: deny
-  skill: deny
----
-You are a read-only peer reviewer. Inspect repository files when useful, but do not modify files, run shell commands, delegate work, fetch web content, or use skills. Return only review findings.
-EOF
+  {
+    printf '%s\n' '---' \
+      'description: Read-only peer reviewer for implementation plans, specs, and design choices.' \
+      'mode: primary' \
+      'permission:'
+    [ -z "$wildcard_rule" ] || printf '%s\n' "$wildcard_rule"
+    printf '%s\n' '  bash: deny' '  edit: deny' '  webfetch: deny' '  websearch: deny' \
+      '  task: deny' '  todowrite: deny' '  lsp: deny' '  skill: deny'
+    [ -z "$allow_rules" ] || printf '%s\n' "$allow_rules"
+    printf '%s\n' '---' \
+      'You are a read-only peer reviewer. Inspect repository files when useful, but do not modify files, run shell commands, delegate work, fetch web content, or use skills. Return only review findings.'
+  } > "$file" || { rm -f "$file"; BUILD_ERROR="could not write opencode read-only agent file: $file"; return 2; }
   OPENCODE_AGENT_FILE="$file"
   OPENCODE_AGENT_NAME="$name"
 }
@@ -1100,6 +1113,13 @@ load_cli_help() {
   [ -z "${CLI_HELP[$cli]+set}" ] || return 0
   case "$cli" in
     codex) CLI_HELP[$cli]="$(codex exec --help 2>&1 || true)" ;;
+    opencode)
+      # opencode 1.x lists --pure in the top-level help; 2.x dropped it and
+      # lists --agent/--archived only under `run --help`.
+      CLI_HELP[$cli]="$(opencode --help 2>&1 || true)"
+      grep -qF -- "--pure" <<<"${CLI_HELP[$cli]}" \
+        || CLI_HELP[$cli]+=$'\n'"$(opencode run --help 2>&1 || true)"
+      ;;
     *)     CLI_HELP[$cli]="$("$cli" --help 2>&1 || true)" ;;
   esac
 }
@@ -1178,11 +1198,30 @@ build_cmd() {
       [ -n "$effort" ] && grep -qF -- "--effort" <<<"${CLI_HELP[claude]}" && CMD+=(--effort "$effort")
       ;;
     opencode)
-      require_flags opencode "isolated reviewer" --pure || return
-      ensure_opencode_readonly_agent || return
-      CMD=(opencode --pure run --agent "$OPENCODE_AGENT_NAME")
-      [ -n "$model" ] && CMD+=(-m "$model")
-      [ -n "$effort" ] && CMD+=(--variant "$effort")
+      if grep -qF -- "--pure" <<<"${CLI_HELP[opencode]}"; then
+        # opencode 1.x: --pure skips ambient plugins and config.
+        ensure_opencode_readonly_agent v1 || return
+        CMD=(opencode --pure run --agent "$OPENCODE_AGENT_NAME")
+        [ -n "$model" ] && CMD+=(-m "$model")
+        [ -n "$effort" ] && CMD+=(--variant "$effort")
+      else
+        # opencode 2.x: no --pure. --standalone starts a private server in the
+        # repo root, so it loads the generated agent; the shared background
+        # service may run elsewhere and fall back to the full-access default
+        # agent. The variant rides on the model as provider/model#variant.
+        if ! grep -qF -- "--standalone" <<<"${CLI_HELP[opencode]}" \
+          || ! grep -qF -- "--agent" <<<"${CLI_HELP[opencode]}"; then
+          BUILD_ERROR="opencode CLI lacks required isolated reviewer flags: --pure (1.x) or --standalone and run --agent (2.x)"
+          return 3
+        fi
+        ensure_opencode_readonly_agent v2 || return
+        CMD=(opencode run --standalone --agent "$OPENCODE_AGENT_NAME")
+        grep -qF -- "--archived" <<<"${CLI_HELP[opencode]}" && CMD+=(--archived)
+        if [ -n "$model" ]; then
+          [ -n "$effort" ] && [[ "$model" != *"#"* ]] && model="$model#$effort"
+          CMD+=(-m "$model")
+        fi
+      fi
       ;;
     agy)
       require_flags agy "read-only reviewer" --sandbox --mode || return

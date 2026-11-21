@@ -97,14 +97,25 @@ EOF
   chmod +x "$path"
 }
 
+# make_opencode_stub_cli <path> [v1|v2|v2-shared]: v1 is opencode 1.x (--pure); v2 is
+# 2.x, whose `run --help` lists --agent/--archived and the global --standalone; v2-shared
+# is a 2.x build without --standalone.
 make_opencode_stub_cli() {
-  local path="$1"
-  cat >"$path" <<'EOF'
-#!/usr/bin/env bash
+  local path="$1" style="${2:-v1}"
+  { printf '#!/usr/bin/env bash\nSTUB_STYLE=%s\n' "$style"; cat <<'EOF'
 if printf '%s\n' "$@" | grep -qx -- '--help'; then
-  printf '%s\n' '--pure --agent --variant'
+  case "$STUB_STYLE:$1" in
+    v1:*) printf '%s\n' '--pure --agent --variant' ;;
+    v2:run) printf '%s\n' '--model --agent --format --archived --standalone' ;;
+    v2-shared:run) printf '%s\n' '--model --agent --format --archived' ;;
+    v2:*) printf '%s\n' '--standalone --server --continue' ;;
+    *) printf '%s\n' '--server --continue' ;;
+  esac
   exit 0
 fi
+EOF
+  } >"$path"
+  cat >>"$path" <<'EOF'
 printf '%s\n' "$@" > "$PEER_REVIEW_STUB_ARGS.opencode"
 agent=""
 prev=""
@@ -185,6 +196,39 @@ else
   pass "opencode temp agent cleaned up"
 fi
 assert_file_has_line "agy receives model value" "$ARGS.agy" "gemini-3.5-flash"
+
+# --- opencode 2.x dropped --pure: private server, archived session, effort as #variant,
+#     an agent that denies every tool before allowing the read tools ---
+run_opencode() { # label
+  rm -f "$ARGS.opencode" "$D2/opencode_agent.md"
+  set +e
+  ( cd "$D2" && PATH="$D2/bin:$PATH" PEER_REVIEW_STUB_AGENT_COPY="$D2/opencode_agent.md" \
+      "$PR" plan.md --reviewer=opencode-2 --host=claude --timeout=10 ) >"$WORK/out" 2>"$WORK/err"
+  EC=$?
+  set -e
+}
+cat >"$D2/.peer-review.json" <<'EOF'
+{ "reviewers": { "opencode-2": { "cli": "opencode", "model": "gpt-5", "effort": "high" } } }
+EOF
+make_opencode_stub_cli "$D2/bin/opencode" v2
+run_opencode 2.x
+assert_exit "opencode 2.x run" 0
+assert_file_has_line "opencode 2.x receives model with variant" "$ARGS.opencode" "opencode/gpt-5#high"
+assert_file_has_line "opencode 2.x runs a private server" "$ARGS.opencode" "--standalone"
+assert_file_has_line "opencode 2.x archives the session" "$ARGS.opencode" "--archived"
+assert_file_not_contains "opencode 2.x gets no removed --pure" "$ARGS.opencode" "--pure"
+assert_file_contains "opencode 2.x agent denies every tool first" "$D2/opencode_agent.md" '"*": deny'
+assert_file_contains "opencode 2.x agent keeps .env unreadable" "$D2/opencode_agent.md" '"*.env": deny'
+# Without --standalone a 2.x build would use the shared server, which may not see the
+# generated agent: refuse instead of running unguarded.
+make_opencode_stub_cli "$D2/bin/opencode" v2-shared
+run_opencode 2.x-shared
+assert_exit "opencode without --pure or --standalone is refused" 3
+if [ -e "$ARGS.opencode" ] || [ -e "$D2/.opencode" ]; then
+  fail "refused opencode is not started and leaves no agent" "$(ls -a "$D2" | tr '\n' ' ')"
+else
+  pass "refused opencode is not started and leaves no agent"
+fi
 assert_file_contains "agy receives sandbox flag" "$ARGS.agy" "--sandbox"
 assert_file_has_line "agy receives plan mode" "$ARGS.agy" "plan"
 assert_file_not_contains "agy does not bypass permissions" "$ARGS.agy" "--dangerously-skip-permissions"

@@ -78,8 +78,11 @@ profiles with the team, or keep it local / `.gitignore`d for personal prefs.
     tools and an empty `--strict-mcp-config` (no edits, shell, or MCP servers)
   - opencode: creates a temporary repo-local `peer-review-readonly-*` agent
     that denies edit/shell/network/delegation tools, then runs
-    `opencode run --agent <agent>`; model names without a provider prefix are
-    sent as `opencode/<model>`; ANSI color codes are stripped from saved output.
+    `opencode --pure run --agent <agent>` (1.x) or
+    `opencode run --standalone --archived --agent <agent>` (2.x, which dropped
+    `--pure`; there the agent denies every tool and allows only
+    read/grep/glob/list); model names without a provider prefix are sent as
+    `opencode/<model>`; ANSI color codes are stripped from saved output.
   - agy: `agy -p "<prompt>" --sandbox --mode plan`; model is forwarded when
     configured.
   The wrapper feeds the prompt over stdin where the CLI supports it; `agy`
