@@ -35,6 +35,9 @@ suspect.
     "startedAt": "…", "finishedAt": "…",
     "replayVerify": true,     // false means routes were not walked end to end
     "allowMutating": false,
+    "replayMutating": true,   // present only when actionPolicy.replayMutating was on with --allow-mutating:
+                              //   mutating edges the crawl proved are replayed by crawl and route;
+                              //   verify asks for --allow-mutating again
     "timing": {               // where the wall clock went; running out of it is the ordinary failure
       "totalMs": 214300,
       "phases":   [{ "label": "act.settle", "ms": 98000, "count": 118 }],   // by phase, descending
@@ -59,7 +62,7 @@ suspect.
 
   "states": [{
     "id": "s3",
-    "route": "/announcements/:id",   // primary key: templated path
+    "route": "/announcements/:id",   // primary key: templated path, plus routeTemplates.identityQuery parameters
     "signature": "h:9f2a…",          // secondary key: structural DOM fingerprint
     "kind": "page",                  // "page" | "overlay" (modal, dropdown, popover)
     "title": "2026 하반기 MARU 배치",
@@ -67,7 +70,8 @@ suspect.
     "reachable": "direct-url",       // present only when no safe click path existed
     "evidence": {
       "urlSample": "/announcements/123",
-      "headings": [], "landmarks": [], "forms": [], "fields": [], "overlay": null
+      "headings": [], "landmarks": [], "forms": [], "fields": [], "overlay": null,
+      "chrome": ["뒤로", "그룹 메뉴"]  // icon-only controls in header/nav landmarks; hashed only with signature.chrome
     }
   }],
 
@@ -224,12 +228,33 @@ items and the background behind it are harvested as one screen, so the map gains
 only exist while the menu is open. Adding the landmark to the app is the fix.
 
 **The signature is structure, not content.** It hashes landmarks, form identities, input field
-names, the open overlay, and the selected tab. Headings are excluded: on a detail screen the `h1` is
-the record's title, and hashing it produced one node per record on the first real app this was run
-against. `title` is still taken from a heading, which is why `titleIsSample` exists.
+names, the open overlay, the selected tab, and — when the config sets `signature.chrome` — `chrome`,
+the icon-only controls in header and navigation landmarks. Headings are excluded: on a detail screen the `h1` is the record's title, and
+hashing it produced one node per record on the first real app this was run against. `title` is still
+taken from a heading, which is why `titleIsSample` exists.
+
+`chrome` is what separates two screens of an app whose URL never moves: a list and the list one level
+down share landmarks and fields, and only the header's verbs (`새 그룹`, `설정` against `뒤로`,
+`그룹 메뉴`) differ. A control counts when it is named by its own `aria-label` or `title` and
+announces no content, so a header button reading `Project X ▾` never turns one screen into one node
+per project; any token holding a digit is dropped, so `알림 3건` does not move with the count. It is
+collected always and hashed only on request, because nearly every app has an icon button in a header
+and hashing it unasked would change every existing map's signatures. A label that names the record
+(`Back to Project X`) still splits screens per record when it is on; that is the app's label, and the
+reason it is opt-in. Two screens that differ only in their heading still merge.
+
+**Names are built the way the accessible name is.** A control named from its content includes its
+children's `aria-label` and image `alt` and skips `aria-hidden` subtrees, which is what
+`getByRole(…, { name })` matches. A map written before screen-map 1.4.0 named such controls from
+`innerText`, so their keys differ now: re-crawl it, and expect recorded edges from those controls to
+be dropped as gone (the crawl's JSON counts what `carriedFromRecordings` kept). Re-record what matters.
 
 **`key` is identity, `name` is display.** Purely numeric tokens are stripped from the key so a badge
-count that moves does not orphan the control. When `fallbackUsed` is true the control was found by
+count that moves does not orphan the control. The Playwright locator `route` writes follows the key:
+a name holding such a token becomes an anchored regular expression in which that token is optional
+and must hold a digit (`/^\s*메일함(?:\s*\S*\d\S*)?\s*$/` matches `메일함 13` and `메일함`, not
+`메일함 전체`), and a step taken inside an open dialog, menu or listbox is scoped to it
+(`page.getByRole('dialog').getByRole(…)`), since the same name often sits on the page behind. When `fallbackUsed` is true the control was found by
 CSS position rather than by name — that route is more brittle than the rest.
 
 `href` is the resolved absolute destination used for origin checks. `hrefRaw` preserves the anchor's

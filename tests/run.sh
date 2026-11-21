@@ -314,6 +314,24 @@ fi
 run_suite assert-hazards node "$HERE/assert-hazards.mjs" --map "$WORK/hazards/.screen-map/map.json" --base "$BASE"
 
 echo
+echo "── an app shell whose URL never moves ───────────────────"
+fixture_app "$WORK/shell" "{
+  \"baseUrl\": \"$BASE\",
+  \"entrypoints\": [\"/shell\", \"/shell?mode=empty\"],
+  \"routeTemplates\": { \"identityQuery\": [\"mode\"] },
+  \"actionPolicy\": { \"replayMutating\": true },
+  \"signature\": { \"chrome\": true },
+  \"budget\": { \"maxStates\": 20, \"maxActions\": 60, \"maxMillis\": 120000 }
+}"
+if node "$CLI" crawl --config "$WORK/shell/.screen-map/config.json" --allow-mutating > "$WORK/shell.json" 2> "$WORK/shell.err"; then
+  pass "a crawl of the URL-less shell completes"
+else
+  fail "a crawl of the URL-less shell completes" "$(cat "$WORK/shell.json" "$WORK/shell.err" 2>/dev/null | tr '\n' ' ')"
+fi
+run_suite assert-shell node "$HERE/assert-shell.mjs" --map "$WORK/shell/.screen-map/map.json" \
+  --cli "$CLI" --dir "$WORK/shell/.screen-map"
+
+echo
 echo "── crawl leaves a map behind while it is still running ──"
 # Ten minutes of walking used to live only in memory: a crash at minute nine lost all
 # of it. Checkpoints have to be readable *during* the crawl, and they have to say they

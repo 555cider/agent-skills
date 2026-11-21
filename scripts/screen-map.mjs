@@ -22,7 +22,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { connectBrowser, launchBrowser, Page, SandboxRefused, sleep } from './browser.mjs';
 import { newRecordStats, recordSession } from './record.mjs';
 import {
-  SCHEMA_VERSION, VERIFIED_OR_OBSERVED, authTarget, carryRecorded, createRegistry, fingerprintSignature,
+  SCHEMA_VERSION, VERIFIED_OR_OBSERVED, authTarget, canonicalRoute, carryRecorded, createRegistry, fingerprintSignature,
   migrateMap, mutatingDetour, normalizePath, observeTarget, pathFromEntrypoints, playwrightExpr,
   reachability, renderMarkdown, replayPathKey, routeTemplate, routeToMcpSteps, routeToSteps,
   shortestSafePath, stateById, stateKey, statesByRoute, statusCounts, transitionsFrom,
@@ -127,6 +127,16 @@ function interpolateDeep(value) {
   return interpolate(value);
 }
 
+function hrefSearch(href) {
+  try { return href ? new URL(href).search : ''; } catch { return ''; }
+}
+
+/** Stored on the map so a lookup (`--to '/?empty=1&x=2'`) keeps the same parameters the crawl did. */
+function identityQueryField(config) {
+  const names = config.routeTemplates && config.routeTemplates.identityQuery;
+  return Array.isArray(names) && names.length ? { identityQuery: [...names] } : {};
+}
+
 function loadConfig(configPath) {
   const absolute = isAbsolute(configPath) ? configPath : resolve(process.cwd(), configPath);
   if (!existsSync(absolute)) throw new Error(`config not found: ${absolute}`);
@@ -134,7 +144,9 @@ function loadConfig(configPath) {
   const config = interpolateDeep(parsed);
   if (!config.baseUrl) throw new Error('config.baseUrl is required');
   config.allowHosts = config.allowHosts || ['localhost', '127.0.0.1'];
-  config.entrypoints = (config.entrypoints || ['/']).map(normalizePath);
+  // A navigation target, not an identity: `/?empty=1` has to reach the browser with its
+  // query, or every fixture entrypoint loads the default screen and maps it again.
+  config.entrypoints = (config.entrypoints || ['/']).map(entry => authTarget(String(entry).replace(/#.*$/, '')));
   config.budget = { ...DEFAULT_BUDGET, ...(config.budget || {}) };
   config.actionPolicy = config.actionPolicy || {};
   config.viewport = config.viewport || { width: 1280, height: 900 };
@@ -270,6 +282,9 @@ async function commandCrawl(options) {
   const baseOrigin = baseUrl.origin;
   const allowMutating = options.allowMutating === true || options.allowMutating === 'true';
   const replayVerify = !(options.noReplayVerify === true || options.noReplayVerify === 'true');
+  // Only meaningful with --allow-mutating: without it no mutating edge is ever proved, so
+  // there is nothing to replay. Recorded on the map so `route` hands out the same paths.
+  const replayMutating = allowMutating && config.actionPolicy.replayMutating === true;
   const startedAt = new Date().toISOString();
   const deadline = Date.now() + config.budget.maxMillis;
 
@@ -313,7 +328,7 @@ async function commandCrawl(options) {
   /** Same-destination links on one screen: `/announcements` has one per record. */
   const destinationBucket = action =>
     action.kind === 'link' && action.hrefPath && !action.external
-      ? routeTemplate(action.hrefPath, config)
+      ? routeTemplate(action.hrefPath, config, hrefSearch(action.href))
       : null;
 
   function registerActions(state, observation) {
@@ -431,11 +446,13 @@ async function commandCrawl(options) {
 
     const { map: merged, carried } = carryRecorded({
       schema: SCHEMA_VERSION,
-      app: { baseUrl: config.baseUrl, commit: appInfo.commit, dirty: appInfo.dirty },
+      app: { baseUrl: config.baseUrl, commit: appInfo.commit, dirty: appInfo.dirty, ...identityQueryField(config) },
       run: {
         id: 'run-' + startedAt.replace(/[-:.]/g, '').slice(0, 15),
         startedAt, finishedAt,
-        replayVerify, allowMutating, budgetHit: hit, timing,
+        replayVerify, allowMutating,
+        ...(replayMutating ? { replayMutating: true } : {}),
+        budgetHit: hit, timing,
         dialogs: page ? page.dialogs : [],
       },
       states, transitions, entrypoints,
@@ -526,12 +543,12 @@ async function commandCrawl(options) {
   const replayFailures = new Map();
 
   /** Walk to `state` the way the map claims it can be walked, then prove we arrived. */
-  async function reachState(page, state) {
+  async function reachState(page, state, { fresh = false } = {}) {
     const wanted = stateKey(state.route, state.signature);
-    const current = await timed('reach.observe', () => page.observe().catch(() => null));
+    const current = fresh ? null : await timed('reach.observe', () => page.observe().catch(() => null));
     if (current && keyOf(current) === wanted) {
       spend('reach.already-here', 0);
-      return { ok: true, observation: current };
+      return { ok: true, observation: current, via: 'already-here' };
     }
 
     if (replayVerify) {
@@ -540,17 +557,17 @@ async function commandCrawl(options) {
       // difference between a crawl that finishes and one that runs out of clock.
       if (current) {
         const here = states.find(entry => stateKey(entry.route, entry.signature) === keyOf(current));
-        const local = here && shortestSafePath(live(), here.id, state.id);
+        const local = here && shortestSafePath(live(), here.id, state.id, { replayMutating });
         if (local && local.length) {
           const walked = await timed('reach.local-walk', () => walk(page, local));
           if (walked.ok && keyOf(walked.observation) === wanted) {
-            return { ok: true, observation: walked.observation };
+            return { ok: true, observation: walked.observation, via: 'local-walk' };
           }
           spend('reach.local-walk-wasted', 0);
         }
       }
 
-      const resolved = pathFromEntrypoints(live(), state.id);
+      const resolved = pathFromEntrypoints(live(), state.id, null, { replayMutating });
       if (resolved) {
         // A screen the crawl cannot re-enter fails the same way for every action it
         // owns, and each attempt costs a full navigate + settle. On a stateful app —
@@ -598,7 +615,7 @@ async function commandCrawl(options) {
         await page.navigate(baseOrigin + state.evidence.urlSample);
         return page.settle();
       });
-      const arrived = stateKey(routeTemplate(observation.pathname, config), fingerprintSignature(observation.fingerprint));
+      const arrived = stateKey(routeTemplate(observation.pathname, config, observation.search), fingerprintSignature(observation.fingerprint, config));
       if (arrived === stateKey(state.route, state.signature)) {
         state.reachable = 'direct-url';
         return { ok: true, observation };
@@ -676,9 +693,30 @@ async function commandCrawl(options) {
 
       const blockedBefore = page.blockedNavigations.length;
       // Kept to tell a dead control from a live one that happens to stay put — see below.
-      const completionsBefore = page.completions;
-      const urlBefore = reached.observation && reached.observation.url;
-      const clicked = await timed('act.click', () => page.click(item.actionKey, transition.action.cssFallback));
+      // Re-read after a fresh retry: its reload is network traffic the action did not cause.
+      let completionsBefore = page.completions;
+      let urlBefore = reached.observation && reached.observation.url;
+      // Matching the screen's signature is not the same as standing on the screen the
+      // action was harvested from. Two screens can share one signature, and an earlier
+      // action that changed app state in place (a "lock all" that renames every row)
+      // leaves the signature intact and the controls gone. Walking back without a reload
+      // then fails every queued action on that screen — or worse, the CSS fallback finds
+      // whatever now sits at the old position and files its destination under this
+      // action. So an arrival without a reload resolves by name alone first; a miss buys
+      // one fresh entry (reload and replay), and only then may the fallback answer. When
+      // the screen cannot be re-entered fresh, the old walk and the fallback still run, so
+      // an app that used to be served by CSS position is not made worse.
+      const stale = !!reached.via;
+      let clicked = await timed('act.click', () => page.click(item.actionKey, stale ? null : transition.action.cssFallback));
+      if (!clicked.ok && clicked.reason === 'not-found' && stale) {
+        let again = await timed('reach.fresh-retry', () => reachState(page, state, { fresh: true }));
+        if (!again.ok) again = await reachState(page, state);
+        if (again.ok) {
+          completionsBefore = page.completions;
+          urlBefore = again.observation && again.observation.url;
+          clicked = await timed('act.click', () => page.click(item.actionKey, transition.action.cssFallback));
+        }
+      }
       if (clicked.via === 'css') transition.action.fallbackUsed = true;
       if (!clicked.ok) {
         transition.status = 'failed';
@@ -862,7 +900,7 @@ async function commandRecord(options) {
     const finishedAt = new Date().toISOString();
     return {
       schema: SCHEMA_VERSION,
-      app: { baseUrl: config.baseUrl, commit: basisCommit, dirty: appInfo.dirty },
+      app: { baseUrl: config.baseUrl, commit: basisCommit, dirty: appInfo.dirty, ...identityQueryField(config) },
       run: (seed && seed.run) || {
         id: 'run-' + startedAt.replace(/[-:.]/g, '').slice(0, 15),
         startedAt, finishedAt, kind: 'record', budgetHit: null, dialogs: [],
@@ -1021,50 +1059,61 @@ async function runAuth(page, config, baseOrigin) {
  * assumes a dropdown the caller does not have open. Overlays are used only when the route
  * has no page screen at all.
  */
+/**
+ * `--to` takes a route or a state id. An app whose URL never moves has every screen at
+ * `/`, so a route names nothing there; the id from `state`, `report` or `route --all`
+ * is the only handle that picks one screen out.
+ */
+function screensNamed(map, value) {
+  const byId = /^s\d+$/.test(String(value)) ? stateById(map, String(value)) : null;
+  return byId ? [byId] : statesByRoute(map, value);
+}
+
+function noScreen(map, value) {
+  const routes = map.states.map(state => state.route);
+  const pageRoutes = map.states.filter(state => state.kind === 'page').map(state => state.route);
+  const shared = new Set(pageRoutes).size < pageRoutes.length;
+  fail(EXIT_NO_ANSWER, `no screen with route ${canonicalRoute(value, map.app?.identityQuery || [])}`, {
+    known: [...new Set(routes)].sort(),
+    hint: pathConversionHint(value)
+      || (shared ? 'several screens share a route here; a state id (s3) from `state` or `route --all` names one' : undefined),
+  });
+}
+
+/**
+ * Whether `goto(urlSample)` opens this screen. Not for an overlay, and not when an
+ * entrypoint has the same URL — on an app whose URL never moves, that goto lands on the
+ * entrypoint instead.
+ */
+function openedByUrl(map, state) {
+  if (!state || state.kind !== 'page') return false;
+  if (map.entrypoints.includes(state.id)) return true;
+  return !map.entrypoints.some(id => stateById(map, id)?.evidence?.urlSample === state.evidence?.urlSample);
+}
+
 function resolveRoute(map, options, command) {
-  if (!options.to) fail(EXIT_ERROR, `${command} requires --to <route>`);
-  const targets = statesByRoute(map, options.to);
-  if (!targets.length) {
-    fail(EXIT_NO_ANSWER, `no screen with route ${normalizePath(options.to)}`, {
-      known: [...new Set(map.states.map(state => state.route))].sort(),
-      hint: pathConversionHint(options.to) || undefined,
-    });
-  }
+  if (!options.to) fail(EXIT_ERROR, `${command} requires --to <route|state id>`);
+  const targets = screensNamed(map, options.to);
+  if (!targets.length) noScreen(map, options.to);
 
   let origins = map.entrypoints;
   if (options.from) {
-    const fromStates = statesByRoute(map, options.from);
-    if (!fromStates.length) {
-      fail(EXIT_NO_ANSWER, `no screen with route ${normalizePath(options.from)}`, {
-        known: [...new Set(map.states.map(state => state.route))].sort(),
-        hint: pathConversionHint(options.from) || undefined,
-      });
-    }
+    const fromStates = screensNamed(map, options.from);
+    if (!fromStates.length) noScreen(map, options.from);
     const pages = fromStates.filter(state => state.kind === 'page');
     origins = (pages.length ? pages : fromStates).map(state => state.id);
   }
 
-  const search = (statuses, extra = {}) => {
-    let found = null;
-    for (const target of targets) {
-      for (const origin of origins) {
-        const resolved = pathFromEntrypoints(map, target.id, origin,
-          { ...(statuses ? { statuses } : {}), ...extra });
-        if (resolved && (!found || resolved.path.length < found.resolved.path.length)) found = { target, resolved };
-      }
+  const { best, evidence } = bestPath(map, targets, origins);
+  // A path from a screen that is not an entrypoint starts with `goto` to that screen's URL,
+  // which on a URL-less app — or for an overlay anywhere — is not that screen. Walk to the
+  // origin first, so route and verify hand out something that runs from a fresh page.
+  if (best && !openedByUrl(map, stateById(map, best.resolved.origin))) {
+    const lead = bestPath(map, [stateById(map, best.resolved.origin)], map.entrypoints);
+    if (lead.best) {
+      best.via = best.resolved.origin;
+      best.resolved = { origin: lead.best.resolved.origin, path: [...lead.best.resolved.path, ...best.resolved.path] };
     }
-    return found;
-  };
-
-  // A proved route first, always. Only when there is none does a route built from a
-  // recording become the answer — and then it is labelled, never quietly substituted.
-  // `proofOnly` holds an edge seen to lead two different places out of that first pass:
-  // it was verified, and it still cannot be promised.
-  let evidence = 'verified';
-  let best = search(null, { proofOnly: true });
-  if (!best) {
-    const observed = search(VERIFIED_OR_OBSERVED);
-    if (observed) { best = observed; evidence = 'observed'; }
   }
   if (!best) {
     // A path that exists but runs through a mutating step is still worth naming. The
@@ -1076,7 +1125,7 @@ function resolveRoute(map, options, command) {
         detour = detour || mutatingDetour(map, target.id, options.from ? origin : null);
       }
     }
-    fail(EXIT_NO_ANSWER, `no safe path to ${normalizePath(options.to)}`, {
+    fail(EXIT_NO_ANSWER, `no safe path to ${targets.length === 1 && targets[0].id === options.to ? options.to : canonicalRoute(options.to)}`, {
       hint: detour
         ? 'the screen was reached during the crawl, but only through a step that is not reproducible; walk it by hand or re-crawl with a policy that makes that step safe'
         : 'the screen exists in the map but no verified transition chain reaches it',
@@ -1086,8 +1135,93 @@ function resolveRoute(map, options, command) {
   return { best, evidence };
 }
 
+/**
+ * A proved route first, always. Only when there is none does a route built from a
+ * recording become the answer — and then it is labelled, never quietly substituted.
+ * `proofOnly` holds an edge seen to lead two different places out of that first pass:
+ * it was verified, and it still cannot be promised.
+ */
+function bestPath(map, targets, origins) {
+  const search = (statuses, extra = {}) => {
+    let found = null;
+    for (const target of targets) {
+      for (const origin of origins) {
+        const resolved = pathFromEntrypoints(map, target.id, origin,
+          { ...(statuses ? { statuses } : {}), ...extra });
+        if (resolved && (!found || resolved.path.length < found.resolved.path.length)) found = { target, resolved };
+      }
+    }
+    return found;
+  };
+  const proved = search(null, { proofOnly: true });
+  if (proved) return { best: proved, evidence: 'verified' };
+  const observed = search(VERIFIED_OR_OBSERVED);
+  if (observed) return { best: observed, evidence: 'observed' };
+  return { best: null, evidence: null };
+}
+
+const mutatingStepCount = path => path.filter(transition => transition.class !== 'safe').length;
+
+const MUTATING_REPLAY_NOTE = 'This map was crawled with actionPolicy.replayMutating, and a path here presses'
+  + ' controls the policy could not prove safe. Replay it only against the disposable environment it was'
+  + ' built for; against real data each replay repeats whatever those controls change.';
+
+/**
+ * Every screen with the path that reaches it — the input a caller needs to visit each
+ * screen once (a screenshot per screen, a smoke pass) without asking screen by screen.
+ * Unreachable screens stay in the list with the reason, so a visit loop cannot quietly
+ * cover less than the map holds.
+ */
+function routeAll(map, freshness) {
+  const reach = reachability(map);
+  const screens = map.states.map(state => {
+    const { best, evidence } = bestPath(map, [state], map.entrypoints);
+    const base = {
+      id: state.id, route: state.route, title: state.title, kind: state.kind,
+      ...(state.titleIsSample ? { titleIsSample: true } : {}),
+    };
+    if (!best) {
+      return { ...base, reachable: false,
+        reason: mutatingDetour(map, state.id, null)
+          ? 'reached only through a step that is not reproducible'
+          : 'no verified transition chain reaches it' };
+    }
+    const steps = routeToSteps(map, best.resolved, map.app.baseUrl);
+    return {
+      ...base, reachable: true, evidence,
+      ...(best.resolved.path.some(transition => transition.nondeterministic) ? { unstable: true } : {}),
+      ...(reach.oneWay.includes(state.id) ? { oneWay: true } : {}),
+      ...(mutatingStepCount(best.resolved.path) ? { mutatingSteps: mutatingStepCount(best.resolved.path) } : {}),
+      steps,
+      playwright: steps.map(step => step.playwright).join('\n'),
+    };
+  });
+  return {
+    ok: true,
+    confidence: freshness.status, freshness,
+    counts: {
+      screens: screens.length,
+      reachable: screens.filter(screen => screen.reachable).length,
+      observedOnly: screens.filter(screen => screen.evidence === 'observed').length,
+    },
+    screens,
+    notes: [
+      'Run each entry in a fresh page: every path starts from an entrypoint, so state left by the previous screen is not assumed.',
+      ...(screens.some(screen => screen.mutatingSteps) ? [MUTATING_REPLAY_NOTE] : []),
+      ...(freshness.status === 'stale'
+        ? ['The app has changed since this map was crawled. A path that fails is stale, not proof the screen is gone.']
+        : []),
+    ],
+  };
+}
+
 function commandRoute(options) {
-  if (!options.to) fail(EXIT_ERROR, 'route requires --to <route>');
+  if (options.all) {
+    const { map, path } = loadMap(options);
+    out(routeAll(map, freshnessOf(map, path)));
+    return;
+  }
+  if (!options.to) fail(EXIT_ERROR, 'route requires --to <route|state id> or --all');
   const { map, path } = loadMap(options);
   const { best, evidence } = resolveRoute(map, options, 'route');
 
@@ -1108,6 +1242,7 @@ function commandRoute(options) {
     .map(entry => `Step ${entry.index + 1} (${entry.transition.action?.name || entry.transition.action?.key || entry.transition.id})`
       + ' has been seen to land on more than one screen. Check where you actually are after it'
       + ' rather than assuming the rest of the path still applies.');
+  const mutatingNote = mutatingStepCount(best.resolved.path) ? [MUTATING_REPLAY_NOTE] : [];
   if (options.format === 'mcp') {
     out({
       ok: true,
@@ -1117,6 +1252,7 @@ function commandRoute(options) {
       notes: [
         '`ref` cannot be precomputed: it is minted per snapshot. Take each `browser_snapshot`, find the element matching `match`, and pass that ref to `browser_click`.',
         ...unstableNote,
+        ...mutatingNote,
         ...oneWayNote,
       ],
     });
@@ -1140,6 +1276,7 @@ function commandRoute(options) {
         ? ['No proved route exists. This path was observed once during a recorded session and never replayed, so it is a report of what happened, not a guarantee that it repeats. Say so when passing it on, and invalidate the step that fails.']
         : []),
       ...unstableNote,
+      ...mutatingNote,
       ...oneWayNote,
     ],
   });
@@ -1150,7 +1287,7 @@ function commandState(options) {
   const { map } = loadMap(options);
   const found = statesByRoute(map, options.route);
   if (!found.length) {
-    fail(EXIT_NO_ANSWER, `no screen with route ${normalizePath(options.route)}`, {
+    fail(EXIT_NO_ANSWER, `no screen with route ${canonicalRoute(options.route)}`, {
       known: [...new Set(map.states.map(state => state.route))].sort(),
       hint: pathConversionHint(options.route) || undefined,
     });
@@ -1170,7 +1307,7 @@ function commandActions(options) {
   const { map } = loadMap(options);
   const found = statesByRoute(map, options.route);
   if (!found.length) {
-    fail(EXIT_NO_ANSWER, `no screen with route ${normalizePath(options.route)}`,
+    fail(EXIT_NO_ANSWER, `no screen with route ${canonicalRoute(options.route)}`,
       { hint: pathConversionHint(options.route) || undefined });
   }
   out({
@@ -1253,12 +1390,23 @@ function commandInvalidate(options) {
 // ---------- verify ----------
 
 async function commandVerify(options) {
-  if (!options.to) fail(EXIT_ERROR, 'verify requires --to <route>');
+  if (!options.to) fail(EXIT_ERROR, 'verify requires --to <route|state id>');
   const { map, path } = loadMap(options);
   // A recorded path is the one most worth replaying: it is the only kind the map holds
   // that has never been proved. `resolveRoute` falls back to it the way `route` does, so
   // verify replays exactly the path route would hand out.
   const { best, evidence } = resolveRoute(map, options, 'verify');
+  // A replayMutating map hands out paths that press mutating controls. Pressing them is a
+  // decision about the environment verify points at now, which may not be the disposable
+  // one the map was built against — so it takes the same flag the crawl did.
+  const mutatingSteps = mutatingStepCount(best.resolved.path);
+  if (mutatingSteps && !(options.allowMutating === true || options.allowMutating === 'true')) {
+    fail(EXIT_REFUSED, `this path presses ${mutatingSteps} mutating control(s); re-run with --allow-mutating against a disposable environment`, {
+      steps: best.resolved.path.filter(transition => transition.class !== 'safe')
+        .map(transition => transition.action?.name || transition.action?.key),
+      note: MUTATING_REPLAY_NOTE,
+    });
+  }
 
   const configPath = options.config ? options.config : join(dirname(path), 'config.json');
   let config;
@@ -1300,7 +1448,7 @@ async function commandVerify(options) {
       walked.push({ transition: transition.id, action: transition.action.name, at: observation.pathname });
     }
 
-    const arrived = stateKey(routeTemplate(observation.pathname, config), fingerprintSignature(observation.fingerprint));
+    const arrived = stateKey(routeTemplate(observation.pathname, config, observation.search), fingerprintSignature(observation.fingerprint, config));
     const expected = stateKey(best.target.route, best.target.signature);
     const reached = arrived === expected;
     out({

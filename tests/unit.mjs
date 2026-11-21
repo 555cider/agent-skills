@@ -2,10 +2,10 @@
 
 import {
   SCHEMA_VERSION, VERIFIED_OR_OBSERVED,
-  authTarget, carryRecorded, classifyAction, countsTowardSettle, createRegistry, fingerprintSignature,
+  authTarget, canonicalRoute, carryRecorded, classifyAction, countsTowardSettle, createRegistry, fingerprintSignature,
   globalNavigationKeys, migrateMap,
   normalizePath, observeTarget, pathFromEntrypoints,
-  playwrightExpr, reachability, renderMarkdown, renderMermaid, renderTiming, replayPathKey,
+  playwrightExpr, reachability, renderMarkdown, renderMermaid, renderTiming, replayPathKey, replaysMutating,
   routeTemplate, routeToMcpSteps, routeToSteps, shortestSafePath, stateKind,
   storageSeedSource,
 } from '../scripts/model.mjs';
@@ -36,6 +36,19 @@ eq('root stays root', normalizePath(''), '/');
 eq('override wins over segment patterns', routeTemplate('/p/abc', {
   routeTemplates: { overrides: [{ match: '/p/*', template: '/p/:slug' }] },
 }), '/p/:slug');
+
+// ---------- identity query ----------
+
+const fixtureQuery = { routeTemplates: { identityQuery: ['stt', 'empty'] } };
+eq('without identityQuery the query never reaches the route', routeTemplate('/', {}, '?stt=none'), '/');
+eq('a named parameter is part of the route', routeTemplate('/', fixtureQuery, '?stt=none'), '/?stt=none');
+eq('unnamed parameters are dropped and named ones sorted',
+  routeTemplate('/items/7', fixtureQuery, '?x=1&stt=none&empty=1'), '/items/:id?empty=1&stt=none');
+eq('a lookup keeps the identity parameters the map names, sorted',
+  canonicalRoute('/?stt=none&x=2&empty=1', ['stt', 'empty']), '/?empty=1&stt=none');
+eq('a lookup against a map without identity parameters drops the query, as before',
+  canonicalRoute('/cart?ref=mail'), '/cart');
+eq('a lookup without a query is the old normalized path', canonicalRoute('/items/'), '/items');
 
 // ---------- auth navigation targets ----------
 //
@@ -92,6 +105,17 @@ check('a dropdown menu is a different screen from a dialog',
 eq('an open overlay makes the state an overlay', stateKind(listingWithMenu), 'overlay');
 eq('no overlay means a plain page', stateKind(listing), 'page');
 check('signature is a short stable hash', /^h:[0-9a-f]{12}$/.test(fingerprintSignature(listing)));
+const chromeOn = { signature: { chrome: true } };
+eq('header verbs do not change the signature unless the config asks',
+  fingerprintSignature({ ...listing, chrome: ['뒤로', '그룹 메뉴'] }), fingerprintSignature(listing));
+eq('an empty chrome list leaves the signature it had, even when asked',
+  fingerprintSignature({ ...listing, chrome: [] }, chromeOn), fingerprintSignature(listing));
+check('asked, header verbs split two screens whose structure is otherwise identical',
+  fingerprintSignature({ ...listing, chrome: ['새 그룹', '설정'] }, chromeOn)
+    !== fingerprintSignature({ ...listing, chrome: ['뒤로', '그룹 메뉴'] }, chromeOn));
+eq('header verb order does not matter',
+  fingerprintSignature({ ...listing, chrome: ['a', 'b'] }, chromeOn),
+  fingerprintSignature({ ...listing, chrome: ['b', 'a'] }, chromeOn));
 
 // The defect real-app validation caught: hashing the h1 split one detail screen
 // into one node per record.
@@ -399,6 +423,60 @@ eq('a position-ambiguous action admits that it needs the CSS fallback',
     cssFallback: 'main > button:nth-of-type(2)',
   }),
   "page.locator('main > button:nth-of-type(2)')");
+
+const mailbox = playwrightExpr({ kind: 'click', role: 'button', name: '메일함 12' });
+const mailboxRe = new RegExp(mailbox.match(/name: \/(.*)\/ \}/)[1]);
+check('a name holding a count matches the count moving, and the badge hidden at zero',
+  mailboxRe.test('메일함 13') && mailboxRe.test('메일함') && mailboxRe.test('메일함13'), mailbox);
+check('but a free token still has to hold a digit, and the name is anchored',
+  !mailboxRe.test('메일함 전체') && !mailboxRe.test('받은 메일함 12'), mailbox);
+eq('a name without numbers keeps the plain string match',
+  playwrightExpr({ kind: 'click', role: 'button', name: '저장' }),
+  "page.getByRole('button', { name: '저장' })");
+check('a name cut at the harvest limit is not anchored at the end',
+  /\)\?\/ \}\)$/.test(playwrightExpr({ kind: 'click', role: 'button', name: 'x'.repeat(77) + ' 12' })),
+  playwrightExpr({ kind: 'click', role: 'button', name: 'x'.repeat(77) + ' 12' }));
+eq('a step inside an open dialog is scoped to it',
+  playwrightExpr({ kind: 'click', role: 'button', name: '닫기' }, { within: 'dialog' }),
+  "page.getByRole('dialog').getByRole('button', { name: '닫기' })");
+eq('an overlay with no ARIA role is not scoped',
+  playwrightExpr({ kind: 'click', role: 'button', name: '닫기' }, { within: 'generic' }),
+  "page.getByRole('button', { name: '닫기' })");
+
+// ---------- replaying mutating edges ----------
+
+const buttonApp = {
+  run: {},
+  entrypoints: ['s0'],
+  states: [
+    { id: 's0', route: '/', signature: 'h:a', kind: 'page' },
+    { id: 's1', route: '/', signature: 'h:b', kind: 'page' },
+  ],
+  transitions: [
+    { id: 't0', from: 's0', to: 's1', class: 'mutating', status: 'verified', action: { key: 'click:button:폴더' } },
+  ],
+};
+check('a map crawled without replayMutating offers no path through a mutating edge',
+  pathFromEntrypoints(buttonApp, 's1') === null && !replaysMutating(buttonApp));
+const replaying = { ...buttonApp, run: { replayMutating: true } };
+eq('a map crawled with replayMutating replays a proved mutating edge',
+  pathFromEntrypoints(replaying, 's1')?.path.map(transition => transition.id), ['t0']);
+check('and counts the screen behind it as reachable', reachability(replaying).canReach.has('s1') && !reachability(buttonApp).canReach.has('s1'));
+// Status `verified`/`observed` on purpose: an unexplored edge is dropped by the status
+// filter before the class is ever looked at, which would make these pass for nothing.
+const destructive = {
+  ...replaying,
+  transitions: [{ ...replaying.transitions[0], class: 'destructive', status: 'observed' }],
+};
+check('a destructive edge a recording watched is never on a path, replayMutating or not',
+  pathFromEntrypoints(destructive, 's1', null, { statuses: VERIFIED_OR_OBSERVED }) === null
+    && !reachability(destructive).canReach.has('s1'));
+const watchedOnly = {
+  ...replaying,
+  transitions: [{ ...replaying.transitions[0], status: 'observed' }],
+};
+check('a mutating edge only a recording watched is not replayed: replayMutating admits proved ones',
+  pathFromEntrypoints(watchedOnly, 's1', null, { statuses: VERIFIED_OR_OBSERVED }) === null);
 
 // ---------- rendering ----------
 

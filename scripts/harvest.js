@@ -36,6 +36,33 @@
     return rect.width > 0 && rect.height > 0;
   }
 
+  /**
+   * A name from content the way the accessible-name computation builds it, not
+   * `innerText`. A card button whose pin and counter icons carry `aria-label="고정됨"` and
+   * `aria-label="텍스트"` is announced — and matched by `getByRole(…, { name })` — as
+   * `… 고정됨 아이디어 텍스트 1 …`; `innerText` drops both labels, and a route built from
+   * that name finds nothing. `aria-hidden` and undisplayed subtrees are skipped, a child's
+   * own label stands in for its subtree, images give their `alt`.
+   */
+  function nameFromContent(node) {
+    let out = '';
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) { out += child.textContent; continue; }
+      if (child.nodeType !== 1 || child.getAttribute('aria-hidden') === 'true') continue;
+      const style = getComputedStyle(child);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      const tag = child.tagName.toLowerCase();
+      const label = child.getAttribute('aria-label');
+      if (label && label.trim()) { out += ' ' + label + ' '; continue; }
+      if (tag === 'img') { out += ' ' + (child.getAttribute('alt') || '') + ' '; continue; }
+      if (tag === 'svg') { const title = child.querySelector('title'); out += title ? ' ' + title.textContent + ' ' : ''; continue; }
+      if (tag === 'br') { out += ' '; continue; }
+      const inline = style.display === 'inline' || style.display === 'contents';
+      out += inline ? nameFromContent(child) : ' ' + nameFromContent(child) + ' ';
+    }
+    return out;
+  }
+
   function accessibleName(el) {
     const label = el.getAttribute('aria-label');
     if (label && label.trim()) return clean(label);
@@ -52,7 +79,7 @@
     if (tag === 'input' && el.value && ['submit', 'button', 'reset'].includes(el.type)) return clean(el.value);
     if (tag === 'img' && el.alt) return clean(el.alt);
 
-    const text = el.innerText || el.textContent || '';
+    const text = nameFromContent(el);
     if (text.trim()) return clean(text);
 
     const title = el.getAttribute('title');
@@ -158,6 +185,7 @@
   }
 
   const LANDMARK_SELECTOR = 'header,nav,main,aside,footer,[role="banner"],[role="navigation"],[role="main"],[role="complementary"],[role="contentinfo"],[role="search"]';
+  const CHROME_LANDMARK_SELECTOR = 'header,nav,[role="banner"],[role="navigation"]';
   const ACTION_SELECTOR = [
     'a[href]', 'button', 'summary',
     'input[type="submit"]', 'input[type="button"]', 'input[type="image"]', 'input[type="reset"]',
@@ -241,8 +269,27 @@
       if (name && !tabs.includes(name)) tabs.push(name);
     }
 
+    // Icon-only header and navigation verbs: the one structural difference between two
+    // screens of an app whose URL never moves. See `fingerprintSignature` in model.mjs.
+    // Collected always, hashed only when the config asks (`signature.chrome`).
+    const chrome = [];
+    for (const landmark of document.querySelectorAll(CHROME_LANDMARK_SELECTOR)) {
+      if (!visible(landmark) || chrome.length >= 12) continue;
+      for (const el of landmark.querySelectorAll(ACTION_SELECTOR)) {
+        // Named by its own attribute and announcing no content: an aria-hidden glyph
+        // (`◇`, an icon font ligature) is still innerText, so innerText cannot say this.
+        // Not `aria-labelledby`: it commonly points at the record's own heading.
+        const ownLabel = el.getAttribute('aria-label') || el.getAttribute('title');
+        if (!visible(el) || !ownLabel || nameFromContent(el).trim()) continue;
+        // Any token holding a digit goes, not just purely numeric ones: `알림 3건` is a count.
+        const name = clean(ownLabel).split(' ').filter(token => !/\d/.test(token)).join(' ');
+        if (name && !chrome.includes(name)) chrome.push(name);
+        if (chrome.length >= 12) break;
+      }
+    }
+
     return {
-      landmarks, headings, forms, fields, tabs,
+      landmarks, headings, forms, fields, tabs, chrome,
       overlay: overlay ? { role: roleOf(overlay), name: containerName(overlay) } : null,
     };
   }

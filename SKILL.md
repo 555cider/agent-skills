@@ -1,6 +1,6 @@
 ---
 name: screen-map
-description: Use to operate a local web app without a known click path (reach a screen, run a flow, write a browser test), to map it or check a map's freshness, or to record a driven browser session into a reusable map. Not for fixing one element, visual QA, scraping third-party sites, or sitemap.xml.
+description: Use to operate a local web app without a known click path (reach a screen, run a flow, write a browser test, visit every screen and state to screenshot it), to map it or check a map's freshness, or to record a driven browser session into a reusable map. Not for fixing one element, judging what a rendered screen looks like (ui-audit), scraping third-party sites, or sitemap.xml.
 license: MIT
 compatibility: Requires Node.js 22 or newer and an installed Chrome/Chromium. Crawling requires a disposable local environment; querying an existing map requires neither.
 ---
@@ -94,12 +94,30 @@ was `상품 목록 0` yesterday. Match on `href` when it is there, and treat the
 than an equality test. The map's own `key` drops purely numeric tokens for this reason; a snapshot
 does not carry keys, so the trimming cannot be done for you.
 
+`--to` also takes a state id (`--to s7`). An app whose URL never moves has every screen at `/`, and
+there a route names nothing; the id from `state`, `route --all` or `map.md` is the handle. `--from`
+takes one too; a path from a screen no URL opens (an overlay, any screen of a URL-less app) first walks
+there from an entrypoint, so it runs from a fresh page.
+
+**Visiting every screen** — a screenshot per screen and state, a smoke pass — is one query:
+
+```bash
+screen-map route --all     # every screen, its id, title, reachability and the path to it
+```
+
+Each entry carries `steps` and a `playwright` snippet starting with `page.goto`, so a capture loop is a
+fresh page per entry, the snippet, then the screenshot; multiply by viewport and color scheme in the
+loop, not in the crawl. Unreachable screens stay in the list with `reason`, and `mutatingSteps` marks a
+path that presses controls the policy could not prove safe (see `replayMutating` in building.md). Report
+the counts with the screenshots: a loop over `route --all` covers exactly what the map holds and no more.
+
 Other queries:
 
 ```bash
 screen-map state   --route '/announcements'          # screens at a route, dialogs included
 screen-map actions --route '/announcements'          # every edge with class, status, reason
 screen-map route   --to '/cart' --from '/checkout'   # a path from somewhere other than an entrypoint
+screen-map route   --to s7                          # a screen by id, when several share a route
 screen-map verify  --to '/cart'                      # replay the stored route in a browser
 screen-map report [--out <file>]                     # regenerate map.md for a human
 screen-map invalidate --transition t7 --reason '…'   # downgrade an edge that stopped working
@@ -107,6 +125,10 @@ screen-map invalidate --transition t7 --reason '…'   # downgrade an edge that 
 
 `verify` replays exactly the path `route` would hand out, `--from` included, and `--headed` shows
 the window while it does. `invalidate` rewrites `map.md` along with `map.json`.
+
+On a map built with `replayMutating`, `verify` refuses (exit 3) a path that presses mutating controls
+unless it is given `--allow-mutating` too: where it points now may not be the disposable environment
+the map was built against.
 
 When `route` answers `no safe path`, read the rest of the payload before concluding the screen is
 unreachable: a `mutatingPath` means the crawl did get there, through a step that cannot be replayed.
@@ -142,10 +164,14 @@ recording will not do and what to report afterwards (`droppedActions`, `skippedH
 ## How screens are identified
 
 A node is a route template plus a coarse DOM signature, so `/items/1` and `/items/2` are one screen
-while an open modal or dropdown is its own.
+while an open modal or dropdown is its own. Query parameters are dropped from the route unless
+`routeTemplates.identityQuery` names them, which is how fixture states such as `/?empty=1` stay
+screens of their own (building.md).
 
 The signature is **structure only**: landmarks, form identities, input field names, the open overlay,
-and the selected tab. Headings are excluded on purpose — on a detail screen the `h1` is the record's
+and the selected tab — plus, when the config sets `signature.chrome`, the icon-only controls in header
+and navigation landmarks, the one thing that tells two screens of a URL-less app apart. Headings are
+excluded on purpose — on a detail screen the `h1` is the record's
 title, so hashing it yields one node per record. Headings still supply the screen's title and
 evidence; when the route is templated that title is one sample, flagged `titleIsSample`.
 

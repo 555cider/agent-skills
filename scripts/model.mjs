@@ -69,10 +69,19 @@ function globToRegExp(glob) {
 /**
  * Collapse volatile path segments so `/items/1` and `/items/2` become one node.
  * Overrides win over segment patterns so an app can pin its own shapes.
+ *
+ * The query is dropped unless `routeTemplates.identityQuery` names a parameter: an app
+ * whose screen states are switched by `?empty=1` or `?mock=error` renders the same
+ * structure under the same path, so without the parameter in the route those states
+ * collapse into the default screen and nothing can ask for them.
  */
-export function routeTemplate(pathname, config = {}) {
+export function routeTemplate(pathname, config = {}, search = '') {
   const raw = normalizePath(pathname);
   const rules = config.routeTemplates || {};
+  return templatePath(raw, rules) + identityQuery(search, rules.identityQuery);
+}
+
+function templatePath(raw, rules) {
   for (const override of rules.overrides || []) {
     if (override && override.match && globToRegExp(override.match).test(raw)) {
       return normalizePath(override.template || raw);
@@ -84,6 +93,29 @@ export function routeTemplate(pathname, config = {}) {
     return patterns.some(pattern => pattern.test(segment)) ? ':id' : segment;
   }).join('/');
   return normalizePath(templated);
+}
+
+/** `?b=2&a=1` with names `[a]` -> `?a=1`. Sorted, so the order a URL happens to use never splits a screen. */
+function identityQuery(search, names) {
+  if (!Array.isArray(names) || !names.length || !search) return '';
+  const params = new URLSearchParams(String(search).replace(/^\?/, ''));
+  const kept = [...new Set(names)].filter(name => params.has(name)).sort()
+    .map(name => [name, params.get(name)]);
+  return kept.length ? '?' + new URLSearchParams(kept).toString() : '';
+}
+
+/**
+ * A route as a caller types it (`--to '/cart?ref=mail'`) in the form the map stores it:
+ * path normalized, and only the parameters the crawl kept (`app.identityQuery`), sorted,
+ * first value each — the same rule `routeTemplate` applied. A map without identity
+ * parameters drops the query, as lookups always did.
+ */
+export function canonicalRoute(route, names = []) {
+  const raw = String(route ?? '/');
+  const cut = raw.search(/[?#]/);
+  if (cut < 0) return normalizePath(raw);
+  const query = raw[cut] === '?' ? raw.slice(cut).split('#')[0] : '';
+  return normalizePath(raw.slice(0, cut)) + identityQuery(query, names);
 }
 
 export function normalizePath(pathname) {
@@ -180,8 +212,15 @@ function stableStringify(value) {
  * above all: on a detail screen the h1 is the entity's title, so hashing it turns
  * one screen into one node per record. Headings are still carried in the
  * observation for the state's title and evidence; they just do not decide identity.
+ *
+ * `chrome` is the set of icon-only controls in the banner and navigation landmarks —
+ * `뒤로`, `그룹 메뉴`, `설정`. An app that never changes its URL draws a list screen and
+ * the next list screen down with identical landmarks and fields, and only the header's
+ * verbs tell them apart. Text-bearing controls stay out: a header button reading
+ * `Project X ▾` names a record. The key is omitted when empty so a map of an app without
+ * such controls keeps the signatures it already had.
  */
-export function fingerprintSignature(fingerprint = {}) {
+export function fingerprintSignature(fingerprint = {}, config = {}) {
   const canonical = {
     landmarks: [...(fingerprint.landmarks || [])].sort(),
     forms: [...(fingerprint.forms || [])].sort(),
@@ -189,7 +228,20 @@ export function fingerprintSignature(fingerprint = {}) {
     tabs: [...(fingerprint.tabs || [])].sort(),
     overlay: fingerprint.overlay ? { role: fingerprint.overlay.role, name: fingerprint.overlay.name } : null,
   };
+  if (signsChrome(config) && fingerprint.chrome && fingerprint.chrome.length) {
+    canonical.chrome = [...fingerprint.chrome].sort();
+  }
   return 'h:' + createHash('sha1').update(stableStringify(canonical)).digest('hex').slice(0, 12);
+}
+
+/**
+ * `signature.chrome: true` in the config. Off by default: most apps have an icon-only
+ * control in a header (menu, search, profile), so hashing chrome unasked would change the
+ * signature of nearly every existing map and orphan its recordings. An app whose URL never
+ * moves needs it, and building.md says so.
+ */
+export function signsChrome(config = {}) {
+  return !!(config && config.signature && config.signature.chrome === true);
 }
 
 export function stateKey(route, signature) { return route + '\u0000' + signature; }
@@ -442,8 +494,8 @@ export function createRegistry({ config = {}, seed = null, stamp = {} } = {}) {
   const nextTransitionId = nextIdFrom(transitions, 't');
 
   function upsertState(observation) {
-    const route = routeTemplate(observation.pathname, config);
-    const signature = fingerprintSignature(observation.fingerprint);
+    const route = routeTemplate(observation.pathname, config, observation.search);
+    const signature = fingerprintSignature(observation.fingerprint, config);
     const key = stateKey(route, signature);
     const existing = byKey.get(key);
     if (existing) return { state: restamp(existing), isNew: false };
@@ -461,6 +513,7 @@ export function createRegistry({ config = {}, seed = null, stamp = {} } = {}) {
         landmarks: observation.fingerprint.landmarks || [],
         forms: observation.fingerprint.forms || [],
         fields: observation.fingerprint.fields || [],
+        chrome: observation.fingerprint.chrome || [],
         overlay: observation.fingerprint.overlay || null,
       },
     };
@@ -516,7 +569,7 @@ export function createRegistry({ config = {}, seed = null, stamp = {} } = {}) {
     live: () => ({ states, transitions, entrypoints }),
     byId: id => states.find(state => state.id === id) || null,
     keyOf: observation =>
-      stateKey(routeTemplate(observation.pathname, config), fingerprintSignature(observation.fingerprint)),
+      stateKey(routeTemplate(observation.pathname, config, observation.search), fingerprintSignature(observation.fingerprint, config)),
   };
 }
 
@@ -666,7 +719,7 @@ export function statusCounts(transitions = []) {
 // ---------- graph queries ----------
 
 export function statesByRoute(map, route) {
-  const wanted = normalizePath(route);
+  const wanted = canonicalRoute(route, (map.app && map.app.identityQuery) || []);
   return (map.states || []).filter(state => state.route === wanted);
 }
 
@@ -679,8 +732,31 @@ export function transitionsFrom(map, stateId) {
 }
 
 /**
+ * `actionPolicy.replayMutating` in the config the map was crawled with. An app whose
+ * navigation is all plain buttons — no links, no URL change — has nothing the policy can
+ * prove safe, so every screen past the first is reached through a `mutating` edge and a
+ * safe-only search finds none of them. For a disposable environment whose state does not
+ * survive a reload (an in-memory mock, a seeded throwaway backend) the user can let
+ * proved mutating edges be replayed. Destructive edges are never executed, so they are
+ * never verified and never on a path either way.
+ *
+ * Read from the map, not from a flag, so a map carries the decision it was built under:
+ * a route handed out later has to be replayable on the same terms.
+ */
+export function replaysMutating(map) {
+  return !!(map && map.run && map.run.replayMutating === true);
+}
+
+/** `safe`, or — under replayMutating — a `mutating` edge the crawl walked and proved. */
+function replayableClass(transition, replayMutating) {
+  if (transition.class === 'safe') return true;
+  return replayMutating && transition.class === 'mutating' && transition.status === 'verified';
+}
+
+/**
  * Replay paths are safe-only by design: a path containing a mutating step is not
- * reproducible, and a route the map hands out must be walkable again.
+ * reproducible, and a route the map hands out must be walkable again. The one exception
+ * is a map crawled under `actionPolicy.replayMutating` — see `replaysMutating`.
  *
  * `statuses` defaults to `verified` alone, so the ordinary answer is still built only
  * from edges that were walked and proved. A caller that explicitly asks for `observed`
@@ -695,7 +771,9 @@ export function shortestSafePath(
   // `proofOnly` is the caller saying it wants a path it can promise, not merely one that
   // has been walked: an edge seen to land on two different screens was walked and proved
   // once each time, and is still not something to hand back as *the* way there.
-  { safeOnly = true, statuses = VERIFIED_ONLY, proofOnly = false } = {},
+  // `replayMutating` admits a `mutating` edge only once the crawl itself proved it
+  // (`verified`) — never a destructive one, never one a recording merely watched.
+  { safeOnly = true, replayMutating = replaysMutating(map), statuses = VERIFIED_ONLY, proofOnly = false } = {},
 ) {
   if (fromStateId === toStateId) return [];
   const outgoing = new Map();
@@ -703,7 +781,7 @@ export function shortestSafePath(
     if (!statuses.has(transition.status) || !transition.to) continue;
     if (transition.replayFailed) continue;
     if (proofOnly && transition.nondeterministic) continue;
-    if (safeOnly && transition.class !== 'safe') continue;
+    if (safeOnly && !replayableClass(transition, replayMutating)) continue;
     if (!outgoing.has(transition.from)) outgoing.set(transition.from, []);
     outgoing.get(transition.from).push(transition);
   }
@@ -752,10 +830,10 @@ export function pathFromEntrypoints(map, toStateId, fromStateId = null, options 
  * Never stored in `map.json`. It is derived, and a derived field on disk is one more
  * thing that can quietly disagree with the graph it came from.
  */
-export function reachability(map, { safeOnly = true, statuses = VERIFIED_OR_OBSERVED } = {}) {
+export function reachability(map, { safeOnly = true, replayMutating = replaysMutating(map), statuses = VERIFIED_OR_OBSERVED } = {}) {
   const edges = (map.transitions || []).filter(transition =>
     statuses.has(transition.status) && transition.to && !transition.replayFailed
-    && !(safeOnly && transition.class !== 'safe'));
+    && !(safeOnly && !replayableClass(transition, replayMutating)));
 
   const spread = reverse => {
     const next = new Map();
@@ -816,22 +894,57 @@ export function mutatingDetour(map, toStateId, fromStateId = null) {
 
 // ---------- rendering ----------
 
-export function playwrightExpr(action = {}) {
+/** Same rule as `identityName` in harvest.js: a token made only of digits and separators. */
+const NUMERIC_TOKEN = /^[\d.,()[\]{}+\-–—/·:]*\d[\d.,()[\]{}+\-–—/·:]*$/;
+
+/**
+ * The name a locator matches, as the action key sees it. A name holding a count or a
+ * time (`메일함 12`, `오후 9:18`) is matched with those tokens optional, or the snippet
+ * stops finding the control the moment the badge moves or hides at zero — the same reason
+ * the key drops them. A free token must still hold a digit, so `메일함 12` never also
+ * matches `메일함 전체`. Gaps are `\s*`: Playwright joins an inline child's label to the
+ * text around it without a space, where harvest.js pads it. The start is anchored; the end
+ * only when the stored name is whole, since harvest.js cuts names at 80 characters.
+ */
+const HARVEST_NAME_LIMIT = 80;
+function nameMatcher(name, quoted) {
+  const tokens = name.split(/\s+/).filter(Boolean);
+  if (!tokens.some(token => NUMERIC_TOKEN.test(token)) || tokens.every(token => NUMERIC_TOKEN.test(token))) {
+    return quoted(name);
+  }
+  const source = tokens
+    .map(token => (NUMERIC_TOKEN.test(token)
+      ? '(?:\\s*\\S*\\d\\S*)?'
+      : '\\s*' + token.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')))
+    .join('');
+  return `/^${source}${name.length < HARVEST_NAME_LIMIT ? '\\s*$' : ''}/`;
+}
+
+/**
+ * Overlay roles a locator can be scoped to. The crawl harvests an open overlay's subtree
+ * alone, so a name it saw once may still appear twice on the page — the chip behind a
+ * "show all" sheet and the same chip inside it — and an unscoped `getByRole` then fails
+ * Playwright's strict mode on a step the crawl walked without trouble.
+ */
+const SCOPABLE_OVERLAY_ROLES = new Set(['dialog', 'alertdialog', 'menu', 'listbox', 'menubar']);
+
+export function playwrightExpr(action = {}, { within = null } = {}) {
   const name = action.name ? String(action.name) : '';
   const quoted = text => "'" + text.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+  const root = within && SCOPABLE_OVERLAY_ROLES.has(within) ? `page.getByRole(${quoted(within)})` : 'page';
   if (action.ambiguous && action.cssFallback) {
-    return `page.locator(${quoted(action.cssFallback)})`;
+    return `${root}.locator(${quoted(action.cssFallback)})`;
   }
   if (name && action.role) {
-    const semantic = `page.getByRole(${quoted(action.role)}, { name: ${quoted(name)} })`;
+    const semantic = `${root}.getByRole(${quoted(action.role)}, { name: ${nameMatcher(name, quoted)} })`;
     if (action.kind === 'link' && action.hrefRaw) {
       const hrefSelector = `a[href=${JSON.stringify(String(action.hrefRaw))}]`;
       return `${semantic}.and(page.locator(${quoted(hrefSelector)}))`;
     }
     return semantic;
   }
-  if (action.cssFallback) return `page.locator(${quoted(action.cssFallback)})`;
-  return `page.locator(${quoted(action.selector || 'body')})`;
+  if (action.cssFallback) return `${root}.locator(${quoted(action.cssFallback)})`;
+  return `${root}.locator(${quoted(action.selector || 'body')})`;
 }
 
 export function routeToSteps(map, resolved, baseUrl) {
@@ -846,6 +959,8 @@ export function routeToSteps(map, resolved, baseUrl) {
   });
   for (const transition of resolved.path) {
     const target = stateById(map, transition.to);
+    const from = stateById(map, transition.from);
+    const within = from && from.kind === 'overlay' ? from.evidence?.overlay?.role : null;
     // Nothing on the page to click: a history step is the browser going back, and the
     // driver has to be told to do that rather than to find a control.
     const history = transition.action.kind === 'history';
@@ -855,7 +970,7 @@ export function routeToSteps(map, resolved, baseUrl) {
       role: transition.action.role,
       name: transition.action.name,
       class: transition.class,
-      playwright: history ? 'await page.goBack()' : `await ${playwrightExpr(transition.action)}.click()`,
+      playwright: history ? 'await page.goBack()' : `await ${playwrightExpr(transition.action, { within })}.click()`,
       to: target ? target.route : null,
       toTitle: target ? target.title : null,
       transition: transition.id,

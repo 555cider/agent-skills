@@ -60,17 +60,30 @@ dangerous labels are already caught at step 4.
 Set `"unknownActionClass": "destructive"` when the environment is only *mostly* disposable and you
 want `--allow-mutating` restricted to form submits.
 
-## A mutating action runs once per edge, not once
+## What happens behind a mutating action
 
-Reaching a screen means replaying a verified path to it from an entrypoint. When a mutating action
-is the only way onward — a wizard's **Save**, a form that creates the record the next screen shows —
-it sits on the replay path to everything behind it and is re-executed every time the crawl walks
-back. Twelve edges behind one **Save** cost twelve saves, not one.
+Reaching a screen means replaying a verified path to it from an entrypoint, and that path is built
+from `safe` edges. Under `--allow-mutating` alone a mutating action is pressed once, its destination
+is recorded, and that is all: no path to the screen behind it exists, so the screen's own actions
+come back `blocked` with `no safe path and not URL-addressable`. An app whose navigation is plain
+buttons — every list row a `<button>`, no URL change — maps its first screen and the edges out of it,
+and nothing deeper.
+
+Two settings put a mutating action on replay paths, and both make it run once per edge behind it,
+not once. Twelve edges behind one **Save** cost twelve saves.
+
+- `actionPolicy.allow` reclassifies that one action as `safe`. Use it for a single control.
+- `actionPolicy.replayMutating: true` with `--allow-mutating` replays every mutating edge the crawl
+  itself proved — not one a recording only watched.
+  Use it for an environment whose state does not survive a reload (an in-memory mock) or is thrown
+  away after the crawl. The map records it as `run.replayMutating`; `route` and `route --all` then
+  hand out the same paths, each marked with a note, and `verify` refuses them without
+  `--allow-mutating`.
 
 This is a consequence of replay verification, not a bug: the alternative is handing out routes that
-were never walked. But it means `--allow-mutating` and `actionPolicy.allow` cost more than the count
-of mutating edges suggests, and it is the reason a disposable environment is a precondition rather
-than a caution. `--no-replay-verify` avoids the repetition and gives up the guarantee.
+were never walked. It is the reason a disposable environment is a precondition rather than a
+caution. Destructive actions are never pressed, so they are never verified and never on a path.
+`--no-replay-verify` avoids the repetition and gives up the guarantee.
 
 ## Lexicons
 
