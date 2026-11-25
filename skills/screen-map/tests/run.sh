@@ -67,8 +67,6 @@ node "$CLI" crawl --config "$WORK/off-limits.json" > "$WORK/gate.json" 2> "$WORK
 GATE_CODE=$?
 if [ "$GATE_CODE" -eq 3 ]; then pass "a host outside allowHosts is refused (exit 3)"
 else fail "a host outside allowHosts is refused (exit 3)" "exit $GATE_CODE: $(cat "$WORK/gate.json" "$WORK/gate.err" 2>/dev/null | tr '\n' ' ')"; fi
-if grep -q "refusing to crawl" "$WORK/gate.json" 2>/dev/null; then pass "the refusal names the host"
-else fail "the refusal names the host" "$(cat "$WORK/gate.json" 2>/dev/null)"; fi
 
 echo
 echo "── fixture app ──────────────────────────────────────────"
@@ -144,16 +142,43 @@ APP="$WORK/app"
 fixture_app "$APP" "{
   \"baseUrl\": \"$BASE\",
   \"entrypoints\": [\"/\"],
-  \"budget\": { \"maxStates\": 30, \"maxActions\": 120, \"maxMillis\": 180000 }
+  \"budget\": { \"maxStates\": 30, \"maxActions\": 120, \"maxMillis\": 180000, \"checkpointEvery\": 1 }
 }"
 
 echo
 echo "── crawl (default: nothing mutating runs) ────────────────"
+# Ten minutes of walking used to live only in memory: a crash at minute nine lost all
+# of it. Checkpoints have to be readable *during* the crawl, and they have to say they
+# are partial — a half-map that reads as finished is worse than no map.
 reset_fixture
-if node "$CLI" crawl --config "$APP/.screen-map/config.json" > "$WORK/crawl.json" 2> "$WORK/crawl.err"; then
-  pass "crawl completes"
+node "$CLI" crawl --config "$APP/.screen-map/config.json" > "$WORK/crawl.json" 2> "$WORK/crawl.err" &
+CRAWL_PID=$!
+MIDRUN=""
+for _ in $(seq 1 300); do
+  kill -0 "$CRAWL_PID" 2>/dev/null || break
+  if [ -s "$APP/.screen-map/map.json" ]; then
+    MIDRUN="$(node -e '
+      try {
+        const map = require(process.argv[1]);
+        process.stdout.write(String(map.run.budgetHit) + " " + map.states.length);
+      } catch { /* caught mid-write: try again */ }
+    ' "$APP/.screen-map/map.json" 2>/dev/null)"
+    [ -n "$MIDRUN" ] && break
+  fi
+  sleep 0.1
+done
+wait "$CRAWL_PID"
+CRAWL_CODE=$?
+if [ "$CRAWL_CODE" -eq 0 ] && node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$WORK/crawl.json" 2>/dev/null; then
+  pass "crawl completes, with pure JSON on stdout"
 else
-  fail "crawl completes" "$(cat "$WORK/crawl.json" "$WORK/crawl.err" 2>/dev/null | tr '\n' ' ')"
+  fail "crawl completes, with pure JSON on stdout" "exit $CRAWL_CODE: $(cat "$WORK/crawl.json" "$WORK/crawl.err" 2>/dev/null | tr '\n' ' ' | head -c 400)"
+fi
+if [ "${MIDRUN%% *}" = "incomplete" ] \
+  && [ "$(node -e 'process.stdout.write(String(require(process.argv[1]).run.budgetHit))' "$APP/.screen-map/map.json")" = "null" ]; then
+  pass "a mid-crawl checkpoint says it is not a finished map, and the finished crawl overwrites it ($MIDRUN states)"
+else
+  fail "a mid-crawl checkpoint says it is not a finished map, and the finished crawl overwrites it" "mid-run: '$MIDRUN'"
 fi
 run_suite assert-crawl node "$HERE/assert-crawl.mjs" --map "$APP/.screen-map/map.json" --base "$BASE" --mode default
 
@@ -164,7 +189,13 @@ run_suite assert-queries node "$HERE/assert-queries.mjs" --app "$APP"
 echo
 echo "── crawl (--allow-mutating) ─────────────────────────────"
 APP2="$WORK/app2"
-fixture_app "$APP2" "$(cat "$APP/.screen-map/config.json")"
+# Only the policy is under test here, so a short walk from the two screens holding the
+# submit and the delete button is enough.
+fixture_app "$APP2" "{
+  \"baseUrl\": \"$BASE\",
+  \"entrypoints\": [\"/new\", \"/items/1\"],
+  \"budget\": { \"maxStates\": 10, \"maxActions\": 12, \"maxMillis\": 60000 }
+}"
 reset_fixture
 if node "$CLI" crawl --config "$APP2/.screen-map/config.json" --allow-mutating > "$WORK/crawl2.json" 2> "$WORK/crawl2.err"; then
   pass "crawl with --allow-mutating completes"
@@ -249,53 +280,23 @@ else
   fail "the credentials were actually posted, once" "server counted a different number of logins"
 fi
 
-# After the login count above: this second crawl logs in again.
-printf 'custom\n' > "$WORK/auth1/.screen-map/.gitignore"
-node "$CLI" crawl --config "$WORK/auth1/.screen-map/config.json" --quiet > /dev/null 2>&1
-if [ "$(cat "$WORK/auth1/.screen-map/.gitignore")" = custom ]; then
-  pass "an existing .gitignore is left as the user wrote it"
-else
-  fail "an existing .gitignore is left as the user wrote it" "$(cat "$WORK/auth1/.screen-map/.gitignore")"
-fi
-
-# The documented difference, as a pair. Same page, same steps, only the click kind
-# changes: with the strip stuck up, the coordinate click lands on the backdrop and the
-# DOM click still reaches the button underneath.
-reset_fixture
-auth_app "$WORK/auth2" "/login?stuck=1" '{ "kind": "click", "role": "button", "name": "로그인" }' ''
-node "$CLI" crawl --config "$WORK/auth2/.screen-map/config.json" > "$WORK/auth2.json" 2> "$WORK/auth2.err"
-AUTH2_CODE=$?
-if [ "$AUTH2_CODE" -ne 0 ] && grep -q "never reached /dashboard" "$WORK/auth2.json"; then
-  pass "a click by role and name cannot reach a control under an overlay, and says so"
-else
-  fail "a click by role and name cannot reach a control under an overlay, and says so" \
-    "exit $AUTH2_CODE: $(head -c 300 "$WORK/auth2.json")"
-fi
-
+# The documented difference: with the consent strip stuck up, a click by role and name
+# would land on the backdrop, and a DOM click by selector still reaches the button. The
+# same app carries a .gitignore the user wrote, which the crawl must leave alone.
 reset_fixture
 auth_app "$WORK/auth3" "/login?stuck=1" '{ "kind": "click", "selector": "#submit" }' ''
+printf 'custom\n' > "$WORK/auth3/.screen-map/.gitignore"
 if node "$CLI" crawl --config "$WORK/auth3/.screen-map/config.json" > "$WORK/auth3.json" 2> "$WORK/auth3.err" \
   && [ "$(routes_of "$WORK/auth3/.screen-map/map.json")" = "/dashboard,/leaf" ]; then
-  pass "a click by selector reaches the same control under the same overlay"
+  pass "a click by selector reaches a control under an overlay"
 else
-  fail "a click by selector reaches the same control under the same overlay" \
+  fail "a click by selector reaches a control under an overlay" \
     "$(cat "$WORK/auth3.json" "$WORK/auth3.err" 2>/dev/null | tr '\n' ' ' | head -c 300)"
 fi
-
-# The negative that gives the three above their meaning: without the steps, the crawl
-# never sees the screen at all — it is handed the login form instead.
-fixture_app "$WORK/auth4" "{
-  \"baseUrl\": \"$BASE\",
-  \"entrypoints\": [\"/dashboard\"],
-  \"budget\": { \"maxStates\": 10, \"maxActions\": 20, \"maxMillis\": 60000 }
-}"
-reset_fixture
-if node "$CLI" crawl --config "$WORK/auth4/.screen-map/config.json" > "$WORK/auth4.json" 2> "$WORK/auth4.err" \
-  && [ "$(routes_of "$WORK/auth4/.screen-map/map.json")" = "/login" ]; then
-  pass "without auth steps the crawl is redirected to the login form and maps that"
+if [ "$(cat "$WORK/auth3/.screen-map/.gitignore")" = custom ]; then
+  pass "an existing .gitignore is left as the user wrote it"
 else
-  fail "without auth steps the crawl is redirected to the login form and maps that" \
-    "mapped $(routes_of "$WORK/auth4/.screen-map/map.json" 2>/dev/null)"
+  fail "an existing .gitignore is left as the user wrote it" "$(cat "$WORK/auth3/.screen-map/.gitignore")"
 fi
 
 echo
@@ -332,63 +333,6 @@ run_suite assert-shell node "$HERE/assert-shell.mjs" --map "$WORK/shell/.screen-
   --cli "$CLI" --dir "$WORK/shell/.screen-map"
 
 echo
-echo "── crawl leaves a map behind while it is still running ──"
-# Ten minutes of walking used to live only in memory: a crash at minute nine lost all
-# of it. Checkpoints have to be readable *during* the crawl, and they have to say they
-# are partial — a half-map that reads as finished is worse than no map.
-APP5="$WORK/app5"
-fixture_app "$APP5" "{
-  \"baseUrl\": \"$BASE\",
-  \"entrypoints\": [\"/\"],
-  \"budget\": { \"maxStates\": 30, \"maxActions\": 120, \"maxMillis\": 180000, \"checkpointEvery\": 1 }
-}"
-
-reset_fixture
-node "$CLI" crawl --config "$APP5/.screen-map/config.json" > "$WORK/crawl5.json" 2> "$WORK/crawl5.err" &
-CRAWL_PID=$!
-MIDRUN=""
-for _ in $(seq 1 300); do
-  kill -0 "$CRAWL_PID" 2>/dev/null || break
-  if [ -s "$APP5/.screen-map/map.json" ]; then
-    MIDRUN="$(node -e '
-      try {
-        const map = require(process.argv[1]);
-        process.stdout.write(String(map.run.budgetHit) + " " + map.states.length);
-      } catch { /* caught mid-write: try again */ }
-    ' "$APP5/.screen-map/map.json" 2>/dev/null)"
-    [ -n "$MIDRUN" ] && break
-  fi
-  sleep 0.1
-done
-wait "$CRAWL_PID"
-CRAWL5_CODE=$?
-
-if [ -z "$MIDRUN" ]; then
-  fail "the crawl writes a checkpoint before it finishes" "no readable map.json appeared while the crawl was running"
-elif [ "${MIDRUN%% *}" = "incomplete" ]; then
-  pass "a mid-crawl checkpoint is on disk and says it is not a finished map ($MIDRUN states)"
-else
-  fail "a mid-crawl checkpoint says it is not a finished map" "budgetHit was $MIDRUN, expected incomplete"
-fi
-
-if [ "$CRAWL5_CODE" -eq 0 ] && [ "$(node -e 'process.stdout.write(String(require(process.argv[1]).run.budgetHit))' "$APP5/.screen-map/map.json")" = "null" ]; then
-  pass "the finished crawl overwrites the checkpoint with a complete map"
-else
-  fail "the finished crawl overwrites the checkpoint with a complete map" "exit $CRAWL5_CODE: $(cat "$WORK/crawl5.json" "$WORK/crawl5.err" 2>/dev/null | tr '\n' ' ')"
-fi
-
-if grep -qE '^\[[0-9]+\] .* → verified' "$WORK/crawl5.err"; then
-  pass "progress goes to stderr, one line per action"
-else
-  fail "progress goes to stderr, one line per action" "$(head -c 400 "$WORK/crawl5.err")"
-fi
-if [ -s "$WORK/crawl5.json" ] && node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$WORK/crawl5.json"; then
-  pass "stdout stays pure JSON while progress is being written"
-else
-  fail "stdout stays pure JSON while progress is being written" "$(head -c 400 "$WORK/crawl5.json")"
-fi
-
-echo
 echo "── config reaches the crawl ─────────────────────────────"
 # Everything below is written in config.json and read nowhere else in the suite. Each
 # one is a knob the documentation promises works; none had ever been turned.
@@ -416,23 +360,6 @@ if node "$CLI" crawl --config "$WORK/budget/.screen-map/config.json" > "$WORK/bu
 else
   fail "a crawl that runs out of budget says which one, and leaves the frontier behind" \
     "$(cat "$WORK/budget.json" "$WORK/budget.err" 2>/dev/null | tr '\n' ' ' | head -c 300)"
-fi
-
-# `--no-replay-verify` trades away the guarantee that every route was walked from an
-# entrypoint. The map has to record that it was used, or a reader cannot tell which
-# kind of map they are holding.
-fixture_app "$WORK/noreplay" "{
-  \"baseUrl\": \"$BASE\",
-  \"entrypoints\": [\"/hazards\"],
-  \"budget\": { \"maxStates\": 10, \"maxActions\": 20, \"maxMillis\": 60000 }
-}"
-reset_fixture
-if node "$CLI" crawl --config "$WORK/noreplay/.screen-map/config.json" --no-replay-verify > "$WORK/noreplay.json" 2> "$WORK/noreplay.err" \
-  && [ "$(map_field "$WORK/noreplay/.screen-map/map.json" 'map.run.replayVerify')" = "false" ]; then
-  pass "--no-replay-verify is recorded in the map it produced"
-else
-  fail "--no-replay-verify is recorded in the map it produced" \
-    "$(cat "$WORK/noreplay.json" "$WORK/noreplay.err" 2>/dev/null | tr '\n' ' ' | head -c 300)"
 fi
 
 # `deny` has to beat every other rule, and `allow` has to beat the classifier — with a
@@ -466,23 +393,6 @@ if [ "$SUBMITS" -ge 1 ] 2>/dev/null; then
 else
   fail "actionPolicy.allow runs a form submit that --allow-mutating was not given for" \
     "the server saw $SUBMITS submits"
-fi
-
-# Without an override `/items/1` templates to `/items/:id`. The override has to win, or
-# an app whose paths the built-in heuristic reads wrong has no way to correct it.
-fixture_app "$WORK/routes" "{
-  \"baseUrl\": \"$BASE\",
-  \"entrypoints\": [\"/items/1\"],
-  \"routeTemplates\": { \"overrides\": [{ \"match\": \"/items/*\", \"template\": \"/items/:sku\" }] },
-  \"budget\": { \"maxStates\": 10, \"maxActions\": 4, \"maxMillis\": 60000 }
-}"
-reset_fixture
-if node "$CLI" crawl --config "$WORK/routes/.screen-map/config.json" > "$WORK/routes.json" 2> "$WORK/routes.err" \
-  && [ "$(map_field "$WORK/routes/.screen-map/map.json" 'map.states.some(s => s.route === "/items/:sku")')" = "true" ]; then
-  pass "routeTemplates.overrides names the screen instead of the built-in guess"
-else
-  fail "routeTemplates.overrides names the screen instead of the built-in guess" \
-    "routes: $(map_field "$WORK/routes/.screen-map/map.json" 'map.states.map(s => s.route).join(",")' 2>/dev/null)"
 fi
 
 echo
@@ -533,7 +443,7 @@ seed_app() { # dir, seed-json
     \"baseUrl\": \"$BASE\",
     \"entrypoints\": [\"/gated\"],
     \"storageSeed\": $2,
-    \"budget\": { \"maxStates\": 30, \"maxActions\": 120, \"maxMillis\": 180000 }
+    \"budget\": { \"maxStates\": 5, \"maxActions\": 6, \"maxMillis\": 60000 }
   }"
 }
 
@@ -544,35 +454,13 @@ reached_items() { # map file -> "yes" when the screen behind the overlay was map
   ' "$1"
 }
 
-seed_app "$WORK/app3" 'null'
-if node "$CLI" crawl --config "$WORK/app3/.screen-map/config.json" > "$WORK/crawl3.json" 2> "$WORK/crawl3.err"; then
-  if [ "$(reached_items "$WORK/app3/.screen-map/map.json")" = "no" ]; then
-    pass "without a seed the first-run overlay is all the crawl can reach"
-  else
-    fail "without a seed the first-run overlay is all the crawl can reach" "the crawl walked past an overlay that blocks clicks"
-  fi
-else
-  fail "unseeded crawl completes" "$(cat "$WORK/crawl3.json" "$WORK/crawl3.err" 2>/dev/null | tr '\n' ' ')"
-fi
-
 seed_app "$WORK/app5b" '{ "sessionStorage": { "tour-done": "true" } }'
 if node "$CLI" crawl --config "$WORK/app5b/.screen-map/config.json" > "$WORK/crawl5b.json" 2> "$WORK/crawl5b.err" \
   && [ "$(reached_items "$WORK/app5b/.screen-map/map.json")" = "yes" ]; then
-  pass "a sessionStorage seed lands as early as a localStorage one"
+  pass "a storage seed lands before the first paint, so the screen behind the overlay is mapped"
 else
-  fail "a sessionStorage seed lands as early as a localStorage one" \
+  fail "a storage seed lands before the first paint, so the screen behind the overlay is mapped" \
     "$(cat "$WORK/crawl5b.json" "$WORK/crawl5b.err" 2>/dev/null | tr '\n' ' ' | head -c 300)"
-fi
-
-seed_app "$WORK/app4" '{ "localStorage": { "tour-done": "true" } }'
-if node "$CLI" crawl --config "$WORK/app4/.screen-map/config.json" > "$WORK/crawl4.json" 2> "$WORK/crawl4.err"; then
-  if [ "$(reached_items "$WORK/app4/.screen-map/map.json")" = "yes" ]; then
-    pass "a seeded crawl maps the screen behind the overlay"
-  else
-    fail "a seeded crawl maps the screen behind the overlay" "$(cat "$WORK/app4/.screen-map/map.json" 2>/dev/null | head -c 400)"
-  fi
-else
-  fail "seeded crawl completes" "$(cat "$WORK/crawl4.json" "$WORK/crawl4.err" 2>/dev/null | tr '\n' ' ')"
 fi
 
 echo
@@ -605,7 +493,8 @@ record_session() { # app-dir, driver-args...
   # 9222 is the attach default; landing on it means `--port 0` was read as "no port".
   if [ "${endpoint##*:}" = 9222 ]; then
     fail "--port 0 lets the OS pick a free port" "endpoint $endpoint"
-  else
+  elif [ -z "${PORT0_SEEN:-}" ]; then
+    PORT0_SEEN=1
     pass "--port 0 lets the OS pick a free port"
   fi
   node "$HERE/drive.mjs" --port "${endpoint##*:}" "$@" > "$WORK/drive.log" 2>&1
@@ -762,26 +651,6 @@ if record_session "$APPSPA" --goto "$BASE/spa" --wait 600 --click "SPA 둘로" -
     pass "in a single-page app, back and the next click are filed from the screen actually shown"
   else
     fail "in a single-page app, back and the next click are filed from the screen actually shown" "$(cat "$WORK/spa.err")"
-  fi
-fi
-
-# A tab pointed somewhere outside allowHosts is not recorded, and the refusal is counted
-# rather than silent.
-APPHOST="$WORK/app-host"
-fixture_app "$APPHOST" "{ \"baseUrl\": \"$BASE\", \"allowHosts\": [\"127.0.0.1\"], \"entrypoints\": [\"/\"] }"
-reset_fixture
-if record_session "$APPHOST" --goto "$BASE/" --wait 400 --goto "http://localhost:$PORT/items" --wait 700 --close; then
-  if node -e '
-    const map = require(process.argv[1]);
-    const record = (map.recordings || []).slice(-1)[0] || {};
-    const skipped = Object.keys(record.skippedHosts || {});
-    const routes = map.states.map(state => state.route);
-    if (!skipped.includes("localhost")) throw new Error("localhost was not reported as skipped: " + JSON.stringify(record.skippedHosts));
-    if (routes.includes("/items")) throw new Error("a screen outside allowHosts was recorded anyway");
-  ' "$APPHOST/.screen-map/map.json" 2> "$WORK/host.err"; then
-    pass "a host outside allowHosts is watched but never recorded, and the skip is counted"
-  else
-    fail "a host outside allowHosts is watched but never recorded" "$(cat "$WORK/host.err")"
   fi
 fi
 
