@@ -648,7 +648,7 @@ if printf '%s\n' "$@" | grep -qx -- '--help'; then
   exit 0
 fi
 # The grandchild is what a CLI's worker process looks like; it must die too.
-( sleep 4; : > "$PEER_REVIEW_STUB_LATE" ) &
+( sleep 6; : > "$PEER_REVIEW_STUB_LATE" ) &
 wait
 printf 'too late\n'
 EOF
@@ -667,9 +667,9 @@ assert_exit "a hung single reviewer times out" 124
 assert_file_contains "timeout is reported as such" "$WORK/err" "codex timed out after 1s"
 assert_file_not_contains "no review saved for the hung reviewer" "$WORK/out" "REVIEW="
 
-run_pr "$D9" "$D9/bin:$PATH" plan.md --reviewer=codex,claude --host=opencode --timeout=1
+run_pr "$D9" "$D9/bin:$PATH" plan.md --reviewer=codex,claude --host=opencode --timeout=3
 assert_exit "one hung reviewer among two" 0
-assert_file_contains "multi-reviewer timeout is an ERROR line" "$WORK/err" "ERROR=codex timed out after 1s"
+assert_file_contains "multi-reviewer timeout is an ERROR line" "$WORK/err" "ERROR=codex timed out after 3s"
 assert_eq "the other reviewer still reports" "REVIEW=claude " "$(reviews_in_out)"
 sleep 5
 if [ -e "$PEER_REVIEW_STUB_LATE" ]; then
