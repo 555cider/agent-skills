@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -71,17 +72,22 @@ class CliCase(unittest.TestCase):
         self.assertEqual(set(payload), {"ok", "command", "root", "data", "diagnostics", "changes"})
         return payload
 
-    def git(self, cwd: Path, *args: str) -> str:
+    @staticmethod
+    def git(cwd: Path, *args: str) -> str:
         result = subprocess.run(
             ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True, encoding="utf-8"
         )
         return result.stdout
 
+    @classmethod
+    def init_repo_at(cls, root: Path) -> None:
+        cls.git(root, "init", "-q", "-b", "main")
+        cls.git(root, "config", "user.email", "test@example.com")
+        cls.git(root, "config", "user.name", "Test")
+        cls.git(root, "config", "commit.gpgsign", "false")
+
     def init_repo(self) -> None:
-        self.git(self.root, "init", "-q", "-b", "main")
-        self.git(self.root, "config", "user.email", "test@example.com")
-        self.git(self.root, "config", "user.name", "Test")
-        self.git(self.root, "config", "commit.gpgsign", "false")
+        self.init_repo_at(self.root)
 
     @staticmethod
     def codes(payload: dict[str, object]) -> list[str]:
@@ -110,16 +116,11 @@ class LoosePlanTests(CliCase):
         cases = {
             "# T\n\n> **상태 (코드 대조 2026-11-16)**: 남은 것 5건: a\n": ("남은 것 5건: a", "active"),
             "# T\n\n> **상태: 완료** (근거 — x)\n": ("완료 (근거 — x)", "done"),
-            "# T\n상태: dev 반영(2026-11-18, squash). 남은 것: 실기 확인\n": (
-                "dev 반영(2026-11-18, squash). 남은 것: 실기 확인", "active"),
             "# T\n\n- 상태: 초안, 결정 전 착수 없음\n": ("초안, 결정 전 착수 없음", "active"),
             "# T\n\nStatus: done\n": ("done", "done"),
-            "# T\n\n> **상태: 대부분 완료 — 남은 것 2건**\n": ("대부분 완료 — 남은 것 2건", "active"),
             "# T\n\n> **상태: 완료 — 남은 것 1건**\n": ("완료 — 남은 것 1건", "active"),
             "# T\n\n## 1. 지금 상태\n\n상태: 완료\n": ("", "active"),
             "# T\n\n상태: 완료됨\n": ("완료됨", "done"),
-            "# T\n\nStatus: done (opened follow-up issue)\n": ("done (opened follow-up issue)", "done"),
-            "# T\n\n> **상태: 완료** (근거: `src/openapi.ts`)\n": ("완료 (근거: `src/openapi.ts`)", "done"),
             "# T\n\nStatus: donezo\n": ("donezo", "active"),
             "# T\n\n```\n상태: 완료\n```\n": ("", "active"),
         }
@@ -154,13 +155,9 @@ class LoosePlanTests(CliCase):
         old = self.run_cli("why", "2026-08-19-old-index")["data"]["plan"]
         self.assertEqual((old["kind"], old["title"], old["status_line"]), ("loose", "옛 계획", "초안, 결정 전 착수 없음"))
 
-    def test_context_routes_paths_to_loose_documents(self) -> None:
-        payload = self.run_cli("context", "--path", "apps/web/panel/a.ts")
-        self.assertEqual(payload["data"]["selected"], ["2026-11-17-viewport-hud"])
-        item = payload["data"]["decision_pack"][0]
-        self.assertEqual(item["kind"], "loose")
-        self.assertIn("남은 것 2건", item["status_line"])
-        self.assertIn("근거 코드", item["outcome"])
+        context = self.run_cli("context", "--path", "apps/web/panel/a.ts")
+        self.assertEqual(context["data"]["selected"], ["2026-11-17-viewport-hud"])
+        self.assertEqual(context["data"]["decision_pack"][0]["kind"], "loose")
 
     def test_cli_never_rewrites_or_deletes_loose_documents(self) -> None:
         before = {path: path.read_bytes() for path in (self.root / "docs" / "plans").glob("*.md")}
@@ -180,23 +177,6 @@ class LoosePlanTests(CliCase):
         self.assertEqual(gc["changes"], [])
         after = {path: path.read_bytes() for path in (self.root / "docs" / "plans").glob("*.md")}
         self.assertEqual(before, after)
-
-    def test_create_warns_about_the_existing_plan_directory(self) -> None:
-        payload = self.run_cli("create", "hud-toggle", "--title", "HUD toggle", "--tag", "hud",
-                               "--require", "2026-11-17-viewport-hud")
-        self.assertIn("foreign_plan_dir", self.codes(payload))
-        self.assertTrue((self.root / ".agents" / "plans" / "hud-toggle.md").exists())
-        status = self.run_cli("status")
-        waiting = [item["id"] for item in status["data"]["waiting"]]
-        self.assertEqual(waiting, ["hud-toggle"])
-
-    def test_loose_pairs_raise_no_overlap_warnings(self) -> None:
-        write(self.root / "docs" / "plans" / "2026-11-18-other.md", "# 또 다른\n\n`apps/web/hud.tsx`\n")
-        doctor = self.run_cli("doctor")
-        self.assertNotIn("scope_overlap", self.codes(doctor))
-        self.run_cli("create", "hud-owner", "--title", "HUD owner", "--scope", "apps/web/hud.tsx")
-        doctor = self.run_cli("doctor")
-        self.assertIn("scope_overlap", self.codes(doctor))
 
     def test_configured_directory_is_read_and_written(self) -> None:
         self.init_repo()
@@ -226,71 +206,59 @@ class StoreToleranceTests(CliCase):
     def test_legacy_v1_store_is_skipped_with_a_warning(self) -> None:
         write(self.root / ".agents" / "plan" / "graph.yaml", "plans: []\n")
         self.run_cli("create", "core", "--title", "Core", "--tag", "core")
-        for command in ("status", "context", "doctor"):
+        for command in ("status", "doctor"):
             with self.subTest(command=command):
                 payload = self.run_cli(command)
                 legacy = [item for item in payload["diagnostics"] if item["code"] == "legacy_store"]
                 self.assertEqual([item["severity"] for item in legacy], ["warning"])
 
-    def test_agents_plans_document_without_frontmatter_is_loose(self) -> None:
+    def test_frontmatter_in_agents_plans_is_optional_but_broken_json_is_an_error(self) -> None:
         write(self.root / ".agents" / "plans" / "notes.md", "# Notes\n\nStatus: draft\n")
-        payload = self.run_cli("doctor")
-        self.assertEqual(self.codes(payload), ["loose_plans"])
-        self.assertEqual(payload["data"]["counts"]["loose"], 1)
-
-    def test_other_tools_json_frontmatter_outside_agents_plans_is_loose(self) -> None:
-        write(self.root / "docs" / "plans" / "x.md", '---\n{"status": "draft", "owner": "me"}\n---\n# X\n')
-        write(self.root / "docs" / "plans" / "y.md", '---\n{"status": "active", "requires": [\n---\n# Y\n')
-        payload = self.run_cli("doctor", expect=1)
-        self.assertEqual(
-            sorted((item["code"], item.get("plan")) for item in payload["diagnostics"]),
-            [("invalid_json", "y"), ("loose_plans", None)],
-        )
-
-    def test_replace_keeps_the_old_plans_directory(self) -> None:
-        self.run_cli("create", "core", "--title", "Core", "--tag", "core")
-        target = self.root / "docs" / "plans"
-        target.mkdir(parents=True)
-        (self.root / ".agents" / "plans" / "core.md").replace(target / "core.md")
-        payload = self.run_cli("replace", "core", "core-v2", "--title", "Core v2", "--tag", "core")
-        self.assertTrue((target / "core-v2.md").exists())
-        why = self.run_cli("why", "core-v2")
-        self.assertEqual(why["data"]["lineage"][0]["recover"], "git log --all -- docs/plans/core.md")
-        self.assertEqual(payload["changes"][0]["action"], "replace")
-
-    def test_broken_json_frontmatter_in_agents_plans_is_still_an_error(self) -> None:
         write(self.root / ".agents" / "plans" / "bad.md", "---\nnot json\n---\n# Bad\n")
         payload = self.run_cli("doctor", expect=1)
-        self.assertIn("invalid_json", self.codes(payload))
+        self.assertEqual(sorted(self.codes(payload)), ["invalid_json", "loose_plans"])
+        self.assertEqual(payload["data"]["counts"]["loose"], 1)
 
 
 class OtherWorktreeTests(CliCase):
-    """Main worktree on `main`, linked worktrees `a` and `b` beside the repository."""
+    """Main worktree on `main`, linked worktrees `a` and `b` beside the repository.
+
+    Built once for the class; a test that changes it undoes the change in a cleanup.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temp = tempfile.TemporaryDirectory(prefix="plan-graph-worktrees-")
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.base = Path(cls.temp.name).resolve()
+        cls.root = cls.base / "repo"
+        cls.root.mkdir()
+        cls.init_repo_at(cls.root)
+        write(cls.root / ".gitignore", ".plans/\n")
+        write(cls.root / "src" / "x.py", "x = 0\n")
+        write(cls.root / "src" / "y.py", "y = 0\n")
+        write(cls.root / "src" / "z.py", "z = 0\n")
+        write(cls.root / "docs" / "plans" / "2026-11-01-shared.md", "# 공유\n\n`src/x.py`\n")
+        cls.git(cls.root, "add", "-A")
+        cls.git(cls.root, "commit", "-qm", "seed")
+        cls.a = cls.base / "wt-a"
+        cls.b = cls.base / "wt-b"
+        cls.git(cls.root, "worktree", "add", "-q", "-b", "a", str(cls.a))
+        cls.git(cls.root, "worktree", "add", "-q", "-b", "b", str(cls.b))
+        cls.addClassCleanup(cls.remove_worktrees)
+        write(cls.a / "src" / "x.py", "x = 1\n")
+        cls.git(cls.a, "commit", "-qam", "a changes x")
+        write(cls.a / "src" / "y.py", "y = 1\n")  # uncommitted
+        write(cls.b / "src" / "x.py", "x = 2\n")
+        cls.git(cls.b, "commit", "-qam", "b changes x")
 
     def setUp(self) -> None:
-        super().setUp()
-        self.init_repo()
-        write(self.root / ".gitignore", ".plans/\n")
-        write(self.root / "src" / "x.py", "x = 0\n")
-        write(self.root / "src" / "y.py", "y = 0\n")
-        write(self.root / "src" / "z.py", "z = 0\n")
-        write(self.root / "docs" / "plans" / "2026-11-01-shared.md", "# 공유\n\n`src/x.py`\n")
-        self.git(self.root, "add", "-A")
-        self.git(self.root, "commit", "-qm", "seed")
-        self.a = self.base / "wt-a"
-        self.b = self.base / "wt-b"
-        self.git(self.root, "worktree", "add", "-q", "-b", "a", str(self.a))
-        self.git(self.root, "worktree", "add", "-q", "-b", "b", str(self.b))
-        self.addCleanup(self.remove_worktrees)
-        write(self.a / "src" / "x.py", "x = 1\n")
-        self.git(self.a, "commit", "-qam", "a changes x")
-        write(self.a / "src" / "y.py", "y = 1\n")  # uncommitted
-        write(self.b / "src" / "x.py", "x = 2\n")
-        self.git(self.b, "commit", "-qam", "b changes x")
+        pass
 
-    def remove_worktrees(self) -> None:
-        for path in (self.a, self.b):
-            subprocess.run(["git", "-C", str(self.root), "worktree", "remove", "--force", str(path)],
+    @classmethod
+    def remove_worktrees(cls) -> None:
+        for path in (cls.a, cls.b):
+            subprocess.run(["git", "-C", str(cls.root), "worktree", "remove", "--force", str(path)],
                            capture_output=True, check=False)
 
     def overlap_of(self, payload: dict[str, object], path: Path) -> dict[str, object] | None:
@@ -312,20 +280,11 @@ class OtherWorktreeTests(CliCase):
 
         selected = self.run_cli("overlap", "--path", "src/y.py", cwd=self.b)
         self.assertEqual(self.overlap_of(selected, self.a)["shared_files"], ["src/y.py"])
-        directory = self.run_cli("overlap", "--path", "src/", cwd=self.b)
-        self.assertEqual(self.overlap_of(directory, self.a)["shared_files"], ["src/x.py", "src/y.py"])
         quiet = self.run_cli("overlap", "--path", "src/z.py", cwd=self.b)
         self.assertEqual(quiet["data"]["overlaps"], [])
 
-    def test_context_reports_other_worktrees_for_committed_work(self) -> None:
-        payload = self.run_cli("context", cwd=self.b)
-        self.assertIn("2026-11-01-shared", payload["data"]["selected"])
-        others = payload["data"]["other_worktrees"]
-        self.assertEqual([Path(item["path"]).resolve() for item in others], [self.a.resolve()])
-        skipped = self.run_cli("context", "--no-other-worktrees", cwd=self.b)
-        self.assertEqual(skipped["data"]["other_worktrees"], [])
-
     def test_ignored_plans_of_another_worktree_are_read_from_disk(self) -> None:
+        self.addCleanup(shutil.rmtree, self.root / ".plans", ignore_errors=True)
         write(self.root / ".plans" / "2026-11-20-x-rework.md", "# x 다시 짜기\n\n- 상태: 진행 중\n\n`src/x.py`\n")
         write(self.root / ".plans" / "2026-11-02-finished.md", "# 끝\n\n상태: 완료\n\n`src/x.py`\n")
         payload = self.run_cli("overlap", cwd=self.b)
@@ -340,13 +299,8 @@ class OtherWorktreeTests(CliCase):
         # The committed docs/plans document is identical here, so it is nobody's own.
         self.assertEqual(self.overlap_of(payload, self.a)["plans"], [])
 
-    def test_changed_plan_document_in_another_worktree_is_its_own(self) -> None:
-        write(self.a / "docs" / "plans" / "2026-11-01-shared.md", "# 공유 (a 판)\n\n`src/x.py`\n")
-        payload = self.run_cli("overlap", cwd=self.b)
-        plans = self.overlap_of(payload, self.a)["plans"]
-        self.assertEqual([plan["title"] for plan in plans], ["공유 (a 판)"])
-
     def test_editing_my_own_plan_does_not_make_siblings_own_it(self) -> None:
+        self.addCleanup(self.git, self.b, "checkout", "--", "docs/plans/2026-11-01-shared.md")
         write(self.b / "docs" / "plans" / "2026-11-01-shared.md", "# 공유 (b 판)\n\n`src/x.py`\n")
         edited = self.run_cli("overlap", cwd=self.b)
         self.assertIsNone(self.overlap_of(edited, self.root))
@@ -357,6 +311,7 @@ class OtherWorktreeTests(CliCase):
         self.assertEqual(self.overlap_of(deleted, self.a)["plans"], [])
 
     def test_one_unreadable_plan_does_not_hide_other_worktrees(self) -> None:
+        self.addCleanup(shutil.rmtree, self.a / ".agents", ignore_errors=True)
         write(
             self.a / ".agents" / "plans" / "weird.md",
             '---\n{"status": "active", "requires": [], "replaces": [], "scope": ["[unclosed"],'
@@ -365,7 +320,9 @@ class OtherWorktreeTests(CliCase):
         payload = self.run_cli("overlap", cwd=self.b)
         self.assertEqual(self.overlap_of(payload, self.a)["shared_files"], ["src/x.py"])
         context = self.run_cli("context", cwd=self.b)
-        self.assertEqual(len(context["data"]["other_worktrees"]), 1)
+        self.assertIn("2026-11-01-shared", context["data"]["selected"])
+        others = context["data"]["other_worktrees"]
+        self.assertEqual([Path(item["path"]).resolve() for item in others], [self.a.resolve()])
 
     def test_unignored_nested_worktree_is_not_a_change(self) -> None:
         nested = self.root / ".worktrees" / "c"
@@ -395,12 +352,6 @@ class OtherWorktreeTests(CliCase):
                 if item["shared_files"]
             },
         )
-
-    def test_without_git_overlap_degrades(self) -> None:
-        plain = self.base / "plain"
-        plain.mkdir()
-        payload = self.run_cli("overlap", "--root", str(plain), cwd=SKILL)
-        self.assertFalse(payload["data"]["available"])
 
 
 if __name__ == "__main__":

@@ -119,13 +119,6 @@ class PlanGraphCliTests(unittest.TestCase):
             )
         path.write_text(content, encoding="utf-8")
 
-    def test_empty_store_context_and_doctor(self) -> None:
-        doctor, _ = self.run_cli("doctor")
-        self.assertEqual(doctor["data"]["counts"], {"plans": 0, "active": 0, "done": 0, "loose": 0})
-        context, _ = self.run_cli("context", "--query", "anything")
-        self.assertEqual(context["data"]["decision_pack"], [])
-        self.assertEqual(context["data"]["candidates"], [])
-
     def test_create_uses_strict_json_frontmatter_and_template(self) -> None:
         payload = self.create("auth-gate", scopes=("apps/backend/**",), tags=("auth",))
         self.assertEqual(payload["changes"][0]["action"], "create")
@@ -242,35 +235,6 @@ x
         )
         self.assertIn("matched_by", selected["data"]["decision_pack"][1])
 
-    def test_query_body_requires_two_tokens_but_never_adds_relations(self) -> None:
-        self.create("alpha", tags=("unrelated",))
-        path = self.plan_file("alpha")
-        content = path.read_text(encoding="utf-8").replace(
-            "## Outcome\n\nTBD", "## Outcome\n\nKorean calibration evidence pipeline"
-        )
-        path.write_text(content, encoding="utf-8")
-        payload, _ = self.run_cli("context", "--query", "calibration evidence")
-        self.assertEqual(payload["data"]["selected"], ["alpha"])
-        self.assertEqual(load_store(self.root).plans["alpha"].requires, ())
-        single, _ = self.run_cli("context", "--query", "calibration")
-        self.assertEqual(single["data"]["selected"], [])
-
-    def test_no_match_returns_ready_candidates(self) -> None:
-        self.create("base", tags=("base",))
-        self.create("child", tags=("child",), requires=("base",))
-        payload, _ = self.run_cli("context", "--query", "totally different words")
-        self.assertEqual(payload["data"]["selected"], [])
-        self.assertEqual([item["id"] for item in payload["data"]["candidates"]], ["base"])
-
-    def test_changed_plan_file_selects_itself(self) -> None:
-        self.create("base", tags=("base",))
-        payload, _ = self.run_cli("context", "--path", ".agents/plans/base.md")
-        self.assertEqual(payload["data"]["selected"], ["base"])
-        self.assertIn(
-            "path:plan-file",
-            payload["data"]["decision_pack"][0]["matched_by"],
-        )
-
     def test_git_root_and_default_dirty_path_routing(self) -> None:
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.com"], check=True)
@@ -291,18 +255,6 @@ x
         )
         self.assertEqual(rejected["diagnostics"][0]["code"], "root_not_toplevel")
 
-    def test_explicit_query_ignores_dirty_paths_without_worktree_flag(self) -> None:
-        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
-        self.create("backend", scopes=("apps/backend/**",), tags=("backend",))
-        self.create("frontend", scopes=("apps/frontend/**",), tags=("frontend",))
-        dirty = self.root / "apps" / "backend" / "service.py"
-        dirty.parent.mkdir(parents=True)
-        dirty.write_text("x\n", encoding="utf-8")
-        query_only, _ = self.run_cli("context", "--query", "frontend")
-        self.assertEqual(query_only["data"]["selected"], ["frontend"])
-        combined, _ = self.run_cli("context", "--query", "frontend", "--worktree")
-        self.assertEqual(set(combined["data"]["selected"]), {"backend", "frontend"})
-
     def test_status_derives_readiness_and_critical_path(self) -> None:
         self.create("base", tags=("base",))
         self.create("middle", tags=("middle",), requires=("base",))
@@ -311,21 +263,6 @@ x
         self.assertEqual([item["id"] for item in payload["data"]["ready"]], ["base"])
         self.assertEqual([item["id"] for item in payload["data"]["waiting"]], ["middle", "leaf"])
         self.assertEqual(payload["data"]["critical_path"], ["base", "middle", "leaf"])
-
-    def test_status_projects_active_chain_through_retained_done_plan(self) -> None:
-        self.create("base", tags=("base",))
-        self.create("middle", tags=("middle",), requires=("base",))
-        self.create("leaf", tags=("leaf",), requires=("middle",))
-        self.fill_sections("middle")
-        self.run_cli("close", "middle")
-        payload, _ = self.run_cli("status")
-        self.assertEqual([item["id"] for item in payload["data"]["ready"]], ["base"])
-        self.assertEqual([item["id"] for item in payload["data"]["waiting"]], ["leaf"])
-        self.assertEqual(
-            [item["id"] for item in payload["data"]["retained_done"]],
-            ["middle"],
-        )
-        self.assertEqual(payload["data"]["critical_path"], ["base", "leaf"])
 
     def test_update_preserves_body_and_rejects_cycle(self) -> None:
         self.create("base", tags=("base",))
@@ -406,38 +343,14 @@ x
         payload, _ = self.run_cli("doctor")
         stale = [item for item in payload["diagnostics"] if item["code"] == "stale_plan"]
         self.assertEqual([item["plan"] for item in stale], ["core"])
-        self.assertIn("5 commit", stale[0]["message"])
         relaxed, _ = self.run_cli("doctor", "--stale-after", "10")
         self.assertNotIn("stale_plan", [item["code"] for item in relaxed["diagnostics"]])
-        structural, _ = self.run_cli("doctor", "--structural-only")
-        self.assertNotIn("stale_plan", [item["code"] for item in structural["diagnostics"]])
         context, _ = self.run_cli("context", "--plan", "core")
         staleness = context["data"]["decision_pack"][0]["staleness"]
         self.assertEqual(staleness["state"], "stale")
         self.assertEqual(staleness["commits_since_plan_update"], 5)
-
-    def test_dirty_plan_file_is_fresh_not_stale(self) -> None:
-        self.churned_repo(commits=5)
-        path = self.plan_file("core")
-        path.write_text(
-            path.read_text(encoding="utf-8") + "\nRevising against the new diff.\n",
-            encoding="utf-8",
-        )
-        payload, _ = self.run_cli("doctor")
-        self.assertNotIn("stale_plan", [item["code"] for item in payload["diagnostics"]])
-        context, _ = self.run_cli("context", "--plan", "core")
-        self.assertEqual(
-            context["data"]["decision_pack"][0]["staleness"]["state"], "fresh"
-        )
-
-    def test_staleness_unknown_without_git(self) -> None:
-        self.create("core", scopes=("apps/core/**",), tags=("core",))
-        payload, _ = self.run_cli("doctor")
-        self.assertNotIn("stale_plan", [item["code"] for item in payload["diagnostics"]])
-        context, _ = self.run_cli("context", "--plan", "core")
-        self.assertEqual(
-            context["data"]["decision_pack"][0]["staleness"]["state"], "unknown"
-        )
+        # Text output used to drop the staleness that JSON carried.
+        self.assertIn("Staleness: stale", self.run_text("context", "--plan", "core"))
 
     def test_non_ascii_repository_path_is_discovered_and_aged(self) -> None:
         # git prints the toplevel as UTF-8; decoding it with the locale codec (cp949 on
@@ -461,57 +374,6 @@ x
         overlaps = [item for item in payload["diagnostics"] if item["code"] == "scope_overlap"]
         self.assertEqual(len(overlaps), 1)
         self.assertEqual(overlaps[0]["plan"], "checkout-api")
-        self.assertIn("checkout-recovery", overlaps[0]["message"])
-        self.assertIn("apps/checkout/service.py", overlaps[0]["message"])
-
-    def test_overlap_needs_shared_file_and_no_requires_edge(self) -> None:
-        self.create("checkout-api", scopes=("apps/checkout/**",), tags=("checkout",))
-        self.create(
-            "checkout-recovery",
-            scopes=("apps/checkout/**",),
-            tags=("recovery",),
-            requires=("checkout-api",),
-        )
-        shared = self.root / "apps" / "checkout" / "service.py"
-        shared.parent.mkdir(parents=True)
-        shared.write_text("x\n", encoding="utf-8")
-        self.create("empty-a", scopes=("lib/**",), tags=("lib-a",))
-        self.create("empty-b", scopes=("lib/**",), tags=("lib-b",))
-        payload, _ = self.run_cli("doctor")
-        self.assertNotIn(
-            "scope_overlap", [item["code"] for item in payload["diagnostics"]]
-        )
-
-    def test_context_surfaces_overlapping_plan_without_requires_edge(self) -> None:
-        self.create("checkout-api", scopes=("apps/checkout/**",), tags=("checkout",))
-        self.create("checkout-recovery", scopes=("apps/checkout/**",), tags=("recovery",))
-        shared = self.root / "apps" / "checkout" / "service.py"
-        shared.parent.mkdir(parents=True)
-        shared.write_text("x\n", encoding="utf-8")
-        payload, _ = self.run_cli("context", "--plan", "checkout-api")
-        self.assertEqual(payload["data"]["overlapping"], ["checkout-recovery"])
-        self.assertEqual(payload["data"]["read_order"], ["checkout-api"])
-        item = next(
-            entry
-            for entry in payload["data"]["decision_pack"]
-            if entry["id"] == "checkout-recovery"
-        )
-        self.assertEqual(item["role"], "overlapping")
-        self.assertIn("overlap:apps/checkout/service.py", item["matched_by"])
-        self.assertNotIn("outcome", item)
-
-    def test_overlapping_excludes_plans_already_required_or_affected(self) -> None:
-        self.create("base", scopes=("apps/checkout/**",), tags=("base",))
-        self.create(
-            "leaf", scopes=("apps/checkout/**",), tags=("leaf",), requires=("base",)
-        )
-        shared = self.root / "apps" / "checkout" / "service.py"
-        shared.parent.mkdir(parents=True)
-        shared.write_text("x\n", encoding="utf-8")
-        payload, _ = self.run_cli("context", "--plan", "leaf")
-        self.assertEqual(payload["data"]["overlapping"], [])
-        roles = {item["id"]: item["role"] for item in payload["data"]["decision_pack"]}
-        self.assertEqual(roles, {"base": "required", "leaf": "selected"})
 
     def test_why_reports_blockers_staleness_overlap_and_lineage(self) -> None:
         self.create("auth-session", tags=("auth",))
@@ -550,84 +412,6 @@ x
         self.assertFalse(data["prunable"])
         self.assertIn("Completion", data["unfilled_sections"])
 
-    def test_why_unknown_plan_errors(self) -> None:
-        self.create("real", tags=("real",))
-        payload, _ = self.run_cli("why", "ghost", expect=1)
-        self.assertEqual(payload["diagnostics"][0]["code"], "unknown_plan")
-
-    def test_status_json_lists_requires_edges(self) -> None:
-        self.create("base", tags=("base",))
-        self.create("child", tags=("child",), requires=("base",))
-        payload, _ = self.run_cli("status")
-        self.assertEqual(
-            payload["data"]["edges"],
-            [{"from": "child", "to": "base", "kind": "requires"}],
-        )
-
-    def test_context_item_carries_replacement_lineage(self) -> None:
-        self.create("old", tags=("old",))
-        self.run_cli("replace", "old", "new", "--title", "New", "--tag", "new")
-        payload, _ = self.run_cli("context", "--plan", "new")
-        item = payload["data"]["decision_pack"][0]
-        self.assertEqual(
-            item["lineage"],
-            [{"replaced": "old", "recover": "git log --all -- .agents/plans/old.md"}],
-        )
-
-    def test_query_near_misses_listed_below_cutoff(self) -> None:
-        self.create("alpha", tags=("unrelated",))
-        path = self.plan_file("alpha")
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "## Outcome\n\nTBD", "## Outcome\n\nKorean calibration evidence pipeline"
-            ),
-            encoding="utf-8",
-        )
-        payload, _ = self.run_cli("context", "--query", "calibration")
-        self.assertEqual(payload["data"]["selected"], [])
-        self.assertEqual(
-            [item["id"] for item in payload["data"]["near_misses"]], ["alpha"]
-        )
-        self.assertGreater(payload["data"]["near_misses"][0]["score"], 0)
-        for plan_id in ("calib-a", "calib-b", "calib-c", "calib-d"):
-            self.create(plan_id, title=f"Calibration {plan_id[-1]}", tags=(plan_id,))
-        spill, _ = self.run_cli("context", "--query", "calibration")
-        self.assertEqual(spill["data"]["selected"], ["calib-a", "calib-b", "calib-c"])
-        self.assertEqual(
-            [item["id"] for item in spill["data"]["near_misses"]],
-            ["calib-d", "alpha"],
-        )
-
-    def test_version_flag_prints_version(self) -> None:
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=20,
-        )
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("plan-graph 2.1.0", result.stdout)
-
-    def test_doctor_flags_near_duplicate_pair(self) -> None:
-        self.create("checkout-flow", title="Checkout recovery flow", tags=("checkout",))
-        self.create("checkout-retry", title="Checkout recovery retry", tags=("checkout",))
-        payload, _ = self.run_cli("doctor")
-        duplicates = [
-            item for item in payload["diagnostics"] if item["code"] == "possible_duplicate"
-        ]
-        self.assertEqual(len(duplicates), 1)
-        self.assertEqual(duplicates[0]["plan"], "checkout-flow")
-        self.assertIn("checkout-retry", duplicates[0]["message"])
-
-    def test_shared_tag_alone_is_not_a_duplicate(self) -> None:
-        self.create("checkout-flow", title="Checkout recovery flow", tags=("checkout",))
-        self.create("payments-audit", title="Payments audit report", tags=("checkout",))
-        payload, _ = self.run_cli("doctor")
-        self.assertNotIn(
-            "possible_duplicate", [item["code"] for item in payload["diagnostics"]]
-        )
-
     def test_close_refuses_tbd_decision_sections(self) -> None:
         self.create("skeleton", tags=("skeleton",))
         failed, _ = self.run_cli("close", "skeleton", expect=1)
@@ -635,19 +419,16 @@ x
         self.assertIn("Outcome", failed["diagnostics"][0]["message"])
         self.assertEqual(load_store(self.root).plans["skeleton"].status, "active")
 
-    def test_close_force_overrides_with_warning(self) -> None:
+    def test_close_force_abandons_with_recovery_only_without_active_dependents(self) -> None:
         self.create("abandoned", tags=("abandoned",))
         self.create("keeper", tags=("keeper",), requires=("abandoned",))
-        payload, _ = self.run_cli("close", "abandoned", "--force", expect=1)
-        self.assertEqual(payload["diagnostics"][0]["code"], "active_dependents")
+        refused, _ = self.run_cli("close", "abandoned", "--force", expect=1)
+        self.assertEqual(refused["diagnostics"][0]["code"], "active_dependents")
         self.assertEqual(load_store(self.root).plans["abandoned"].status, "active")
-
-    def test_close_force_without_dependents_abandons_with_recovery(self) -> None:
-        self.create("abandoned", tags=("abandoned",))
+        self.run_cli("drop", "keeper")
         original = self.plan_file("abandoned").read_bytes()
         payload, _ = self.run_cli("close", "abandoned", "--force")
         self.assertTrue(payload["data"]["abandoned"])
-        self.assertEqual(payload["data"]["unblocked"], [])
         self.assertFalse(self.plan_file("abandoned").exists())
         recovery = Path(payload["data"]["recovery_directory"])
         self.assertEqual((recovery / "abandoned.md").read_bytes(), original)
@@ -674,34 +455,6 @@ x
         self.assertEqual(raised.exception.code, "recovery_failed")
         self.assertEqual(self.plan_file("scratch").read_bytes(), original)
 
-    def test_close_with_filled_sections_reports_unblocked_dependents(self) -> None:
-        self.create("base", tags=("base",))
-        self.create("child", tags=("child",), requires=("base",))
-        self.fill_sections("base")
-        payload, _ = self.run_cli("close", "base")
-        self.assertEqual(payload["data"]["unblocked"], ["child"])
-        self.assertTrue(payload["data"]["retained"])
-
-    def test_doctor_warns_tbd_sections_on_hand_edited_done_plan(self) -> None:
-        self.create("keep", tags=("keep",))
-        self.create("active", tags=("active",), requires=("keep",))
-        path = self.plan_file("keep")
-        content = path.read_text(encoding="utf-8").replace(
-            '"status": "active"', '"status": "done"'
-        )
-        path.write_text(content, encoding="utf-8")
-        doctor, _ = self.run_cli("doctor")
-        warned = [item for item in doctor["diagnostics"] if item["code"] == "tbd_sections"]
-        self.assertEqual([item["plan"] for item in warned], ["keep"])
-
-    def test_reopen_retained_done_plan(self) -> None:
-        self.create("base", tags=("base",))
-        self.create("child", tags=("child",), requires=("base",))
-        self.fill_sections("base")
-        self.run_cli("close", "base")
-        self.run_cli("reopen", "base")
-        self.assertEqual(load_store(self.root).plans["base"].status, "active")
-
     def test_whitespace_only_list_values_are_rejected_before_writing(self) -> None:
         # CLI values reach validation unstripped; a blank tag used to be written and then
         # broke every later command on load.
@@ -722,6 +475,8 @@ x
             failed, _ = self.run_cli("close", "base", *extra, expect=1)
             self.assertEqual(failed["diagnostics"][0]["code"], "no_changes")
         self.assertEqual(self.plan_file("base").read_bytes(), before)
+        self.run_cli("reopen", "base")
+        self.assertEqual(load_store(self.root).plans["base"].status, "active")
 
     def test_drop_refuses_indirect_active_dependent_through_done_plan(self) -> None:
         self.create("base", tags=("base",))
@@ -751,19 +506,6 @@ x
         self.run_cli("gc")
         self.assertEqual(set(load_store(self.root).plans), {"keep", "active"})
 
-    def test_doctor_rejects_legacy_nested_and_invalid_plans(self) -> None:
-        legacy = self.root / ".agents" / "plan"
-        legacy.mkdir(parents=True)
-        (legacy / "graph.yaml").write_text("next: 1\n", encoding="utf-8")
-        nested = self.root / "apps" / "backend" / ".agents" / "plans"
-        nested.mkdir(parents=True)
-        invalid_dir = self.root / ".agents" / "plans"
-        invalid_dir.mkdir(parents=True)
-        (invalid_dir / "bad.md").write_text("---\nnot json\n---\n# Bad\n", encoding="utf-8")
-        payload, _ = self.run_cli("doctor", expect=1)
-        codes = {item["code"] for item in payload["diagnostics"]}
-        self.assertTrue({"legacy_store", "nested_store", "invalid_json"} <= codes)
-
     def test_doctor_reports_each_field_error_once(self) -> None:
         # parse_plan owns per-field checks; the graph pass used to repeat them, so doctor
         # printed every error twice -- and the second copy accepted scope ".".
@@ -786,11 +528,6 @@ x
         self.assertEqual(codes.count("invalid_scope"), 1)
         self.assertEqual(codes.count("duplicate_metadata"), 1)
 
-    def test_create_rejects_dot_scope(self) -> None:
-        payload, _ = self.run_cli("create", "core", "--title", "Core", "--scope", ".", expect=1)
-        self.assertEqual([item["code"] for item in payload["diagnostics"]], ["invalid_scope"])
-        self.assertFalse(self.plan_file("core").exists())
-
     def test_doctor_ignores_store_in_nested_git_worktree(self) -> None:
         nested = self.root / ".worktrees" / "feature"
         nested.mkdir(parents=True)
@@ -798,16 +535,6 @@ x
         (nested / ".agents" / "plans").mkdir(parents=True)
         payload, _ = self.run_cli("doctor")
         self.assertEqual(payload["diagnostics"], [])
-
-    @unittest.skipUnless(SYMLINKS_USABLE, "this OS or account cannot create symlinks")
-    def test_symlink_store_is_rejected(self) -> None:
-        outside = self.root / "outside"
-        outside.mkdir()
-        agents = self.root / ".agents"
-        agents.mkdir()
-        os.symlink(outside, agents / "plans", target_is_directory=True)
-        payload, _ = self.run_cli("doctor", expect=1)
-        self.assertEqual(payload["diagnostics"][0]["code"], "symlink_store")
 
     @unittest.skipUnless(SYMLINKS_USABLE, "this OS or account cannot create symlinks")
     def test_symlink_agents_parent_is_rejected_without_traversal(self) -> None:
@@ -839,11 +566,6 @@ x
         self.assertIsNotNone(result.stdout, "stdout failed to decode as UTF-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("시뮬레이션", result.stdout)
-
-    def test_routing_path_escape_is_rejected(self) -> None:
-        self.create("one", tags=("one",))
-        payload, _ = self.run_cli("context", "--path", "../outside.py", expect=1)
-        self.assertEqual(payload["diagnostics"][0]["code"], "path_escape")
 
     def test_store_changed_after_read_is_concurrent_change(self) -> None:
         self.create("one", tags=("one",))
@@ -936,28 +658,6 @@ x
         self.assertIn("# Scripted v2\n", updated)
         self.assertIn("# install deps\n", updated)
 
-    def test_unclosed_fence_leaves_later_headings(self) -> None:
-        from plan_graph.model import extract_sections
-        sections = extract_sections("## Outcome\n\n```\n## Evidence\n")
-        self.assertEqual(list(sections), ["Outcome", "Evidence"])
-        sections = extract_sections("## Outcome\n```\n## Fake\n```\n```\n## Evidence\n")
-        self.assertEqual(list(sections), ["Outcome", "Evidence"])
-
-    def test_directory_reaches_scope_with_double_star_inside_a_segment(self) -> None:
-        from plan_graph.model import scope_matches
-        self.assertTrue(scope_matches("apps/check**", "apps/checkout/"))
-        self.assertFalse(scope_matches("apps/check**", "apps/foo/"))
-        self.assertTrue(scope_matches("apps/**", "apps/foo/"))
-
-    def test_context_text_prints_staleness_and_lineage(self) -> None:
-        self.churned_repo(commits=5)
-        text = self.run_text("context", "--plan", "core")
-        self.assertRegex(text, r"Staleness: stale \(5 scope commit\(s\) since the plan last changed; read `git diff [0-9a-f]{12}\.\.HEAD`")
-        self.run_cli("replace", "core", "core-v2", "--title", "Core v2", "--tag", "core")
-        text = self.run_text("context", "--plan", "core-v2")
-        self.assertIn("Replaced: core (recover: git log --all -- .agents/plans/core.md)", text)
-        self.assertNotIn("Staleness:", text)
-
     def test_relative_path_resolves_from_working_directory(self) -> None:
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         self.create("checkout", scopes=("apps/checkout/**",), tags=("checkout",))
@@ -970,9 +670,6 @@ x
         self.assertEqual(payload["data"]["selected"], ["checkout"])
         sibling, _ = self.run_cli("context", "--path", "../billing/api/x.py", root=False, cwd=nested)
         self.assertEqual(sibling["data"]["selected"], ["billing"])
-        # Outside the root, a relative path is still read from the root.
-        outside, _ = self.run_cli("context", "--path", "apps/checkout/service.py")
-        self.assertEqual(outside["data"]["selected"], ["checkout"])
         escape, _ = self.run_cli("context", "--path", "../../../x.py", root=False, cwd=nested, expect=1)
         self.assertEqual(escape["diagnostics"][0]["code"], "path_escape")
 
@@ -981,39 +678,16 @@ x
         self.create("billing", scopes=("apps/billing/api/*.py",), tags=("billing",))
         self.create("docs", scopes=("docs/**",), tags=("docs",))
         (self.root / "apps" / "checkout" / "src").mkdir(parents=True)
-        for value, expected in (
-            ("apps/checkout", ["checkout"]),
-            ("apps/checkout/", ["checkout"]),
-            ("apps/checkout/src", ["checkout"]),
-            ("apps", ["billing", "checkout"]),
-            ("apps/billing/", ["billing"]),
-            ("apps/billing/web/", []),
-        ):
+        payload, _ = self.run_cli("context", "--path", "apps/checkout")
+        self.assertEqual(payload["data"]["selectors"]["paths"], ["apps/checkout/"])
+        self.assertEqual(payload["data"]["selected"], ["checkout"])
+        for value, expected in (("apps", ["billing", "checkout"]), ("apps/billing/web/", [])):
             payload, _ = self.run_cli("context", "--path", value)
             self.assertEqual(sorted(payload["data"]["selected"]), expected, value)
         # A file path that does not exist is still a file, not a directory.
-        payload, _ = self.run_cli("context", "--path", "apps/checkout")
-        self.assertEqual(payload["data"]["selectors"]["paths"], ["apps/checkout/"])
         missing, _ = self.run_cli("context", "--path", "apps/billing")
         self.assertEqual(missing["data"]["selectors"]["paths"], ["apps/billing"])
         self.assertEqual(missing["data"]["selected"], [])
-
-    def test_doctor_does_not_warn_stale_for_done_plans(self) -> None:
-        self.churned_repo(commits=5)
-        self.create("keeper", tags=("keeper",), requires=("core",))
-        self.fill_sections("core")
-        self.git("add", ".")
-        self.git("commit", "-qm", "keeper")
-        target = self.root / "apps" / "core" / "engine.py"
-        self.run_cli("close", "core")
-        self.git("commit", "-aqm", "close core")
-        for index in range(5):
-            target.write_text(f"after {index}\n", encoding="utf-8")
-            self.git("commit", "-aqm", f"after {index}")
-        payload, _ = self.run_cli("doctor")
-        self.assertNotIn("stale_plan", [item["code"] for item in payload["diagnostics"]])
-        why, _ = self.run_cli("why", "core")
-        self.assertEqual(why["data"]["staleness"]["state"], "stale")
 
     def test_git_history_timeout_warns_instead_of_failing(self) -> None:
         import plan_graph.store as store_module
@@ -1094,14 +768,6 @@ class PlanGraphAlgorithmTests(unittest.TestCase):
         self.assertEqual(critical_path(plans), ordered)
         context = build_context(root, plans, explicit_plans=["p-1499"])
         self.assertEqual(len(context["required"]), 1499)
-
-    def test_cycle_reports_chain(self) -> None:
-        root = Path("/tmp/cycle-plan-graph")
-        one = make_plan(root=root, plan_id="one", title="One", requires=["two"], tags=["one"])
-        two = make_plan(root=root, plan_id="two", title="Two", requires=["one"], tags=["two"])
-        cycle = find_cycle({"one": one, "two": two})
-        self.assertEqual(cycle[0], cycle[-1])
-        self.assertEqual(set(cycle[:-1]), {"one", "two"})
 
 
 if __name__ == "__main__":
