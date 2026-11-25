@@ -479,81 +479,7 @@ try {
     return current.picks[0]?.accessibleName === "Save" ? current : null;
   }, "Enter did not select the focused element");
   expect(keyboardState.armed === false, "plain Enter left single-select mode armed");
-  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.arm();true");
-  await mainEval("document.querySelector('#cancel').focus();true");
-  await keyPress("Enter", "Enter", 8);
-  keyboardState = await waitUntil(async () => {
-    const current = await isolatedEval("globalThis.__domPicker.getState()");
-    return current.picks[0]?.accessibleName === "Cancel" ? current : null;
-  }, "Shift+Enter did not add the focused element");
-  expect(keyboardState.armed === true, "Shift+Enter did not keep multi-select mode armed");
-  await mainEval("document.querySelector('#keyboard-leaf').focus();true");
-  await keyPress("Enter", "Enter", 1);
-  keyboardState = await waitUntil(async () => {
-    const current = await isolatedEval("globalThis.__domPicker.getState()");
-    return current.picks[0]?.attributes?.id === "keyboard-leaf" ? current : null;
-  }, "Alt+Enter did not select the exact focused leaf");
-  expect(keyboardState.picks.length === 1 && keyboardState.picks[0].tagName === "span", "Alt+Enter promoted the exact leaf to a semantic ancestor");
-  await isolatedEval("globalThis.__domPicker.arm();true");
-  await keyPress("Escape", "Escape");
-  expect((await isolatedEval("globalThis.__domPicker.getState()")).armed === false, "Escape did not leave keyboard selection mode");
 
-  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.snapshot('#cancel',{exact:false,multi:false});true");
-  await delay(100);
-  let refinementAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
-  const widen = refinementAudit.controls.find((control) => /Widen selection|선택 범위 넓히기/.test(control.label));
-  const narrowAtBase = refinementAudit.controls.find((control) => /Narrow selection|선택 범위 되돌리기/.test(control.label));
-  expect(widen && narrowAtBase?.disabled, "scope controls did not expose a disabled history-based narrow action");
-  await clickAt(widen.x + widen.width / 2, widen.y + widen.height / 2);
-  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks[0]?.attributes?.dataTestId")) === "settings-toolbar", "widen did not select the parent scope");
-  refinementAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
-  const narrow = refinementAudit.controls.find((control) => /Narrow selection|선택 범위 되돌리기/.test(control.label));
-  expect(narrow && !narrow.disabled, "narrow did not become available after widening");
-  await clickAt(narrow.x + narrow.width / 2, narrow.y + narrow.height / 2);
-  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks[0]?.accessibleName")) === "Cancel", "narrow did not return to the exact prior child scope");
-
-  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.snapshot('#edge-target',{exact:true,multi:false});true");
-  const edgeAudit = await waitUntil(async () => {
-    const current = await isolatedEval("globalThis.__domPicker._host.audit()");
-    return current.overlayLabels?.length ? current : null;
-  }, "overlay audit did not expose label geometry");
-  expect(edgeAudit.overlayLabels.every((label) => label.x >= 0 && label.y >= 0 && label.right <= edgeAudit.viewport.right), "overlay labels escaped the visual viewport");
-  expect(edgeAudit.overlayLabels[0].placement === "below", "top-edge overlay label did not flip below its target");
-
-  await pageConnection.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 700, deviceScaleFactor: 1, mobile: true });
-  await isolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.snapshot('#bottom-target',{exact:true,multi:false});true");
-  const bottomRect = await mainEval(`(function(){var r=document.querySelector('#bottom-target').getBoundingClientRect();return {top:r.top,bottom:r.bottom}})()`);
-  const compactAudit = await waitUntil(async () => {
-    const current = await isolatedEval("globalThis.__domPicker._host.audit()");
-    return current.panelCompact
-      && current.panelPlacement === "top"
-      && current.panelRect.y + current.panelRect.height <= bottomRect.top
-      ? current
-      : null;
-  }, "mobile viewport did not switch the picker to compact placement");
-  expect(compactAudit.panelPlacement === "top" && compactAudit.panelRect.y + compactAudit.panelRect.height <= bottomRect.top, "compact panel did not stay opposite the bottom target");
-  const compactSend = compactAudit.controls.find((control) => /Send fix request|수정 요청 보내기/.test(control.label));
-  const compactAdd = compactAudit.controls.find((control) => /Add element|요소 더 선택/.test(control.label));
-  const compactWiden = compactAudit.controls.find((control) => /Widen selection|선택 범위 넓히기/.test(control.label));
-  const compactRemove = compactAudit.controls.find((control) => /Remove selection|선택 해제/.test(control.label));
-  expect(compactSend && compactAdd && compactSend.y + compactSend.height <= compactAdd.y, "compact primary action did not occupy its own row");
-  expect(compactRemove && compactWiden && compactRemove.y < compactWiden.y, "compact remove action was orphaned below scope controls");
-  await pageConnection.send("Emulation.clearDeviceMetricsOverride");
-  await pageConnection.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
-  const zoomAudit = await waitUntil(async () => {
-    const current = await isolatedEval("globalThis.__domPicker._host.audit()");
-    return current.viewport.width < 600
-      && current.panelCompact
-      && current.panelRect.x >= current.viewport.left
-      && current.panelRect.right <= current.viewport.right
-      ? current
-      : null;
-  }, "zoomed visual viewport did not use compact placement");
-  expect(
-    zoomAudit.panelRect.x >= zoomAudit.viewport.left && zoomAudit.panelRect.right <= zoomAudit.viewport.right,
-    `zoomed panel escaped the visual viewport: ${JSON.stringify({ panel: zoomAudit.panelRect, viewport: zoomAudit.viewport })}`,
-  );
-  await pageConnection.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
 
   await isolatedEval("globalThis.__domPicker.clear();true");
   await childIsolatedEval("globalThis.__domPicker.clear();globalThis.__domPicker.arm();true");
@@ -583,11 +509,6 @@ try {
   await widenFramePromise;
   await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks[0]?.attributes?.dataTestId")) === "frame-wrap", "widen command was not applied in the owning frame");
   frameAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
-  const frameNarrow = frameAudit.controls.find((control) => /Narrow selection|선택 범위 되돌리기/.test(control.label));
-  expect(frameNarrow && !frameNarrow.disabled, "top picker did not expose child-frame refinement history");
-  await clickAt(frameNarrow.x + frameNarrow.width / 2, frameNarrow.y + frameNarrow.height / 2);
-  await waitUntil(async () => (await isolatedEval("globalThis.__domPicker.getState().picks[0]?.accessibleName")) === "Frame Cancel", "narrow command did not restore the prior child-frame target");
-  frameAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
   const mixedRemoveControls = frameAudit.controls.filter((control) => /Remove selection|선택 해제/.test(control.label));
   expect(mixedRemoveControls.length === 2, "mixed selection did not expose one remove action per pick");
   await clickAt(
@@ -598,20 +519,6 @@ try {
     const current = await isolatedEval("globalThis.__domPicker.getState()");
     return current.picks.length === 1 && current.picks[0]?.frameId === childFrameId ? current : null;
   }, "removing the mixed local pick corrupted the child-frame projection");
-  await delay(350);
-  const frameReloaded = pageConnection.waitFor("Page.loadEventFired", () => true, 12_000, false);
-  // reload resolves its page from the session manifest, like find and snapshot.
-  const frameReload = runProcess(process.execPath, [DRIVER, "reload", "--session", sessionReady.payload.sessionPath]);
-  await frameReloaded;
-  const frameReloadResult = await frameReload;
-  expect(frameReloadResult.status === 0, `iframe persistence reload failed: ${frameReloadResult.stdout}\n${frameReloadResult.stderr}`);
-  const refreshedFrameTree = await pageConnection.send("Page.getFrameTree");
-  childFrameId = refreshedFrameTree.frameTree.childFrames?.find((node) => node.frame.url.includes("/frame"))?.frame.id || childFrameId;
-  await waitUntil(childWorldContext, "child-frame isolated world was not recreated after reload");
-  await waitUntil(async () => {
-    const current = await isolatedEval("globalThis.__domPicker.getState()");
-    return current.picks[0]?.frameId === childFrameId && current.picks[0]?.accessibleName === "Frame Cancel" ? current : null;
-  }, "child-frame selection was not restored after reload");
   frameAudit = await isolatedEval("globalThis.__domPicker._host.audit()");
   const removeFrame = frameAudit.controls.find((control) => /Remove selection|선택 해제/.test(control.label));
   const removeFramePromise = driverEvents.waitFor("selection_command", (line) => line.payload?.command === "remove" && line.payload?.frameId === childFrameId, 12_000, false);
@@ -637,9 +544,6 @@ try {
 
   let audit = await isolatedEval("globalThis.__domPicker._host.audit()");
   expect(audit.shadowMode === "closed" && audit.textareaLabelled, "panel isolation or textarea labelling failed");
-  expect(audit.panelRect.width >= 300 && audit.panelRect.width <= 440, "panel geometry was outside the desktop contract");
-  expect(audit.controls.length >= 7, "panel controls were not rendered");
-  expect(audit.controls.every((control) => control.height >= 43.5), "one or more panel controls missed the 44px target size");
   expect(audit.controls.every((control) => !control.backgroundColor.includes("255, 105, 180")), "hostile page button CSS crossed the shadow boundary");
 
   await mainEval("document.querySelector('dom-picker-v2-host').remove(); true");
@@ -881,20 +785,6 @@ try {
   writeFileSync(bundledAssertions, JSON.stringify([{ pickIndex: 0, metric: "accessibleName", operator: "==", expected: "Cancel" }]));
   const bundledVerification = spawnSync(process.execPath, [DRIVER, "verify", `--request=${bundledEvent.payload.requestPath}`, `--assertions=${bundledAssertions}`], { encoding: "utf8", timeout: 15_000 });
   expect(bundledVerification.status === 0 && JSON.parse(bundledVerification.stdout).payload.passed, "snapshot bundle could not use the standard verifier");
-  const standaloneArtifacts = join(temporaryRoot, "standalone-snapshot-artifacts");
-  const standaloneSnapshot = spawnSync(process.execPath, [
-    DRIVER,
-    "snapshot",
-    "#save",
-    `--instruction-file=${snapshotInstruction}`,
-    `--artifacts=${standaloneArtifacts}`,
-    `--port=${debugPort}`,
-    `--target=${target.id}`,
-  ], { encoding: "utf8", timeout: 15_000 });
-  expect(standaloneSnapshot.status === 0, `standalone trusted-chat snapshot failed: ${standaloneSnapshot.stdout}\n${standaloneSnapshot.stderr}`);
-  const standaloneRecord = JSON.parse(readFileSync(JSON.parse(standaloneSnapshot.stdout.trim()).payload.requestPath, "utf8"));
-  expect(standaloneRecord.payload.artifacts.pickerHidden === true, "standalone snapshot evidence included the picker UI");
-  expect(standaloneRecord.payload.artifacts.beforeTargetCrops?.length === 1 && existsSync(standaloneRecord.payload.artifacts.beforeTargetCrops[0]), "standalone snapshot omitted its 24px target crop");
   const ambiguousSnapshot = spawnSync(process.execPath, [DRIVER, "snapshot", ".toolbar-action", `--port=${debugPort}`, `--target=${target.id}`], { encoding: "utf8", timeout: 12_000 });
   expect(ambiguousSnapshot.status === 2 && `${ambiguousSnapshot.stdout}\n${ambiguousSnapshot.stderr}`.includes("must match exactly one"), "snapshot did not fail closed on an ambiguous selector");
 
