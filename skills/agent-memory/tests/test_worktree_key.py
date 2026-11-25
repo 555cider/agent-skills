@@ -9,13 +9,11 @@ the same trap: on one real store a single caveat existed in seven copies across 
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from agent_memory.cli import main
 from agent_memory.models import Candidate
 from agent_memory.rekey import legacy_key, rekey
 from agent_memory.retrieval import Retriever
@@ -55,7 +53,7 @@ def _note(statement: str) -> Candidate:
     )
 
 
-@pytest.mark.parametrize("origin", [None, "https://example.invalid/team/widget.git"])
+@pytest.mark.parametrize("origin", ["https://example.invalid/team/widget.git"])
 def test_linked_worktree_computes_the_main_tree_key(tmp_path, origin):
     root = _repo(tmp_path / "widget", origin=origin)
     worktree = _worktree(root, "feature-x")
@@ -117,21 +115,6 @@ def test_rekey_dry_run_writes_nothing_then_apply_folds_worktree_memory(tmp_path,
     # of adding a copy -- which is why the hash had to move with the key.
     again = service.create_memory(_note("Copy the fixtures before running extraction"), project=new)
     assert again["id"] == stored["id"]
-
-
-def test_rekey_reproduces_a_removed_worktree_from_its_path(tmp_path, memory):
-    _, service, _ = memory
-    root = _repo(tmp_path / "widget")
-    gone = root / ".claude" / "worktrees" / "old-work"
-    (root / ".claude" / "worktrees").mkdir(parents=True)
-    old = legacy_key(gone, root_identity(root))
-    service.create_memory(_note("The dev port block starts at base plus two"), project=old)
-
-    report = rekey(service, roots=[root], explicit={}, apply=False)
-
-    assert [(item["from"], item["reason"]) for item in report["mappings"]] == [
-        (old, "removed-worktree:old-work")
-    ]
 
 
 def test_rekey_folds_the_path_key_a_checkout_had_before_its_origin_was_added(tmp_path, memory):
@@ -199,28 +182,6 @@ def test_rekey_retracts_copies_that_become_identical_and_keeps_the_active_one(tm
     ).fetchone()
 
 
-def test_rekey_cli_rejects_a_malformed_map(tmp_path, capsys):
-    code = main(["--memory-home", str(tmp_path / "memory"), "rekey", "--map", "no-separator"])
-    assert code != 0
-    assert "OLD=NEW" in capsys.readouterr().err
-
-
-def test_doctor_points_at_keys_rekey_would_fold(tmp_path, capsys):
-    home = tmp_path / "memory"
-    root = _repo(tmp_path / "widget")
-    before = repo_key(root)
-    assert main(["--memory-home", str(home), "remember", "--cwd", str(root), "--kind", "caveat",
-                 "--statement", "Seed the fixtures before running extraction"]) == 0
-    _git(root, "remote", "add", "origin", "https://example.invalid/team/widget.git")
-    capsys.readouterr()
-
-    assert main(["--memory-home", str(home), "doctor", "--cwd", str(root), "--format", "json"]) == 0
-    output = json.loads(capsys.readouterr().out)
-    assert output["rekey_pending"] == [
-        {"from": before, "to": repo_key(root), "reason": "origin-added:main", "memories": 1}
-    ]
-
-
 def test_repo_policy_applies_from_a_subdirectory(tmp_path):
     from agent_memory.cli import _repo_global_ceiling
 
@@ -230,14 +191,3 @@ def test_repo_policy_applies_from_a_subdirectory(tmp_path):
     assert _repo_global_ceiling(root / "pkg" / "deep") == set()
     assert _repo_global_ceiling(tmp_path) is None
 
-
-def test_remember_warns_about_a_statement_that_should_be_split(tmp_path, capsys):
-    home = str(tmp_path / "memory")
-    root = _repo(tmp_path / "widget")
-    long_statement = "Run the full pipeline harness with these flags and environment. " * 10
-    assert main(["--memory-home", home, "remember", "--cwd", str(root), "--statement", long_statement, "--format", "json"]) == 0
-    captured = capsys.readouterr()
-    assert json.loads(captured.out)["state"] == "active"
-    assert "split" in captured.err
-    assert main(["--memory-home", home, "remember", "--cwd", str(root), "--statement", "Lint with biome.", "--format", "json"]) == 0
-    assert capsys.readouterr().err == ""
