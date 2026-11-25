@@ -87,6 +87,26 @@ const LOCATE = name => `(() => {
   return { ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 })()`;
 
+/**
+ * Wait until the recorder's page-side listeners are on this document before pressing
+ * anything. A fixed pause lost clicks on a loaded machine: the click landed before the
+ * recorder had attached, so nothing was filed. A document that loaded before the recorder
+ * attached never gets the listeners, so it is reloaded once.
+ */
+const INSTRUMENTED = `!!(window.__screenMapRecord && typeof window.__screenMapEmit === 'function'
+  && window.__screenMap && window.__screenMap.ready && document.readyState === 'complete')`;
+async function instrumented(client, sessionId) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const until = Date.now() + 10000;
+    while (Date.now() < until) {
+      if (await evaluate(client, sessionId, INSTRUMENTED).catch(() => false)) return;
+      await sleep(100);
+    }
+    if (attempt === 0) await client.send('Page.reload', {}, sessionId);
+  }
+  throw new Error('driver: the recorder never instrumented this page');
+}
+
 const version = await (await fetch(`http://${host}:${port}/json/version`)).json();
 const client = await Client.connect(version.webSocketDebuggerUrl);
 
@@ -150,6 +170,7 @@ for (const step of steps) {
     continue;
   }
 
+  await instrumented(client, sessionId);
   const point = await evaluate(client, sessionId, LOCATE(step.value));
   if (!point || !point.ok) throw new Error(`driver: nothing named ${JSON.stringify(step.value)} on this screen`);
   const at = { x: Math.round(point.x), y: Math.round(point.y) };
