@@ -42,7 +42,7 @@ contract checks measured findings and review advisories independently.
 | `krds-navigation.html` | skip link, current page, popups, tabs, language flags | `skipLinkMissing`, `navCurrentUnmarked`, `popupExceedsViewport`, `disabledTab`, `nestedTabs`, `flagAsLanguageIndicator` |
 | `state-and-reach.html` | form attributes and a control cut by its scroller | `invalidAriaState`, `controlCutByScroller`, `readonlyLooksEditable` |
 | `whitelist.html` / `adbanners.html` | low-contrast controls under a whitelisted selector (run.sh only) | every matching instance and its subtree suppressed |
-| `runner-input.html` | input emulation and key presses (run.sh only) | phone cells report touch/coarse pointer at the configured `innerHeight`; `press` Enter/Space activate a button; a full-page screenshot |
+| `runner-input.html` | input emulation and key presses (run.sh only) | phone cells report touch/coarse pointer at the configured `innerHeight`; `press` Enter activates a button; a full-page screenshot |
 | `clean.html` | a well-built version of the same screens | **nothing** (zero findings) |
 
 `expected.json` uses `mustHit`, `mustNotHit`, `mustAdvise`, and `mustNotAdvise`, plus
@@ -67,11 +67,11 @@ a runner because synthetic in-page events cannot prove Tab behavior. Hover contr
 require trusted runner pointer movement; dispatching `mouseover` in the page is not proof. For DOM-only rules,
 inject `audit.js` via MCP/DevTools and call `__uiAudit({isMobile:true})`.
 
-The automated suite also verifies schema v2, non-empty matrix configuration, custom-theme
-drivers, pre-launch rejection of invalid setups/probes/init scripts, CLI route rewriting under Git Bash,
-per-rule state interception proof (method and minimum match count), per-scroll-report
-expected-vs-run rule completeness, worker determinism, browser-context isolation, suppression behavior,
-screenshot output, and honest incomplete-probe coverage.
+The automated suite runs fixtures that share a matrix in one browser and matches signals by
+route. It also verifies schema v2, pre-launch rejection of invalid configuration, theme init
+failure, CLI route rewriting under Git Bash, per-rule state interception proof, per-scroll-report
+rule completeness, browser-context isolation, suppression behavior, screenshot output, and honest
+incomplete-probe coverage.
 
 ## Gotcha (handled by the canonical runner)
 
