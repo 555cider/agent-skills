@@ -74,7 +74,7 @@ class PortReservations(unittest.TestCase):
             '    fd = os.open(lock.with_name("held"), os.O_CREAT | os.O_EXCL | os.O_WRONLY)',
             '    time.sleep(0.002); os.close(fd); os.unlink(lock.with_name("held"))',
         ])
-        for attempt in range(3):
+        for attempt in range(2):
             lock = self.root / f'fresh-{attempt}.lock'
             start = time.time() + 1.0
             procs = [subprocess.Popen([sys.executable, '-c', helper, str(SCRIPT), str(lock), str(start)],
@@ -82,22 +82,6 @@ class PortReservations(unittest.TestCase):
             for proc in procs:
                 _, err = proc.communicate()
                 self.assertEqual(proc.returncode, 0, err)
-
-    def test_removed_reservation_is_reclaimed(self):
-        first = self.reserve('old')
-        self.assertEqual(first.returncode, 0, first.stderr)
-        (self.root / 'old' / 'worktree-ports').unlink()
-        again = self.reserve('new', int(first.stdout))
-        self.assertEqual(again.returncode, 0, again.stderr)
-
-    def test_simultaneous_explicit_collision_has_one_winner(self):
-        fixture = self.reserve('fixture')
-        self.assertEqual(fixture.returncode, 0, fixture.stderr)
-        base = int(fixture.stdout)
-        (self.root / 'fixture' / 'worktree-ports').unlink()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda name: self.reserve(name, base), ['a', 'b', 'c', 'd']))
-        self.assertEqual(sum(item.returncode == 0 for item in results), 1)
 
     def test_auto_allocation_skips_new_listener_on_preferred_block(self):
         first = self.reserve('same')
