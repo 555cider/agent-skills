@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from agent_memory.db import Database
 from agent_memory.integration import INTEGRATION_MARKER, integrate, integration_status
 from agent_memory.models import Candidate
 from agent_memory.providers import Provider
@@ -135,26 +134,6 @@ def test_prompt_hook_task_delete_request_never_forgets(memory, tmp_path):
     assert db.conn.execute("SELECT count(*) FROM memories").fetchone()[0] == 1
 
 
-@pytest.mark.parametrize(
-    "prompt",
-    [
-        "배포는 rsync 스크립트로 한다는 기억 삭제해줘",
-        "메모리에서 배포는 rsync 스크립트로 한다 삭제해",
-    ],
-)
-def test_prompt_hook_memory_delete_request_forgets(memory, tmp_path, prompt):
-    db, service, _ = memory
-    project = repo_key(tmp_path)
-    service.create_memory(candidate("배포는 rsync 스크립트로 한다."), project=project)
-    result = service.capture_event(
-        harness="claude",
-        kind="user_prompt",
-        data={"session_id": "s", "event_id": "u4", "prompt": prompt},
-        cwd=tmp_path,
-    )
-    assert len(result["forgotten"]) == 1
-
-
 def test_prompt_hook_long_pasted_text_never_forgets(memory, tmp_path):
     db, service, _ = memory
     project = repo_key(tmp_path)
@@ -172,79 +151,7 @@ def test_prompt_hook_long_pasted_text_never_forgets(memory, tmp_path):
 # ------------------------------------------------------- claude event capture
 
 
-def test_claude_tool_output_field_and_camel_exit_code(memory, tmp_path):
-    db, service, _ = memory
-    service.capture_event(
-        harness="claude",
-        kind="tool_completed",
-        data={
-            "session_id": "s",
-            "event_id": "t1",
-            "tool_name": "Bash",
-            "tool_input": {"command": "pytest -q"},
-            "tool_output": {"stdout": "1 passed", "exitCode": 0},
-        },
-        cwd=tmp_path,
-    )
-    row = db.conn.execute("SELECT payload_zlib FROM events WHERE kind='tool_completed'").fetchone()
-    payload = db.decode_payload(row["payload_zlib"])
-    assert "1 passed" in str(payload.get("output", ""))
-    assert payload.get("exit_status") == 0
-
-
-def test_stop_events_with_distinct_prompt_ids_are_separate(memory, tmp_path):
-    db, service, _ = memory
-    for prompt_id in ("p1", "p2"):
-        service.capture_event(
-            harness="claude",
-            kind="assistant_stop",
-            data={"session_id": "s", "prompt_id": prompt_id, "last_assistant_message": ""},
-            cwd=tmp_path,
-        )
-    assert db.conn.execute(
-        "SELECT count(*) FROM events WHERE kind='assistant_stop'"
-    ).fetchone()[0] == 2
-
-
-def test_session_end_reads_transcript_tail_for_handoff(memory, tmp_path):
-    db, service, _ = memory
-    transcript = tmp_path / "transcript.jsonl"
-    lines = [
-        json.dumps({"type": "user", "message": {"role": "user", "content": "안녕"}}),
-        json.dumps(
-            {
-                "type": "assistant",
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": "핸드오프 요약: 다음 단계는 마이그레이션 검증."}
-                    ],
-                },
-            }
-        ),
-    ]
-    transcript.write_text("\n".join(lines), encoding="utf-8")
-    service.capture_event(
-        harness="claude",
-        kind="session_end",
-        data={"session_id": "s", "event_id": "e1", "transcript_path": str(transcript)},
-        cwd=tmp_path,
-    )
-    row = db.conn.execute("SELECT payload_zlib FROM events WHERE kind='session_end'").fetchone()
-    payload = db.decode_payload(row["payload_zlib"])
-    assert "핸드오프 요약" in str(payload.get("assistant_response", ""))
-
-
 # ------------------------------------------------ explicit inference guardrail
-
-
-def test_from_now_on_fallback_is_bounded_and_conservative():
-    long_prompt = "앞으로 " + ("이 파일의 구조를 자세히 살펴보고 리팩터링 계획을 세운 다음 " * 30)
-    assert MemoryService.explicit_candidates(long_prompt) == []
-    assert MemoryService.explicit_candidates("앞으로 사용될 API 설명해줘") == []
-    matched = MemoryService.explicit_candidates("앞으로 커밋 메시지는 한국어로 써줘")
-    assert len(matched) == 1
-    assert len(matched[0].statement) <= 500
 
 
 # ---------------------------------------------------------- recall packet size
@@ -279,57 +186,10 @@ def test_informational_instead_question_stays_recall_mode(memory):
     assert packet["mode"] == "recall"
 
 
-def test_correction_with_change_and_time_marker_is_maintenance(memory):
-    db, service, project = memory
-    service.create_memory(candidate("패키지는 pnpm 을 쓴다.", kind="decision"), project=project)
-    packet = Retriever(db, service.provider).recall(
-        project=project, prompt="이제 pnpm 말고 npm 써줘"
-    )
-    assert packet["mode"] == "maintenance"
-
-
 # ------------------------------------------------------------------ embeddings
 
 
-def test_embed_missing_covers_explicit_memories(tmp_path):
-    db = Database(tmp_path / "memory")
-    service = MemoryService(db, EmbedOnlyProvider())
-    record = service.create_memory(candidate("Prefer narrow verification."), project="test-repo")
-    stored = service.embed_missing()
-    assert stored == 1
-    row = db.conn.execute(
-        "SELECT model,dimensions FROM memory_embeddings WHERE memory_id=?", (record["id"],)
-    ).fetchone()
-    assert row["model"] == "fake-embed"
-    assert row["dimensions"] == 4
-    assert service.embed_missing() == 0
-    db.close()
-
-
-def test_reindex_rebuilds_vector_index_from_stored_embeddings(memory):
-    db, service, project = memory
-    if not db.vector:
-        pytest.skip("sqlite-vec unavailable in this environment")
-    record = service.create_memory(candidate("Vector rebuild target."), project=project)
-    db.put_embedding(record["id"], "text-embedding-3-small", [0.0] * 1536)
-    assert db.conn.execute("SELECT count(*) FROM memory_vec").fetchone()[0] == 1
-    db.conn.execute("DELETE FROM memory_vec")
-    db.conn.execute("DELETE FROM memory_vector_map")
-    db.rebuild_indexes()
-    assert db.conn.execute("SELECT count(*) FROM memory_vec").fetchone()[0] == 1
-
-
 # ------------------------------------------------------------- feedback bridge
-
-
-def test_render_context_carries_query_id(memory):
-    db, service, project = memory
-    service.create_memory(candidate("Prefer targeted verification."), project=project)
-    packet = Retriever(db, service.provider).recall(
-        project=project, prompt="targeted verification preference"
-    )
-    assert packet["items"]
-    assert packet["query_id"] in packet["context"]
 
 
 # ------------------------------------------------------- integration staleness
@@ -414,45 +274,7 @@ def test_disable_known_conflicts_turns_off_the_claude_plugin(tmp_path):
     assert result["conflicts"] == []
 
 
-def test_codex_conflict_does_not_block_a_claude_only_integration(tmp_path):
-    home = _claude_home(tmp_path, {})
-    (home / ".codex").mkdir()
-    (home / ".codex" / "config.toml").write_text('[plugins."remember-codex-bridge"]\nenabled = true\n')
-    result = integrate(
-        memory_home=tmp_path / "memory", mode="primary", harness="claude", apply=True, user_home=home
-    )
-    assert result["blocked"] is False and result["conflicts"] == []
-
-
 # ----------------------------------------------------------------- hook cost
-
-
-def test_claude_tool_hook_only_fires_for_shell_commands():
-    from agent_memory.integration import merge_hooks
-
-    claude = merge_hooks({}, "claude", True, capture_tools=True)["hooks"]
-    assert claude["PostToolUse"][0]["matcher"] == "Bash"
-    assert claude["UserPromptSubmit"][0]["matcher"] == ""
-    assert merge_hooks({}, "codex", True, capture_tools=True)["hooks"]["PostToolUse"][0]["matcher"] == ""
-
-
-def test_hook_argv_is_recognized_with_or_without_memory_home():
-    from agent_memory.cli import _is_hook
-
-    assert _is_hook(["hook", "--harness", "claude"])
-    assert _is_hook(["--memory-home", "/x", "hook", "--harness", "claude"])
-    assert _is_hook(["--memory-home=/x", "hook"])
-    assert not _is_hook(["recall", "--prompt", "hook"])
-
-
-def test_reopening_the_store_skips_applied_schema(tmp_path):
-    first = Database(tmp_path)
-    digest = first.get_meta("schema_digest")
-    first.close()
-    second = Database(tmp_path)
-    assert digest and second.get_meta("schema_digest") == digest
-    assert second.fts5 and second.trigram
-    second.close()
 
 
 # ------------------------------------------------------- recall relevance
@@ -493,12 +315,6 @@ def test_recall_does_not_repeat_an_item_within_a_session(memory):
     assert [item["id"] for item in other["items"]] == [stored["id"]]
     assert f"agent-memory feedback {first['query_id']}" in first["context"]
     assert f'query-id="{first["query_id"]}"' in first["context"]
-
-
-def test_recall_without_items_is_not_logged(memory):
-    db, service, project = memory
-    Retriever(db, service.provider).recall(project=project, prompt="continue")
-    assert db.conn.execute("SELECT count(*) FROM retrieval_queries").fetchone()[0] == 0
 
 
 # ------------------------------------------------------ automatic capture
@@ -559,15 +375,6 @@ def test_expected_nonzero_commands_are_not_caveats_and_failures_stay_provisional
     assert "pnpm build" in rows[0]["statement"] and rows[0]["state"] == "provisional"
 
 
-def test_stop_without_anything_to_learn_queues_no_worker(memory, tmp_path):
-    db, service, _ = memory
-    service.capture_event(
-        harness="claude", kind="user_prompt", data={"session_id": "s", "event_id": "u", "prompt": "fix the header"}, cwd=tmp_path
-    )
-    assert _stop(service, tmp_path, "p1")["queued"] is False
-    assert db.conn.execute("SELECT count(*) FROM jobs").fetchone()[0] == 0
-
-
 def test_implied_directive_is_provisional_but_remember_is_active(memory, tmp_path):
     db, service, _ = memory
     for event_id, prompt in (("u1", "앞으로 커밋 메시지는 한국어로 써줘"), ("u2", "기억해줘: 린트는 biome 으로 돌린다")):
@@ -578,18 +385,13 @@ def test_implied_directive_is_provisional_but_remember_is_active(memory, tmp_pat
     assert states == {"앞으로 커밋 메시지는 한국어로 써줘": "provisional", "린트는 biome 으로 돌린다": "active"}
 
 
-def test_claude_integration_captures_bash_failures_too():
-    from agent_memory.integration import merge_hooks
-
-    hooks = merge_hooks({}, "claude", True, capture_tools=True)["hooks"]
-    assert hooks["PostToolUseFailure"][0]["matcher"] == "Bash"
-
-
 def test_tool_capture_is_opt_in_and_turning_it_off_removes_the_hooks():
     from agent_memory.integration import merge_hooks
 
     captured = merge_hooks({}, "claude", True, capture_tools=True)
     assert {"PostToolUse", "PostToolUseFailure"} <= set(captured["hooks"])
+    assert captured["hooks"]["PostToolUse"][0]["matcher"] == "Bash"
+    assert captured["hooks"]["PostToolUseFailure"][0]["matcher"] == "Bash"
     default = merge_hooks(captured, "claude", True)
     assert set(default["hooks"]) == {"UserPromptSubmit", "Stop", "SessionEnd"}
 

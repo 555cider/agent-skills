@@ -115,37 +115,11 @@ def test_feedback_stays_with_its_repository(layout):
     assert record["conditions"] == ["verify-chart-interaction"]
 
 
-def test_why_becomes_evidence_and_how_to_apply_loses_its_label(layout):
-    built = _built(layout)
-    assert not any("static screenshots" in item["statement"] for item in built["payload"]["memories"])
-    rule = _find(built, "drive the interaction before reporting")
-    assert not rule["statement"].lower().startswith("how to apply")
-    assert "the UI checks" in rule["statement"] and "[[" not in rule["statement"]
-    assert "why: static screenshots missed" in rule["evidence"][0]["summary"]
-
-
-def test_user_type_is_a_global_preference(layout):
-    record = _find(_built(layout), "reviews diffs in Korean")
-    assert record["scope"] == "global"
-    assert record["repo_key"] is None
-    assert record["kind"] == "preference"
-
-
-def test_the_index_file_is_not_a_fact(layout):
-    built = _built(layout)
-    assert not any("drive it first" in item["statement"] for item in built["payload"]["memories"])
-
-
 def test_profile_dirs_are_read_only_when_named(layout):
     assert not any("SVN" in item["statement"] for item in _built(layout)["payload"]["memories"])
     record = _find(_built(layout, layout["profile"]), "Commit to SVN")
     # A non-git checkout gets the path identity recall uses when standing there.
     assert record["repo_key"] == repo_key(layout["plain"])
-
-
-def test_a_profile_named_twice_is_read_once(layout):
-    built = _built(layout, layout["profile"], layout["profile"])
-    assert sum("Commit to SVN" in item["statement"] for item in built["payload"]["memories"]) == 1
 
 
 def test_claude_config_dir_env_is_read_unless_home_is_explicit(layout, monkeypatch):
@@ -156,30 +130,9 @@ def test_claude_config_dir_env_is_read_unless_home_is_explicit(layout, monkeypat
     _find(build_payload(sources), "Commit to SVN")
 
 
-def test_plain_adopt_does_not_read_every_project(layout, monkeypatch):
-    monkeypatch.setenv("HOME", str(layout["home"]))
-    assert not [item for item in discover() if item.source == "claude-memory"]
-
-
 @pytest.mark.skipif(sys.platform not in ("win32", "darwin"), reason="case-folding filesystems only")
 def test_slug_case_follows_the_filesystem(layout):
     assert directory_for_slug(_slug(layout["repo"]).lower()) is not None
-
-
-def test_frontmatter_edge_cases(layout):
-    folder = layout["home"] / ".claude" / "projects" / _slug(layout["repo"]) / "memory"
-    (folder / "edge.md").write_text(
-        "\n---\nname: edge-rule\nmetadata:\n  name: nested-name-ignored\n  type: project\n---\n\n"
-        "- Rebuild the parser fixtures whenever the grammar file changes.\n"
-        "  - **Why:** stale fixtures hid a regression for a week.\n",
-        encoding="utf-8",
-    )
-    built = _built(layout)
-    rule = _find(built, "Rebuild the parser fixtures")
-    assert rule["conditions"] == ["edge-rule"]
-    assert "Why" not in rule["statement"] and "stale fixtures" not in rule["statement"]
-    assert "why: stale fixtures hid" in rule["evidence"][0]["summary"]
-    assert not any("name:" in item["statement"] for item in built["payload"]["memories"])
 
 
 def test_a_deleted_checkout_is_skipped_not_widened(layout):

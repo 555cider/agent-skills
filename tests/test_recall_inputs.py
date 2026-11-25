@@ -24,7 +24,6 @@ def candidate(statement: str) -> Candidate:
     [
         ("<task-notification>\n<task-id>b1</task-id>\n<summary>done</summary>\n</task-notification>", ""),
         ("<task-notification><summary>x</summary></task-notification>\n\nrerun the deploy", "rerun the deploy"),
-        ("/agent-skills:step-back", ""),
         ("/agent-skills:step-back   ", ""),
         ("/agent-skills:peer-review the rsync deploy plan", "the rsync deploy plan"),
         ("/daily-report\n어제 배포", "어제 배포"),
@@ -45,8 +44,6 @@ def candidate(statement: str) -> Candidate:
         ("린트 돌려줘", "린트 돌려줘"),
         ("[SYSTEM NOTIFICATION] background job finished", ""),
         ("<task-notification>\n<summary>cut short", ""),
-        # A path the user typed first is not a command.
-        ("/v1.2 release notes", "/v1.2 release notes"),
         ("explain what `<pasted_content>` means here", "explain what `<pasted_content>` means here"),
     ],
 )

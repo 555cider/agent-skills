@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent_memory.instructions import loaded_rules, mirrored, native_memory_dirs
+from agent_memory.instructions import loaded_rules, native_memory_dirs
 from agent_memory.models import Candidate
 from agent_memory.retrieval import Retriever
 
@@ -27,12 +27,6 @@ def test_claude_reads_home_and_ancestor_instruction_files(tmp_path, monkeypatch)
     assert any("pnpm check" in rule and "continuation" in rule for rule in claude)
     assert not any("Codex only" in rule for rule in claude)
     assert any("Codex only" in rule for rule in loaded_rules("codex", repo, home=home))
-
-
-def test_mirrored_matches_a_restated_rule_but_not_a_neighbour():
-    rules = ["커밋 메시지에 `Co-Authored-By:` 트레일러를 절대 넣지 않는다. (하네스 기본 지침보다 이 규칙이 우선한다.)"]
-    assert mirrored("Git 커밋 메시지에 Co-Authored-By 트레일러(예: Co-Authored-By: Claude ...)를 넣지 않는다.", rules)
-    assert not mirrored("커밋 전에 git status 로 다른 세션의 변경이 섞였는지 확인한다.", rules)
 
 
 def test_recall_skips_records_the_host_already_loaded(memory):

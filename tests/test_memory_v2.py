@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import shutil
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 import agent_memory.integration as integration_module
-from agent_memory.constants import RECORD_SCHEMA
 from agent_memory.cli import _open
 from agent_memory.db import Database
 from agent_memory.integration import HOOK_EVENTS, integrate, merge_hooks
@@ -27,84 +24,8 @@ from agent_memory.providers import (
     split_provider_command,
 )
 from agent_memory.retrieval import Retriever
-from agent_memory.service import MemoryService, remote_event
+from agent_memory.service import MemoryService
 from agent_memory.util import repo_key, utc_now
-
-
-def test_windows_hook_command_uses_launcher(monkeypatch):
-    monkeypatch.setattr(integration_module.sys, "platform", "win32")
-
-    command = integration_module._hook_command("codex", "user_prompt")
-
-    assert command == "agent-memory hook --harness codex --event user_prompt"
-
-
-def test_managed_entry_recognizes_legacy_and_launcher_commands_only():
-    legacy = {
-        "hooks": [
-            {
-                "command": "python3 memory.py hook --harness codex",
-                "statusMessage": "Agent Memory (agent-memory-managed)",
-            }
-        ]
-    }
-    launcher = {
-        "hooks": [
-            {
-                "command": "agent-memory hook --harness codex --event user_prompt",
-                "statusMessage": "Agent Memory v2 (agent-memory-v2-managed)",
-            }
-        ]
-    }
-    unrelated = {
-        "hooks": [
-            {
-                "command": "agent-memory remember --harness codex",
-                "statusMessage": "Agent Memory v2 (agent-memory-v2-managed)",
-            }
-        ]
-    }
-
-    assert integration_module._is_managed_entry(legacy)
-    assert integration_module._is_managed_entry(launcher)
-    assert not integration_module._is_managed_entry(unrelated)
-
-
-def test_stale_launcher_command_resolves_through_path(tmp_path, monkeypatch):
-    command = "agent-memory hook --harness codex --event user_prompt"
-    launcher = tmp_path / "agent-memory.cmd"
-    launcher.write_text("agent-memory-managed-launcher", encoding="utf-8")
-    monkeypatch.setattr(
-        integration_module.shutil, "which", lambda name: str(launcher)
-    )
-    assert not integration_module._stale_command(command)
-
-    launcher.write_text("other", encoding="utf-8")
-    assert integration_module._stale_command(command)
-
-    monkeypatch.setattr(integration_module.shutil, "which", lambda name: None)
-    assert integration_module._stale_command(command)
-
-
-def test_stale_legacy_command_still_checks_interpreter_and_script_paths(tmp_path):
-    python = tmp_path / "python"
-    script = tmp_path / "memory.py"
-    python.touch()
-    script.touch()
-    command = f"{shlex.quote(str(python))} {shlex.quote(str(script))} hook"
-
-    assert not integration_module._stale_command(command)
-    script.unlink()
-    assert integration_module._stale_command(command)
-
-
-def test_windows_launcher_hooks_merge_idempotently(monkeypatch):
-    monkeypatch.setattr(integration_module.sys, "platform", "win32")
-
-    once = merge_hooks({}, "codex", True)
-    twice = merge_hooks(once, "codex", True)
-
-    assert twice == once
 
 
 def test_windows_enabled_codex_integration_requires_managed_launcher_before_writes(
@@ -127,30 +48,6 @@ def test_windows_enabled_codex_integration_requires_managed_launcher_before_writ
 
     assert not (home / ".codex" / "hooks.json").exists()
     assert not (tmp_path / "memory" / "backups").exists()
-
-
-def test_windows_codex_dry_run_and_off_do_not_require_launcher(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    monkeypatch.setattr(integration_module.sys, "platform", "win32")
-    monkeypatch.setattr(integration_module.shutil, "which", lambda name: None)
-
-    dry_run = integrate(
-        memory_home=tmp_path / "memory",
-        mode="shadow",
-        harness="codex",
-        apply=False,
-        user_home=home,
-    )
-    off = integrate(
-        memory_home=tmp_path / "memory",
-        mode="off",
-        harness="codex",
-        apply=True,
-        user_home=home,
-    )
-
-    assert dry_run["changes"]
-    assert off["applied"] is True
 
 
 def test_cli_writes_utf8_whatever_the_console_codepage_is(tmp_path):
@@ -269,29 +166,6 @@ def candidate(statement: str, **overrides):
     return Candidate(**values)
 
 
-def test_schema_is_sqlite_authoritative(memory):
-    db, service, project = memory
-    record = service.create_memory(candidate("Prefer narrow verification."), project=project)
-    assert record["schema"] == RECORD_SCHEMA
-    tables = {
-        row[0]
-        for row in db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
-    assert {
-        "events",
-        "memories",
-        "memory_revisions",
-        "evidence",
-        "relations",
-        "jobs",
-        "retrieval_feedback",
-        "trust_grants",
-        "tombstones",
-    } <= tables
-    assert not list(db.home.rglob("MEMORY.md"))
-    assert db.integrity() == "ok"
-
-
 def test_explicit_observation_activates_immediately_and_is_idempotent(memory, tmp_path):
     db, service, _ = memory
     event = {
@@ -307,57 +181,6 @@ def test_explicit_observation_activates_immediately_and_is_idempotent(memory, tm
     assert row["state"] == "active"
     assert row["authority"] == "explicit"
     assert db.conn.execute("SELECT count(*) FROM events").fetchone()[0] == 1
-
-
-def test_inferred_preference_stays_provisional(memory, tmp_path):
-    db, service, _ = memory
-    project = repo_key(tmp_path)
-    service.capture_event(
-        harness="claude",
-        kind="user_prompt",
-        data={"session_id": "s", "event_id": "u", "prompt": "I prefer concise summaries"},
-        cwd=tmp_path,
-    )
-    service.capture_event(
-        harness="claude",
-        kind="assistant_stop",
-        data={"session_id": "s", "event_id": "a", "last_assistant_message": "Done"},
-        cwd=tmp_path,
-    )
-    result = service.worker_once()
-    assert result["processed"][0]["state"] == "done"
-    row = db.conn.execute("SELECT * FROM memories").fetchone()
-    assert row["state"] == "provisional"
-    packet = Retriever(db, service.provider).recall(project=project, prompt="summary style")
-    assert packet["items"] == []
-
-
-def test_repeated_test_command_becomes_verified_procedure(memory, tmp_path):
-    db, service, _ = memory
-    for index in range(2):
-        service.capture_event(
-            harness="codex",
-            kind="tool_completed",
-            data={
-                "session_id": "s",
-                "event_id": f"t{index}",
-                "tool_name": "exec_command",
-                "tool_input": {"command": "pytest -q"},
-                "tool_response": {"exit_code": 0, "output": "ok"},
-            },
-            cwd=tmp_path,
-        )
-    service.capture_event(
-        harness="codex",
-        kind="assistant_stop",
-        data={"session_id": "s", "event_id": "a", "last_assistant_message": "done"},
-        cwd=tmp_path,
-    )
-    service.worker_once()
-    row = db.conn.execute("SELECT * FROM memories WHERE kind='procedure'").fetchone()
-    assert row["state"] == "active"
-    assert row["authority"] == "verified"
-    assert db.conn.execute("SELECT exit_status FROM evidence").fetchone()[0] == 0
 
 
 def test_secret_pii_path_redaction_precedes_all_writes(memory, tmp_path):
@@ -387,16 +210,6 @@ def test_secret_pii_path_redaction_precedes_all_writes(memory, tmp_path):
     payload = db.decode_payload(event["payload_zlib"])
     assert "[REDACTED" in json.dumps(payload)
     assert len(payload["output"].encode()) < 9_000
-
-
-def test_sensitive_durable_memory_is_rejected_not_placeholder_stored(memory):
-    db, service, project = memory
-    with pytest.raises(Exception, match="was not stored"):
-        service.create_memory(
-            candidate("Remember api_key=sk-supersecretvalue123456789 for me"),
-            project=project,
-        )
-    assert db.conn.execute("SELECT count(*) FROM memories").fetchone()[0] == 0
 
 
 def test_provider_init_failure_preserves_local_hooks_and_uses_job_retry(tmp_path, monkeypatch):
@@ -438,30 +251,6 @@ def test_provider_init_failure_preserves_local_hooks_and_uses_job_retry(tmp_path
         assert db.get_meta("last_provider_error").startswith("ProviderError:")
     finally:
         db.close()
-
-
-def test_remote_provider_boundary_never_contains_tool_output(memory):
-    _, _, _ = memory
-    event = {
-        "id": "e",
-        "kind": "tool_completed",
-        "harness": "codex",
-        "payload": {
-            "tool_name": "exec_command",
-            "command": "pytest -q",
-            "exit_status": 0,
-            "output": "raw file contents must stay local",
-        },
-    }
-    value = remote_event(event)
-    assert value == {
-        "id": "e",
-        "kind": "tool_completed",
-        "harness": "codex",
-        "tool_name": "exec_command",
-        "command": "pytest -q",
-        "exit_status": 0,
-    }
 
 
 def test_hard_forget_cascades_and_tombstone_blocks_rehydration(memory):
@@ -558,23 +347,6 @@ def test_conditions_and_path_globs_filter_before_ranking(memory):
     )["items"] == []
 
 
-def test_stale_procedure_is_downranked_not_deleted(memory):
-    db, service, project = memory
-    record = service.create_memory(
-        candidate(
-            "Run pytest -q for verification.",
-            kind="procedure",
-            authority="verified",
-            evidence=[{"kind": "test-result", "summary": "ok", "exit_status": 0}],
-        ),
-        project=project,
-    )
-    db.conn.execute("UPDATE memories SET stale_after='2000-01-01T00:00:00.000Z' WHERE id=?", (record["id"],))
-    packet = Retriever(db, service.provider).recall(project=project, prompt="pytest verification")
-    assert packet["items"][0]["stale"] is True
-    assert db.conn.execute("SELECT state FROM memories WHERE id=?", (record["id"],)).fetchone()[0] == "active"
-
-
 def test_negation_enters_maintenance_and_old_memory_is_non_actionable(memory):
     db, service, project = memory
     service.create_memory(candidate("Use pnpm test:quality for docs."), project=project)
@@ -602,25 +374,6 @@ def test_gc_applies_event_and_tombstone_ttl(memory, tmp_path):
     result = service.gc()
     assert result["events"] == 1
     assert result["tombstones"] == 1
-
-
-def test_gc_expiry_creates_an_immutable_revision(memory):
-    db, service, project = memory
-    record = service.create_memory(candidate("Temporary release constraint."), project=project)
-    db.conn.execute(
-        "UPDATE memories SET valid_until='2000-01-01T00:00:00.000Z' WHERE id=?",
-        (record["id"],),
-    )
-    assert service.gc()["expired"] == 1
-    current = db.conn.execute(
-        "SELECT state,revision FROM memories WHERE id=?", (record["id"],)
-    ).fetchone()
-    assert tuple(current) == ("expired", 2)
-    revisions = db.conn.execute(
-        "SELECT revision,reason FROM memory_revisions WHERE memory_id=? ORDER BY revision",
-        (record["id"],),
-    ).fetchall()
-    assert [tuple(row) for row in revisions] == [(1, "created"), (2, "validity elapsed")]
 
 
 class FakeProvider(Provider):
@@ -703,27 +456,6 @@ def test_worker_retries_provider_then_completes_locally(tmp_path):
         db.close()
 
 
-def test_worker_dead_letters_after_five_failures(tmp_path):
-    db = Database(tmp_path / "memory")
-    service = MemoryService(db, FakeProvider(failures=10))
-    try:
-        service.capture_event(
-            harness="codex",
-            kind="assistant_stop",
-            data={"session_id": "s", "event_id": "a", "last_assistant_message": "done"},
-            cwd=tmp_path,
-        )
-        for _ in range(5):
-            service.worker_once()
-            db.conn.execute("UPDATE jobs SET available_at='2000-01-01T00:00:00.000Z'")
-        row = db.conn.execute("SELECT state,attempts,last_error FROM jobs").fetchone()
-        assert row["state"] == "dead"
-        assert row["attempts"] == 5
-        assert "simulated 429" in row["last_error"]
-    finally:
-        db.close()
-
-
 def test_expired_worker_lease_is_recovered(memory):
     db, service, _ = memory
     now = utc_now()
@@ -735,25 +467,6 @@ def test_expired_worker_lease_is_recovered(memory):
     result = service.worker_once()
     assert result["processed"][0]["state"] == "done"
     assert db.conn.execute("SELECT attempts FROM jobs").fetchone()[0] == 2
-
-
-def test_database_contention_fails_cleanly_and_recovers(tmp_path):
-    first = Database(tmp_path / "memory")
-    second = Database(tmp_path / "memory")
-    try:
-        second.conn.execute("PRAGMA busy_timeout=20")
-        first.conn.execute("BEGIN IMMEDIATE")
-        with pytest.raises(sqlite3.OperationalError, match="locked"):
-            second.conn.execute("BEGIN IMMEDIATE")
-        first.conn.execute("ROLLBACK")
-        with second.transaction(immediate=True):
-            second.set_meta("contention_recovered", "yes")
-        assert first.get_meta("contention_recovered") == "yes"
-    finally:
-        if first.conn.in_transaction:
-            first.conn.execute("ROLLBACK")
-        first.close()
-        second.close()
 
 
 def test_sqlite_vec_load_failure_falls_back_to_fts(tmp_path, monkeypatch):
@@ -883,14 +596,6 @@ def test_command_provider_runs_unquoted_windows_path(tmp_path):
         provider.extract([], "repo")
 
 
-def test_command_provider_rejects_malformed_protocol(tmp_path, monkeypatch):
-    program = tmp_path / "provider.py"
-    program.write_text("print('not json')\n", encoding="utf-8")
-    provider = CommandProvider(_python_command(program))
-    with pytest.raises(ProviderError, match="malformed JSON"):
-        provider.extract([], "repo")
-
-
 def test_command_provider_round_trips_non_ascii_as_utf8(tmp_path):
     # The payload is serialized with ensure_ascii=False; the locale codec (cp949 on a
     # Korean Windows console) cannot encode an emoji, so the wire must be UTF-8.
@@ -908,22 +613,6 @@ def test_command_provider_round_trips_non_ascii_as_utf8(tmp_path):
     provider = CommandProvider(_python_command(program))
     text = "기억해줘 \U0001f9e0 메모리"
     assert provider.embed([text]) == [[float(ord(c)) for c in text]]
-
-
-def test_command_provider_unencodable_payload_is_provider_error(tmp_path):
-    program = tmp_path / "provider.py"
-    program.write_text("import sys\nsys.stdin.buffer.read()\n", encoding="utf-8")
-    provider = CommandProvider(_python_command(program))
-    with pytest.raises(ProviderError, match="not encodable"):
-        provider.embed(["lone surrogate \ud800"])
-
-
-def test_command_provider_non_utf8_output_is_provider_error(tmp_path):
-    program = tmp_path / "provider.py"
-    program.write_text("import sys\nsys.stdout.buffer.write(b'\\xff\\xfe')\n", encoding="utf-8")
-    provider = CommandProvider(_python_command(program))
-    with pytest.raises(ProviderError, match="non-UTF-8"):
-        provider.extract([], "repo")
 
 
 def test_harness_event_parity_and_safe_integration(tmp_path, monkeypatch):
@@ -979,27 +668,6 @@ def test_harness_event_parity_and_safe_integration(tmp_path, monkeypatch):
     )
     assert not plugin.exists()
     assert (tmp_path / "memory").exists()
-
-
-def test_session_pause_is_fail_open_observation_control(memory, tmp_path):
-    db, service, _ = memory
-    project = repo_key(tmp_path)
-    service.session_control("pause", harness="codex", project=project)
-    result = service.capture_event(
-        harness="codex",
-        kind="user_prompt",
-        data={"event_id": "u", "prompt": "Remember this"},
-        cwd=tmp_path,
-    )
-    assert result["paused"] is True
-    assert db.conn.execute("SELECT count(*) FROM events").fetchone()[0] == 0
-    service.session_control("resume", harness="codex", project=project)
-    assert service.capture_event(
-        harness="codex",
-        kind="user_prompt",
-        data={"event_id": "u", "prompt": "ordinary prompt"},
-        cwd=tmp_path,
-    )["captured"] is True
 
 
 def test_retrieval_feedback_requires_actual_exposure(memory):

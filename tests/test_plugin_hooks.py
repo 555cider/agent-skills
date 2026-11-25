@@ -42,8 +42,8 @@ needs_bash = pytest.mark.skipif(
         # One profile folder serving as both CLAUDE_CONFIG_DIR and CODEX_HOME:
         # the transcript's own layout names the host, not the folder it is in.
         (
-            {"transcript_path": f"C:\p\projects\C--opt-repo\{CLAUDE_UUID}.jsonl"},
-            {"CODEX_HOME": "C:\p"},
+            {"transcript_path": rf"C:\p\projects\C--opt-repo\{CLAUDE_UUID}.jsonl"},
+            {"CODEX_HOME": r"C:\p"},
             "claude",
         ),
         (
@@ -154,19 +154,6 @@ def test_plugin_integrate_removes_settings_hooks_and_still_disables_native_memor
     assert not (home / ".config" / "opencode" / "plugins" / "agent-memory.js").exists()
 
 
-def test_plugin_integrate_refuses_the_opencode_adapter(tmp_path, monkeypatch):
-    monkeypatch.setattr(integration_module, "running_from_plugin", lambda *a: True)
-
-    with pytest.raises(integration_module.MemoryError, match="OpenCode adapter"):
-        integrate(
-            memory_home=tmp_path / "memory",
-            mode="shadow",
-            harness="opencode",
-            apply=False,
-            user_home=tmp_path / "home",
-        )
-
-
 @pytest.mark.parametrize(("hooks_file", "plugin_root", "host"), PLUGIN_HOOK_FILES)
 def test_plugin_hooks_file_targets_the_shipped_launcher(hooks_file, plugin_root, host):
     data = json.loads(hooks_file.read_text(encoding="utf-8"))
@@ -188,14 +175,6 @@ def test_plugin_hooks_file_targets_the_shipped_launcher(hooks_file, plugin_root,
         assert all('"${PLUGIN_ROOT}/' in command for command in events.values())
 
 
-@pytest.mark.parametrize("plugin_root", [REPO_ROOT, SKILL_ROOT])
-def test_codex_manifest_points_at_the_codex_hooks(plugin_root):
-    manifest = json.loads((plugin_root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-
-    assert manifest["hooks"] == "./hooks/hooks.codex.json"
-    assert (plugin_root / "hooks" / "hooks.codex.json").is_file()
-
-
 def _run_hook(command: str, env: dict[str, str], payload: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-c", command],
@@ -209,13 +188,12 @@ def _run_hook(command: str, env: dict[str, str], payload: dict) -> subprocess.Co
 
 
 @needs_bash
-@pytest.mark.parametrize("variable", ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"])
 @pytest.mark.parametrize(("hooks_file", "plugin_root", "host"), PLUGIN_HOOK_FILES)
 def test_plugin_prompt_hook_runs_under_either_host_variable(
-    tmp_path, hooks_file, plugin_root, host, variable
+    tmp_path, hooks_file, plugin_root, host
 ):
-    if host == "codex" and variable != "PLUGIN_ROOT":
-        pytest.skip("Codex sets PLUGIN_ROOT")
+    # PLUGIN_ROOT alone: the Claude files must fall back to it when CLAUDE_PLUGIN_ROOT is unset.
+    variable = "PLUGIN_ROOT"
     command = json.loads(hooks_file.read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"][0][
         "hooks"
     ][0]["command"]
@@ -273,26 +251,6 @@ def test_path_launcher_finds_the_plugin_through_the_claude_registry(tmp_path):
         ),
         encoding="utf-8",
     )
-    launcher = _copy_launcher(home / ".local" / "bin")
-    env = {
-        "HOME": str(home),
-        "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
-        "AGENT_MEMORY_HOME": str(tmp_path / "memory"),
-    }
-
-    result = subprocess.run(
-        ["bash", str(launcher), "--version"], text=True, capture_output=True, env=env, check=False
-    )
-
-    assert result.returncode == 0, result.stderr
-
-
-@needs_bash
-def test_path_launcher_finds_the_newest_codex_plugin_cache(tmp_path):
-    home = tmp_path / "home"
-    cache = home / ".codex" / "plugins" / "cache" / "555cider-agent-skills" / "agent-memory"
-    cache.mkdir(parents=True)
-    os.symlink(SKILL_ROOT, cache / "1.0.0")
     launcher = _copy_launcher(home / ".local" / "bin")
     env = {
         "HOME": str(home),

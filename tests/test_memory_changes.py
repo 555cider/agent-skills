@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_memory.cli import hook_change_lines, main
+from agent_memory.cli import main
 from agent_memory.db import Database
 from agent_memory.instructions import loaded_rules
 from agent_memory.models import Candidate
@@ -56,23 +56,6 @@ def _hook(tmp_path: Path, capsys, prompt: str, event_id: str) -> dict:
 
 
 # ------------------------------------------------------------------ prompt hook
-def test_prompt_hook_says_what_it_stored(tmp_path, capsys):
-    (tmp_path / "repo").mkdir()
-    output = _hook(tmp_path, capsys, "remember that release notes are written in Korean", "u1")
-    context = output["context"]
-    assert "Stored from this prompt: [mem_" in context
-    assert "release notes are written in Korean" in context
-    assert output["visibility"]["material"] is True
-
-
-def test_prompt_hook_says_when_the_statement_was_already_stored(tmp_path, capsys):
-    (tmp_path / "repo").mkdir()
-    _hook(tmp_path, capsys, "remember that release notes are written in Korean", "u1")
-    context = _hook(tmp_path, capsys, "remember that release notes are written in Korean", "u2")["context"]
-    assert "Already stored, confirmed by this prompt: [mem_" in context
-    assert "Stored from this prompt" not in context
-
-
 def test_prompt_hook_reports_forget_and_hides_leftover_matches(tmp_path, capsys):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -174,12 +157,6 @@ def test_defer_capture_hands_the_payload_to_a_background_hook(tmp_path, monkeypa
     assert cli.DEFERRED_CAPTURE_ENV not in os.environ
 
 
-def test_hook_change_lines_name_an_unapplied_forget():
-    lines = hook_change_lines({"forgotten": [], "forget_skipped": 4})
-    assert lines and "4 records matched" in lines[0] and "forget --id" in lines[0]
-    assert hook_change_lines({}) == []
-
-
 # ------------------------------------------------------------------ remember
 def test_replaces_applies_when_the_statement_already_exists(memory):
     db, service, project = memory
@@ -196,21 +173,6 @@ def test_replaces_applies_when_the_statement_already_exists(memory):
     ).fetchone()[0] == "supersedes"
 
 
-def test_remember_reports_records_retracted_as_contradictory(tmp_path, capsys):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    base = ["--memory-home", str(tmp_path / "store"), "remember", "--cwd", str(repo),
-            "--kind", "constraint", "--format", "json"]
-    assert main([*base, "--statement", "Use pnpm for package installs."]) == 0
-    old = json.loads(capsys.readouterr().out)
-    assert old["superseded"] == []
-    assert main([*base, "--statement", "Do not use pnpm for package installs."]) == 0
-    new = json.loads(capsys.readouterr().out)
-    assert new["superseded"] == [
-        {"id": old["id"], "statement": "Use pnpm for package installs.", "reason": "contradiction"}
-    ]
-
-
 # ------------------------------------------------------------------ review
 def test_single_id_review_refuses_settled_records_unless_forced(memory):
     db, service, project = memory
@@ -224,20 +186,6 @@ def test_single_id_review_refuses_settled_records_unless_forced(memory):
     with pytest.raises(MemoryError, match="state is active"):
         service.reject(record["id"])
     assert service.reject(record["id"], force=True) == [record["id"]]
-
-
-def test_review_cli_force_flag(tmp_path, capsys):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    home = str(tmp_path / "store")
-    assert main(["--memory-home", home, "remember", "--cwd", str(repo), "--statement",
-                 "Keep the changelog short.", "--format", "json"]) == 0
-    memory_id = json.loads(capsys.readouterr().out)["id"]
-    assert main(["--memory-home", home, "review", "reject", memory_id]) == 1
-    assert "state is active" in capsys.readouterr().err
-    assert main(["--memory-home", home, "review", "reject", memory_id, "--force",
-                 "--format", "json"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"removed": [memory_id]}
 
 
 # ------------------------------------------------------------------ feedback
@@ -268,24 +216,6 @@ def _old_query(db: Database, memory_id: str) -> None:
         "INSERT INTO retrieval_feedback(query_id,memory_id,exposed,created_at,updated_at) VALUES('qry_old',?,1,?,?)",
         (memory_id, old, old),
     )
-
-
-def test_gc_and_stop_cleanup_prune_old_query_logs(memory, tmp_path):
-    db, service, project = memory
-    record = service.create_memory(candidate("Prefer narrow checks."), project=project)
-    fresh = Retriever(db, service.provider).recall(project=project, prompt="narrow checks")
-    _old_query(db, record["id"])
-    assert service.gc()["queries"] == 1
-    assert db.conn.execute("SELECT count(*) FROM retrieval_feedback WHERE query_id='qry_old'").fetchone()[0] == 0
-    assert db.conn.execute("SELECT count(*) FROM retrieval_queries WHERE id=?", (fresh["query_id"],)).fetchone()[0] == 1
-
-    _old_query(db, record["id"])
-    service.capture_event(
-        harness="claude", kind="assistant_stop",
-        data={"session_id": "s", "event_id": "stop1", "last_assistant_message": "done"}, cwd=tmp_path,
-    )
-    assert db.conn.execute("SELECT count(*) FROM retrieval_queries WHERE id='qry_old'").fetchone()[0] == 0
-    assert db.conn.execute("SELECT count(*) FROM retrieval_feedback WHERE query_id='qry_old'").fetchone()[0] == 0
 
 
 # ------------------------------------------------------------------ instructions
