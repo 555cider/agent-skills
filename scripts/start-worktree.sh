@@ -28,6 +28,9 @@
 # repositories, and current listeners are checked before assignment.
 # The sockets are then released, so strict server binding remains mandatory.
 #
+# The other active worktrees are listed at the end with the area each one changes
+# (worktree_overlap.py list), so parallel work on the same files is visible before it starts.
+#
 # If the local base trails its remote counterpart, that is reported and the run continues:
 # branching from the local branch is the point. Nothing here touches the network.
 #
@@ -230,3 +233,10 @@ if [ -n "$PORT_BASE" ]; then
 fi
 echo "   start working: cd \"$WTPATH\""
 echo "   when done:     finish-worktree.sh -b $BR -m \"<conventional commit>\"   (merges into $BASE)"
+
+# Advisory: the other active worktrees and the area each one changes, so parallel work on the
+# same files is visible before it starts. Never fails the run.
+if [ -n "$PYTHON" ]; then
+  echo
+  "$PYTHON" "$SCRIPT_DIR/worktree_overlap.py" list --repo "$MAIN" --exclude "$WTPATH" || true
+fi

@@ -48,6 +48,19 @@ play: the untracked-collision stash goes in first and the tracked one second, so
 the commit `stash@{0}` is always the tracked stash to pop, and the untracked one takes its
 place afterwards.
 
+## Files another worktree also changes
+
+Before the summary block, finish runs `worktree_overlap.py check` for the branch and prints
+every other active worktree (the main one only while dirty) that changes one of the same
+files, committed or not. It never stops the run:
+
+- Landing first is a legitimate outcome of parallel work; refusing would only make the
+  other session land first instead.
+- The cost lands on the other worktree, which has to rebase onto the new base and re-check
+  the shared files. The warning exists so the report says which branches those are.
+- `--strategy pr` skips it: the merge already happened on the server.
+- A worktree git cannot read is reported as an incomplete check, not as an overlap.
+
 ## When the base trails its remote
 
 Both scripts compare the base against its remote counterpart and print a warning when the

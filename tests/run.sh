@@ -1036,6 +1036,52 @@ assert_exit_nonzero "finish refuses a branch with no common ancestor"
 assert_stderr_contains "the refusal names the missing ancestor" "no common ancestor"
 assert_eq "the unrelated-history guard changes nothing" "$head_before" "$(head_of "$repo" dev)"
 
+echo "== overlap with other worktrees =="
+
+assert_stdout_contains() {
+  if grep -qF -- "$2" "$OUT"; then pass "$1"; else fail "$1" "missing [$2] in stdout"; fi
+}
+
+repo="$(new_repo overlap)"
+printf 'shared\n' > "$repo/shared.txt"
+printf 'alone\n' > "$repo/alone.txt"
+git -C "$repo" add shared.txt alone.txt
+git -C "$repo" commit -qm "seed shared files"
+run_in "$repo" "$START" first
+assert_exit "start with no other worktree" 0
+assert_stdout_contains "start says there is no other active worktree" "no other active worktrees"
+commit_in "$repo/.worktrees/first" shared.txt "first edit" "first edits shared"
+printf 'draft\n' > "$repo/.worktrees/first/draft.txt"
+run_in "$repo" "$START" second
+assert_exit "start next to an active worktree" 0
+assert_stdout_contains "start lists the other active worktree" "other active worktrees (1)"
+assert_stdout_contains "start names its branch and change area" "worktree-first"
+assert_stdout_contains "start counts committed and untracked changes" "2 changed: draft.txt, shared.txt"
+if grep -q "^    worktree-second " "$OUT"; then fail "start does not list the new worktree itself" "listed"; else
+  pass "start does not list the new worktree itself"; fi
+
+commit_in "$repo/.worktrees/second" alone.txt "second edit" "second edits alone"
+run_in "$repo" "$FINISH" -b worktree-second -m "feat(x): alone" --dry-run
+assert_exit "finish --dry-run without shared files" 0
+assert_stderr_not_contains "no overlap warning when nothing is shared" "other active worktrees also change"
+
+commit_in "$repo/.worktrees/second" shared.txt "second edit" "second edits shared"
+run_in "$repo" "$FINISH" -b worktree-second -m "feat(x): shared"
+assert_exit "finish lands despite a shared file (warning only)" 0
+assert_stderr_contains "finish warns about the shared file" "other active worktrees also change"
+assert_stderr_contains "the warning names the other branch and file" "worktree-first"
+assert_stderr_contains "the warning lists the shared path" "shared.txt"
+assert_no_dir "the finished worktree is gone" "$repo/.worktrees/second"
+assert_dir "the other worktree is untouched" "$repo/.worktrees/first"
+
+# A worktree whose branch has no recorded base still compares against worktree-cycle.base.
+git -C "$repo" config worktree-cycle.base dev
+git -C "$repo" worktree add -q -b manual "$repo/.worktrees/manual" dev
+commit_in "$repo/.worktrees/manual" alone.txt "manual edit" "manual edits alone"
+run_in "$repo" "$START" third
+assert_stdout_contains "start reads a branch without a recorded base" "manual"
+assert_stdout_contains "that branch is compared with worktree-cycle.base" "1 changed: alone.txt"
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

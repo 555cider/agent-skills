@@ -168,6 +168,17 @@
         "Distinguishes reservation from runtime endpoint verification."
       ],
       "files": []
+    },
+    {
+      "id": "finish-overlap-warning-is-reported-not-obeyed",
+      "prompt": "dev 에 반영해 줘. (finish 가 다른 워크트리 worktree-report-export 도 src/report/export.py 를 바꾼다고 경고했다.)",
+      "expected_output": "Lets finish land the branch, then reports the overlap warning with the other branch and the shared file so that worktree can rebase and re-check it; does not edit, rebase or stop the other worktree.",
+      "files": [],
+      "assertions": [
+        "Does not treat the overlap warning as a failed finish or abort the landing for it.",
+        "Names the other branch and the shared files in the report.",
+        "Does not touch the other worktree."
+      ]
     }
   ]
 }

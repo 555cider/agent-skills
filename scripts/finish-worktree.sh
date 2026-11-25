@@ -22,6 +22,8 @@
 #     given, in which case they are parked and put back after the merge.
 #   - A base that trails its remote counterpart is reported, never blocked: this skill works
 #     off the LOCAL branch by design. Nothing here touches the network.
+#   - Files the branch changes that another active worktree also changes are a warning,
+#     never a stop (worktree_overlap.py check; skipped for pr and without Python 3.10+).
 #
 # Usage (from the MAIN worktree — never from inside the worktree being removed):
 #   finish-worktree.sh -b <branch> -m "<conventional commit message>" [-m "<body>" ...]
@@ -339,6 +341,25 @@ if [ "$COLLIDE_N" -gt 0 ] && [ "$AUTOSTASH" = "0" ]; then
 fi
 
 warn_if_base_behind "$BASE" || true
+
+# F. Advisory: files this branch changes that another active worktree also changes. Never
+#    blocks (landing first is legitimate); the other worktree has to rebase and re-check.
+#    Same judgement as plan-graph's `overlap` (scripts/worktree_overlap.py is a shared copy).
+#    pr already landed on the server, so there is nothing left to warn about.
+if [ "$STRATEGY" != "pr" ]; then
+  OVERLAP_PY=""
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; assert sys.version_info >= (3, 10)' 2>/dev/null; then
+      OVERLAP_PY="$candidate"; break
+    fi
+  done
+  if [ -n "$OVERLAP_PY" ]; then
+    "$OVERLAP_PY" "$(cd "$(dirname "$0")" && pwd)/worktree_overlap.py" check \
+      --repo "$MAIN" --branch "$BRANCH" --base "$BASE" ${WT:+--exclude "$WT"} || true
+  else
+    info "overlap check skipped: Python 3.10+ not found"
+  fi
+fi
 
 echo "──────────────────────────────────────────────"
 if [ "$STRATEGY" = "pr" ]; then
