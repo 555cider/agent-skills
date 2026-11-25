@@ -190,6 +190,27 @@ def test_cli_writes_utf8_whatever_the_console_codepage_is(tmp_path):
     assert "시뮬레이션" in recalled.stdout
 
 
+def test_cli_reads_korean_stdin_as_utf8(tmp_path):
+    """Hooks hand the prompt over stdin as UTF-8 JSON.
+
+    Python decodes a redirected stdin with the locale codec on Windows (cp949), so a
+    Korean prompt was stored as mojibake and recall, capture and forget never matched it.
+    """
+    script = Path(__file__).resolve().parents[1] / "scripts" / "memory.py"
+    env = os.environ.copy()
+    env["AGENT_MEMORY_HOME"] = str(tmp_path / "memory")
+    env.pop("PYTHONIOENCODING", None)
+    env.pop("PYTHONUTF8", None)
+
+    statement = "그래그래 접지 규칙은 프로젝트마다 다르다"
+    written = subprocess.run(
+        [sys.executable, str(script), "remember", "--format", "json"],
+        input=statement.encode("utf-8"), capture_output=True, env=env, timeout=60, check=False,
+    )
+    assert written.returncode == 0, written.stderr.decode("utf-8", "replace")
+    assert statement in written.stdout.decode("utf-8")
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows shell coverage")
 def test_windows_launcher_hook_runs_in_available_shells(tmp_path):
     launcher_dir = tmp_path / "launcher"

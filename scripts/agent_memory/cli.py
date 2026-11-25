@@ -1067,8 +1067,11 @@ def _force_utf8_streams() -> None:
     then reaches the caller as mojibake, and a caller reading it with
     `subprocess.run(..., encoding="utf-8")` gets `stdout=None`: the decode error dies in
     a reader thread and is reported as no output at all.
+
+    A redirected stdin is decoded with the same locale codec, so a Korean prompt handed
+    over by a hook was stored as mojibake and never matched recall, capture or forget.
     """
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue
