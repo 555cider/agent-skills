@@ -2,7 +2,7 @@
 
 ## Store
 
-One Git worktree owns one flat plan store:
+Plans are flat Markdown files in plan directories at the Git toplevel:
 
 ```text
 .agents/plans/
@@ -10,19 +10,84 @@ One Git worktree owns one flat plan store:
   checkout-recovery.md
 ```
 
-The CLI always resolves the Git toplevel before looking for `.agents/plans`.
-Running it from a nested application must not create another store. `--root`
-exists for tests and deliberate non-Git use.
+The CLI always resolves the Git toplevel first. Running it from a nested
+application must not create another store. `--root` exists for tests and
+deliberate non-Git use.
 
-Plan Graph v2 is intentionally incompatible with the v1 numeric-ID
-`.agents/plan/graph.yaml` format: each Markdown plan is the source of truth and
-the CLI derives the graph, readiness, impact, and roadmap directly from the
-files. The v1 file is unsupported; its presence is a doctor error
-(`legacy_store`) rather than a migration signal.
+Which directories:
+
+| Setting | Read | `create` writes to |
+|---|---|---|
+| `git config plan-graph.dir <dir>` (repeatable) | the configured directories only | the first one |
+| unset | `.agents/plans`, plus `docs/plans` and `.plans` when they exist | `.agents/plans` |
+
+Without the setting, `create` in a repository that already has `docs/plans` or
+`.plans` warns `foreign_plan_dir` and names the setting.
+
+- `README.md` and `index.md` in a plan directory are not plans.
+- Only `.agents/plans` is strict: a subdirectory there is `nested_plan`, and
+  frontmatter that is not valid JSON is an error. Elsewhere subdirectories
+  (mockups, attachments) are skipped.
+- An ignored directory (`.plans/` under `.gitignore`) is read from the
+  filesystem like any other.
+
+Plan Graph v2 does not read the v1 numeric-ID `.agents/plan/graph.yaml`. Its
+presence is a `legacy_store` warning: every command still runs, and the file is
+never migrated or touched.
+
+## Loose plan documents
+
+A Markdown file in a plan directory without plan-graph frontmatter is a loose
+plan: another planning convention's document. Outside `.agents/plans`, a file
+whose frontmatter is neither a JSON object with all five plan-graph keys nor
+an unparsable `{` block (YAML, another tool's JSON keys) is loose too; a `{`
+block that no longer parses is reported as `invalid_json`, since it is a
+hand-edited CLI plan. Each directory holding any reports one
+`loose_plans` warning.
+
+| Field | Derived from |
+|---|---|
+| ID | the filename stem (no format rule) |
+| title | the first `# ` heading, else the stem |
+| status line | the first `상태`/`Status` line between the title and the first `## ` |
+| status | `done` when the status line starts with 완료, 대체됨, 취소, or 폐기 (any suffix: 완료됨), or with the word done, complete(d), landed, finished, superseded, or cancel(l)ed, and names nothing left outside backticks (남은, 잔여, 열린, 미결, 미착수, 보류, or the word remaining, open, todo, pending); otherwise `active` |
+| scope | paths in backticks that exist in the repository |
+| Outcome | the text between the title and the first `## `, unless the document has an `## Outcome` |
+
+Recognized status lines (blockquote, list item, bold, a parenthesized note
+before the colon):
+
+```markdown
+> **상태 (코드 대조 2026-11-16)**: 남은 것 5건: …
+> **상태: 완료** (근거 — `src/x.ts`, 확인 2026-11-16)
+상태: dev 반영(2026-11-18, squash). 남은 것: …
+- 상태: 초안, 결정 전 착수 없음
+Status: done
+```
+
+Scope extraction, per backtick span:
+
+- Line suffixes (`:12`, `#L4-L9`) are dropped and one `{a,b}` brace group is
+  expanded. Spans with spaces, URLs, absolute paths, or `..` are skipped.
+- An existing file is scoped as written; an existing directory as `dir/**`,
+  unless it holds more than 50 files (a passing mention of `src/backend` is
+  context, not ownership).
+- A path with a slash that is not at the root matches files ending in it, at
+  most three. A bare file name (`Toolbar.tsx`) matches only a unique file name.
+- Code inside fenced blocks is ignored, as for headings.
+
+The CLI never rewrites or deletes a loose plan. `update`, `rename`, `replace`,
+`reopen`, `close`, and `drop` refuse one with `loose_plan`, and `gc` and pruning
+never select one. A CLI plan may `requires` a loose plan; it waits until the
+document's status line reads done. Two loose plans never produce a
+`scope_overlap`, `possible_duplicate`, or `overlapping` signal, and `doctor`
+does not warn `stale_plan` for them: their scopes are inferred from prose.
+`context` and `why` still report their staleness.
 
 ## Document schema
 
-Every file starts with `---` delimiters containing a strict JSON object:
+A plan the CLI manages starts with `---` delimiters containing a strict JSON
+object:
 
 ```markdown
 ---
@@ -143,6 +208,41 @@ about them is stored in frontmatter, so they can never drift.
 When git or the filesystem cannot answer (no repository, unreadable tree),
 advisory checks silently degrade: staleness reports `unknown` and overlap and
 duplicate checks are skipped. Structural validation never depends on them.
+
+## Other worktrees
+
+Parallel agents each work in their own git worktree, so before anything lands
+one worktree cannot see another's plans or edits. `overlap` and `context` read
+every worktree in `git worktree list --porcelain`:
+
+- **Changes**: the files a worktree's branch changed since its merge base with
+  its base (`git diff --no-renames base...HEAD`), plus everything uncommitted
+  (`git status --porcelain=v1 --untracked-files=all --no-renames`). The base is
+  `branch.<branch>.worktreeCycleBase` (recorded by worktree-cycle), else
+  `git config worktree-cycle.base`, else the branch checked out in the main
+  worktree. Git calls: one `worktree list`, one `config`, then one `status` and
+  at most one `diff` per worktree, run concurrently. Bare and prunable entries
+  are skipped.
+- **Plans**: each worktree's plan directories are read from its directory,
+  ignored ones included. A document counts as that worktree's own only when
+  that worktree changed it since its base, or its base branch does not track it
+  (an ignored `.plans/` file; one `git ls-tree` per base). A plan inherited
+  unchanged from the base is already here, and editing your own copy does not
+  make the siblings' unchanged copies look like theirs. Only active plans count.
+  A worktree whose plans cannot be read is listed under `warnings`; the others
+  are still reported.
+- **Nested worktrees**: when `.worktrees/` is not ignored, a worktree's status
+  lists the worktrees inside it as untracked; those paths are dropped.
+- **Overlap**: another worktree overlaps when it changed a file the selectors
+  cover (a selector ending in `/` covers everything below it), or when one of
+  its own plans has a scope matching a selector. The selectors are explicit
+  `--path` values, else this worktree's own changes.
+
+The file-level judgement is shared with worktree-cycle's `start`/`finish`:
+`scripts/plan_graph/worktree_overlap.py` is a byte-identical copy of
+`skills/worktree-cycle/scripts/worktree_overlap.py`, and the repository's
+`tests/check-shared-copies.sh` fails when they drift. Overlap is advice: it never
+fails a command, and a worktree git cannot read is listed under `warnings`.
 
 ## Closing and garbage collection
 

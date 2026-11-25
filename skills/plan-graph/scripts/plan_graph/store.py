@@ -7,10 +7,12 @@ import secrets
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
+from .loose import FileIndex, parse_loose
 from .model import (
+    FRONTMATTER_RE,
     GATE_SECTIONS,
     ID_RE,
     LEGACY_GRAPH,
@@ -18,12 +20,35 @@ from .model import (
     Diagnostic,
     Plan,
     PlanGraphError,
+    has_graph_frontmatter,
     parse_plan,
     render_plan,
     repo_relative,
+    strip_frontmatter,
     unfilled_sections,
     validate_plan,
 )
+
+
+DEFAULT_PLAN_DIRS = (PLAN_DIR, PurePosixPath("docs/plans"), PurePosixPath(".plans"))
+SKIPPED_DOCUMENTS = {"readme", "index"}
+
+
+@dataclass(frozen=True)
+class PlanDirs:
+    """Where plans are read from and where `create` writes.
+
+    `git config plan-graph.dir` (repeatable) is authoritative: those directories, the
+    first one written. Without it, `.agents/plans` plus whichever of `docs/plans` and
+    `.plans` exist are read, and only `.agents/plans` is written.
+    """
+
+    read: tuple[PurePosixPath, ...]
+    write: PurePosixPath
+    configured: bool
+
+    def foreign(self) -> tuple[PurePosixPath, ...]:
+        return tuple(item for item in self.read if item != self.write)
 
 
 @dataclass(frozen=True)
@@ -31,6 +56,7 @@ class Store:
     root: Path
     plans: dict[str, Plan]
     diagnostics: tuple[Diagnostic, ...]
+    dirs: PlanDirs = PlanDirs(read=(PLAN_DIR,), write=PLAN_DIR, configured=False)
 
     @property
     def errors(self) -> tuple[Diagnostic, ...]:
@@ -93,97 +119,217 @@ def discover_root(explicit: Path | None, cwd: Path | None = None) -> Path:
     return Path(result.stdout.strip()).resolve()
 
 
-def load_store(root: Path, *, deep: bool = False) -> Store:
+_CONFIG_CACHE: dict[str, list[str]] = {}
+
+
+def configured_dirs(root: Path) -> list[str]:
+    """`git config --get-all plan-graph.dir`, once per process and root."""
+    key = str(root.resolve())
+    if key not in _CONFIG_CACHE:
+        try:
+            result = _run_git(root, ["config", "--get-all", "plan-graph.dir"])
+            values = result.stdout.splitlines() if result.returncode == 0 else []
+        except PlanGraphError:
+            values = []
+        _CONFIG_CACHE[key] = [value.strip() for value in values if value.strip()]
+    return list(_CONFIG_CACHE[key])
+
+
+def plan_dirs(root: Path, configured: list[str] | None = None) -> tuple[PlanDirs, list[Diagnostic]]:
+    values = configured_dirs(root) if configured is None else configured
+    diagnostics: list[Diagnostic] = []
+    chosen: list[PurePosixPath] = []
+    for value in values:
+        slashed = value.replace("\\", "/").rstrip("/")
+        pure = PurePosixPath(slashed)
+        if (
+            not slashed
+            or slashed == "."
+            or slashed.startswith("/")
+            or (len(slashed) > 1 and slashed[1] == ":")
+            or ".." in pure.parts
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    "warning",
+                    "invalid_plan_dir",
+                    f"git config plan-graph.dir must be a repository-relative directory: {value!r}",
+                )
+            )
+            continue
+        if pure not in chosen:
+            chosen.append(pure)
+    if chosen:
+        return PlanDirs(read=tuple(chosen), write=chosen[0], configured=True), diagnostics
+    found = [PLAN_DIR] + [
+        item for item in DEFAULT_PLAN_DIRS[1:] if (root / item).is_dir() and not (root / item).is_symlink()
+    ]
+    return PlanDirs(read=tuple(found), write=PLAN_DIR, configured=False), diagnostics
+
+
+def _symlinked_part(root: Path, directory: PurePosixPath) -> Path | None:
+    current = root
+    for part in directory.parts:
+        current = current / part
+        if current.is_symlink():
+            return current
+    return None
+
+
+def _legacy_warning(root: Path, legacy: Path) -> Diagnostic:
+    return Diagnostic(
+        "warning",
+        "legacy_store",
+        "ignored the v1 graph .agents/plan/graph.yaml: v2 never reads or migrates it;"
+        " delete it once nothing else needs it",
+        path=repo_relative(root, legacy),
+    )
+
+
+def read_plan_documents(
+    root: Path,
+    dirs: PlanDirs,
+    *,
+    index_provider=None,
+) -> tuple[list[Plan], list[Diagnostic]]:
+    """Every plan document under `dirs.read`, graph and loose, with per-file diagnostics.
+
+    Only `.agents/plans` is strict: there, broken frontmatter and nested directories are
+    errors. Elsewhere a document whose frontmatter is not plan-graph JSON is read as a
+    loose plan and subdirectories (mockups, attachments) are skipped.
+    """
+    diagnostics: list[Diagnostic] = []
+    documents: list[Plan] = []
+    index_cache: list[FileIndex | None] = []
+
+    def index() -> FileIndex | None:
+        if not index_cache:
+            index_cache.append(index_provider() if index_provider is not None else None)
+        return index_cache[0]
+
+    agents = root / ".agents"
+    for directory in dirs.read:
+        strict = directory == PLAN_DIR
+        absolute = root / directory
+        label = directory.as_posix()
+        if strict and agents.is_symlink():
+            diagnostics.append(
+                Diagnostic("error", "symlink_store", ".agents may not be a symlink",
+                           path=repo_relative(root, agents))
+            )
+            continue
+        if strict and agents.exists() and not agents.is_dir():
+            diagnostics.append(
+                Diagnostic("error", "invalid_store", ".agents exists but is not a directory",
+                           path=repo_relative(root, agents))
+            )
+            continue
+        linked = _symlinked_part(root, directory)
+        if linked is not None:
+            diagnostics.append(
+                Diagnostic(
+                    "error" if strict or directory == dirs.write else "warning",
+                    "symlink_store",
+                    f"{label} may not be a symlink" if linked == absolute
+                    else f"{repo_relative(root, linked)} (a parent of {label}) may not be a symlink",
+                    path=repo_relative(root, linked),
+                )
+            )
+            continue
+        if absolute.exists() and not absolute.is_dir():
+            diagnostics.append(
+                Diagnostic("error" if strict else "warning", "invalid_store",
+                           f"{label} exists but is not a directory", path=label)
+            )
+            continue
+        if not absolute.is_dir():
+            continue
+        loose: list[str] = []
+        for entry in sorted(absolute.iterdir()):
+            if entry.is_dir():
+                if strict:
+                    diagnostics.append(
+                        Diagnostic(
+                            "error",
+                            "nested_plan",
+                            "plans must be flat Markdown files directly under .agents/plans",
+                            path=repo_relative(root, entry),
+                        )
+                    )
+                continue
+            if entry.suffix.casefold() != ".md" or entry.stem.casefold() in SKIPPED_DOCUMENTS:
+                continue
+            if entry.is_symlink():
+                if strict:
+                    plan, plan_diagnostics = parse_plan(entry, root)
+                    diagnostics.extend(plan_diagnostics)
+                continue
+            try:
+                content = entry.read_text(encoding="utf-8-sig")
+            except (OSError, UnicodeError) as exc:
+                diagnostics.append(
+                    Diagnostic("error" if strict else "warning", "read_failed",
+                               f"failed to read plan: {exc}", entry.stem, repo_relative(root, entry))
+                )
+                continue
+            if FRONTMATTER_RE.match(content) if strict else has_graph_frontmatter(content):
+                plan, plan_diagnostics = parse_plan(entry, root, content)
+                diagnostics.extend(plan_diagnostics)
+                if plan is not None:
+                    documents.append(plan)
+                continue
+            documents.append(parse_loose(entry, root, strip_frontmatter(content), index()))
+            loose.append(entry.name)
+        if loose:
+            diagnostics.append(
+                Diagnostic(
+                    "warning",
+                    "loose_plans",
+                    f"{len(loose)} plan document(s) in {label} have no plan-graph frontmatter;"
+                    " read for routing only (title, status line, backtick paths as scope)"
+                    " and never rewritten",
+                    path=label,
+                )
+            )
+    return documents, diagnostics
+
+
+def load_store(root: Path, *, deep: bool = False, dirs: PlanDirs | None = None) -> Store:
     root = root.resolve()
     diagnostics: list[Diagnostic] = []
     legacy = root / LEGACY_GRAPH
     if legacy.exists() or legacy.is_symlink():
-        diagnostics.append(
-            Diagnostic(
-                "error",
-                "legacy_store",
-                "unsupported v1 graph found; v2 does not read or migrate .agents/plan/graph.yaml",
-                path=repo_relative(root, legacy),
-            )
-        )
+        diagnostics.append(_legacy_warning(root, legacy))
+    if dirs is None:
+        dirs, dir_diagnostics = plan_dirs(root)
+        diagnostics.extend(dir_diagnostics)
 
-    agents = root / ".agents"
-    directory = root / PLAN_DIR
+    def index() -> FileIndex | None:
+        from .advice import repo_files  # advice imports this module
+
+        return FileIndex.build(repo_files(root))
+
+    documents, read_diagnostics = read_plan_documents(root, dirs, index_provider=index)
+    diagnostics.extend(read_diagnostics)
     plans: dict[str, Plan] = {}
-    blocked_parent = False
-    if agents.is_symlink():
+    for plan in documents:
+        if plan.id not in plans:
+            plans[plan.id] = plan
+            continue
         diagnostics.append(
             Diagnostic(
-                "error",
-                "symlink_store",
-                ".agents may not be a symlink",
-                path=repo_relative(root, agents),
+                "warning" if plan.is_loose or plans[plan.id].is_loose else "error",
+                "duplicate_id",
+                f"duplicate plan ID {plan.id}; kept {repo_relative(root, plans[plan.id].path)}",
+                plan.id,
+                repo_relative(root, plan.path),
             )
         )
-        blocked_parent = True
-    elif agents.exists() and not agents.is_dir():
-        diagnostics.append(
-            Diagnostic(
-                "error",
-                "invalid_store",
-                ".agents exists but is not a directory",
-                path=repo_relative(root, agents),
-            )
-        )
-        blocked_parent = True
-
-    if not blocked_parent and directory.is_symlink():
-        diagnostics.append(
-            Diagnostic(
-                "error",
-                "symlink_store",
-                ".agents/plans may not be a symlink",
-                path=repo_relative(root, directory),
-            )
-        )
-    elif not blocked_parent and directory.exists() and not directory.is_dir():
-        diagnostics.append(
-            Diagnostic(
-                "error",
-                "invalid_store",
-                ".agents/plans exists but is not a directory",
-                path=repo_relative(root, directory),
-            )
-        )
-    elif not blocked_parent and directory.is_dir():
-        for nested in sorted(directory.iterdir()):
-            if nested.is_dir():
-                diagnostics.append(
-                    Diagnostic(
-                        "error",
-                        "nested_plan",
-                        "plans must be flat Markdown files directly under .agents/plans",
-                        path=repo_relative(root, nested),
-                    )
-                )
-                continue
-            if nested.suffix.casefold() != ".md":
-                continue
-            plan, plan_diagnostics = parse_plan(nested, root)
-            diagnostics.extend(plan_diagnostics)
-            if plan is not None:
-                if plan.id in plans:
-                    diagnostics.append(
-                        Diagnostic(
-                            "error",
-                            "duplicate_id",
-                            f"duplicate plan ID {plan.id}",
-                            plan.id,
-                            repo_relative(root, nested),
-                        )
-                    )
-                else:
-                    plans[plan.id] = plan
 
     diagnostics.extend(validate_graph(plans))
     if deep:
         diagnostics.extend(find_nested_stores(root))
-    return Store(root=root, plans=plans, diagnostics=tuple(diagnostics))
+    return Store(root=root, plans=plans, diagnostics=tuple(diagnostics), dirs=dirs)
 
 
 def validate_plan_set(plans: dict[str, Plan]) -> list[Diagnostic]:
@@ -194,7 +340,8 @@ def validate_plan_set(plans: dict[str, Plan]) -> list[Diagnostic]:
     """
     diagnostics: list[Diagnostic] = []
     for _, plan in sorted(plans.items()):
-        diagnostics.extend(validate_plan(plan))
+        if not plan.is_loose:
+            diagnostics.extend(validate_plan(plan))
     diagnostics.extend(validate_graph(plans))
     return diagnostics
 
@@ -265,7 +412,7 @@ def validate_graph(plans: dict[str, Plan]) -> list[Diagnostic]:
             )
         )
     for plan_id, plan in sorted(plans.items()):
-        if plan.status != "done":
+        if plan.status != "done" or plan.is_loose:
             continue
         unfilled = unfilled_sections(plan, GATE_SECTIONS)
         if unfilled:
@@ -357,7 +504,7 @@ def prunable_done(plans: dict[str, Plan]) -> set[str]:
     return {
         plan_id
         for plan_id, plan in plans.items()
-        if plan.status == "done" and plan_id not in retained
+        if plan.status == "done" and not plan.is_loose and plan_id not in retained
     }
 
 
@@ -383,9 +530,9 @@ def _nested_store_diagnostic(relative: str) -> Diagnostic:
 
 def _nested_legacy_diagnostic(relative: str) -> Diagnostic:
     return Diagnostic(
-        "error",
+        "warning",
         "nested_legacy_store",
-        "nested v1 graph is unsupported",
+        "ignored a nested v1 graph; v2 never reads it",
         path=relative,
     )
 
@@ -493,15 +640,26 @@ def git_worktree_paths(root: Path) -> list[str]:
     return sorted(paths)
 
 
-def id_seen_in_git(root: Path, plan_id: str) -> bool | None:
-    """Whether the plan file was ever indexed or committed; None when Git timed out."""
-    relative = (PLAN_DIR / f"{plan_id}.md").as_posix()
+def _id_paths(plan_id: str, directories: PurePosixPath | Iterable[PurePosixPath]) -> list[str]:
+    chosen = [directories] if isinstance(directories, PurePosixPath) else list(directories)
+    return list(dict.fromkeys((item / f"{plan_id}.md").as_posix() for item in chosen))
+
+
+def id_seen_in_git(
+    root: Path, plan_id: str, directories: PurePosixPath | Iterable[PurePosixPath] = PLAN_DIR
+) -> bool | None:
+    """Whether the plan file was ever indexed or committed in any of `directories`.
+
+    None when Git timed out. Every plan directory counts: an ID used in `docs/plans`
+    before `plan-graph.dir` changed is still taken.
+    """
+    relatives = _id_paths(plan_id, directories)
     try:
-        indexed = _run_git(root, ["ls-files", "--error-unmatch", "--", relative])
-        if indexed.returncode == 0:
+        indexed = _run_git(root, ["ls-files", "--", *relatives])
+        if indexed.returncode == 0 and indexed.stdout.strip():
             return True
         # One hit settles it; a full history walk of a large repo is what timed out.
-        result = _run_git(root, ["log", "--all", "--max-count=1", "--format=%H", "--", relative])
+        result = _run_git(root, ["log", "--all", "--max-count=1", "--format=%H", "--", *relatives])
     except PlanGraphError as exc:
         if exc.code == "git_timeout":
             return None
@@ -513,13 +671,19 @@ def reserved_ids(plans: dict[str, Plan]) -> set[str]:
     return set(plans) | {old for plan in plans.values() for old in plan.replaces}
 
 
-def assert_new_id(root: Path, plans: dict[str, Plan], plan_id: str) -> list[Diagnostic]:
+def assert_new_id(
+    root: Path,
+    plans: dict[str, Plan],
+    plan_id: str,
+    directories: PurePosixPath | Iterable[PurePosixPath] = PLAN_DIR,
+) -> list[Diagnostic]:
     """Raise for a used or reserved ID; return warnings for checks that could not finish."""
     if not ID_RE.fullmatch(plan_id):
         raise PlanGraphError("plan ID must be lowercase kebab-case", code="invalid_id")
     if plan_id in reserved_ids(plans):
         raise PlanGraphError(f"plan ID is already used or reserved: {plan_id}", code="id_reused")
-    seen = id_seen_in_git(root, plan_id)
+    relatives = _id_paths(plan_id, directories)
+    seen = id_seen_in_git(root, plan_id, directories)
     if seen:
         raise PlanGraphError(f"plan ID appears in Git history and may not be reused: {plan_id}", code="id_reused")
     if seen is None:
@@ -528,7 +692,7 @@ def assert_new_id(root: Path, plans: dict[str, Plan], plan_id: str) -> list[Diag
                 "warning",
                 "id_history_unchecked",
                 f"Git history search timed out after {GIT_TIMEOUT}s; confirm with"
-                f" `git log --all -- {(PLAN_DIR / f'{plan_id}.md').as_posix()}` that the ID"
+                f" `git log --all -- {' '.join(relatives)}` that the ID"
                 " was never used",
                 plan_id,
             )
@@ -626,13 +790,13 @@ class FileLock:
             pass
 
 
-def _assert_safe_store(root: Path) -> Path:
-    agents = root / ".agents"
-    directory = root / PLAN_DIR
-    if agents.is_symlink() or directory.is_symlink():
-        raise PlanGraphError(".agents and .agents/plans may not be symlinks", code="symlink_store")
+def _assert_safe_store(root: Path, relative: PurePosixPath = PLAN_DIR) -> Path:
+    directory = root / relative
+    if _symlinked_part(root, relative) is not None:
+        raise PlanGraphError(
+            f"{relative.as_posix()} and its parents may not be symlinks", code="symlink_store"
+        )
     root_resolved = root.resolve()
-    agents.mkdir(parents=True, exist_ok=True)
     directory.mkdir(parents=True, exist_ok=True)
     try:
         directory.resolve().relative_to(root_resolved)
@@ -674,6 +838,17 @@ def _recovery_parent(root: Path) -> Path:
 
 
 def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) -> Path | None:
+    for plan in after.values():
+        original = before.get(plan.id)
+        if (plan.is_loose or (original is not None and original.is_loose)) and plan != original:
+            raise PlanGraphError(
+                f"{plan.id} has no plan-graph frontmatter and is never rewritten", code="loose_plan"
+            )
+    for plan_id, plan in before.items():
+        if plan.is_loose and plan_id not in after:
+            raise PlanGraphError(
+                f"{plan_id} has no plan-graph frontmatter and is never deleted", code="loose_plan"
+            )
     graph_errors = [item for item in validate_plan_set(after) if item.severity == "error"]
     if graph_errors:
         raise PlanGraphError(graph_errors[0].message, code=graph_errors[0].code)
@@ -688,7 +863,6 @@ def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) 
                 "plan store changed after it was read; retry the command",
                 code="concurrent_change",
             )
-        directory = _assert_safe_store(root)
         before_paths = {plan.path for plan in before.values()}
         after_paths = {plan.path for plan in after.values()}
         writes = {
@@ -698,10 +872,20 @@ def apply_plan_set(root: Path, before: dict[str, Plan], after: dict[str, Plan]) 
         }
         deletes = before_paths - after_paths
         touched = sorted(set(writes) | deletes, key=lambda item: item.as_posix())
+        stores: dict[Path, Path] = {}
+        for path in touched:
+            try:
+                relative = PurePosixPath(path.parent.relative_to(root).as_posix())
+            except ValueError as exc:
+                raise PlanGraphError(f"plan path escapes store: {path}", code="path_escape") from exc
+            if relative not in (*current.dirs.read, current.dirs.write):
+                raise PlanGraphError(f"plan path is outside the plan directories: {path}", code="path_escape")
+            if path.parent not in stores:
+                stores[path.parent] = _assert_safe_store(root, relative)
         snapshots: dict[Path, bytes | None] = {}
         for path in touched:
             try:
-                path.resolve(strict=False).relative_to(directory.resolve())
+                path.resolve(strict=False).relative_to(stores[path.parent].resolve())
             except ValueError as exc:
                 raise PlanGraphError(f"plan path escapes store: {path}", code="path_escape") from exc
             if path.is_symlink():

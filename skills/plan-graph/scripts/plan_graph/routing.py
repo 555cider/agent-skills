@@ -6,7 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
 
-from .model import Plan, scope_matches
+from .model import Plan, recover_command, scope_matches
 from .store import required_closure, reverse_dependents
 
 
@@ -141,6 +141,7 @@ def _plan_item(
         "title": plan.title,
         "role": role,
         "status": plan.status,
+        "kind": plan.kind,
         "readiness": readiness(plans, plan_id),
         "blockers": blockers(plans, plan_id),
         "requires": list(plan.requires),
@@ -148,13 +149,15 @@ def _plan_item(
         "scope": list(plan.scope),
         "tags": list(plan.tags),
     }
+    if plan.is_loose:
+        item["status_line"] = plan.status_line
     if matches:
         item["matched_by"] = matches
     if plan.replaces:
         item["lineage"] = [
             {
                 "replaced": old,
-                "recover": f"git log --all -- .agents/plans/{old}.md",
+                "recover": recover_command(root, plan, old),
             }
             for old in plan.replaces
         ]
@@ -192,12 +195,17 @@ def build_context(
         if plan_id in plans:
             selected.add(plan_id)
             match_reasons[plan_id].append("explicit:plan")
+    plan_files = {}
+    for plan_id, plan in plans.items():
+        try:
+            plan_files[plan.path.relative_to(root).as_posix()] = plan_id
+        except ValueError:
+            continue
     for path in route_paths:
-        if path.startswith(".agents/plans/") and path.endswith(".md"):
-            plan_file_id = Path(path).stem
-            if plan_file_id in plans:
-                selected.add(plan_file_id)
-                match_reasons[plan_file_id].append("path:plan-file")
+        plan_file_id = plan_files.get(path)
+        if plan_file_id is not None:
+            selected.add(plan_file_id)
+            match_reasons[plan_file_id].append("path:plan-file")
         for plan_id, plan in plans.items():
             matching = [pattern for pattern in plan.scope if scope_matches(pattern, path)]
             if matching:
@@ -235,12 +243,16 @@ def build_context(
     overlapping: set[str] = set()
     if index and selected:
         selected_files: set[str] = set()
+        graph_files: set[str] = set()
         for plan_id in selected:
             selected_files |= index.get(plan_id, set())
+            if not plans[plan_id].is_loose:
+                graph_files |= index.get(plan_id, set())
         for plan_id, files in index.items():
             if plan_id in included:
                 continue
-            shared = files & selected_files
+            # Two loose documents never overlap: see advice.scope_overlaps.
+            shared = files & (graph_files if plans[plan_id].is_loose else selected_files)
             if shared:
                 overlapping.add(plan_id)
                 for sample in sorted(shared)[:OVERLAP_SAMPLE_REASONS]:

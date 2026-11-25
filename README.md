@@ -39,9 +39,13 @@ directories yourself.
   SQLite-authoritative durable memory shared across Claude, Codex, OpenCode,
   and other agents, with redacted observation, lifecycle review, and a
   documented shadow-to-primary rollout.
-- [`skills/plan-graph/`](skills/plan-graph/) - route current tasks and changed
-  paths through persistent plan context, maintain explicit prerequisites and
-  replacement lineage, and prune closed plan trees through a transactional CLI.
+- [`skills/plan-graph/`](skills/plan-graph/) - see, before anything lands,
+  which other git worktrees of the repository change the same files or hold
+  plans for them (ignored `.plans/` included); route current tasks and changed
+  paths through the repository's plan documents, reading `docs/plans`-style
+  documents without frontmatter as they are; and maintain explicit
+  prerequisites, replacement lineage, and pruning of closed plan trees through a
+  transactional CLI.
 - [`skills/peer-review/`](skills/peer-review/) — second-opinion review of
   plans, specs, or design choices via one or more reviewer CLIs (`codex`,
   `claude`, `opencode`, `agy`). Multiple reviewers run in
@@ -88,6 +92,9 @@ directories yourself.
   same name, so it never retires a worktree name. Isolation extends past the branch:
   **start** also reserves a block of ten ports per worktree through a per-user registry,
   guarded by an OS lock and IPv4/IPv6 bind checks. Python 3.10+ is required for allocation.
+  **start** lists the other active worktrees and the area each one changes, and
+  **finish** warns, without blocking, when the branch changes files another active
+  worktree also changes (the same check plan-graph's `overlap` runs).
   Repository path and branch choose a preferred block; strict server binding still proves
   runtime ownership. The reservation is recorded in the worktree's git directory
   where it cannot dirty the tree and where git deletes it on removal — because branch

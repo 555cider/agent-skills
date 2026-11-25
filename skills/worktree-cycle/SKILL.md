@@ -2,7 +2,7 @@
 name: worktree-cycle
 description: Use when starting or finishing work in a git worktree ("워크트리 시작/생성/정리", "dev/main 으로 merge·squash merge 후 정리"), or when work done in a worktree is ready to report. Start branches from the local integration branch HEAD and reserves a dev-server port block; finish lands the branch the way the repository does (squash, merge commit, fast-forward, or a pull request merged on the server) and removes the branch and worktree — only after the user approves. The scripts never push.
 license: MIT
-compatibility: Bash, git (2.38+ for --strategy pr on squash-merged PRs), and Python 3.10+ for coordinated port allocation. Works on Windows through Git Bash. No network access, no push.
+compatibility: Bash, git (2.38+ for --strategy pr on squash-merged PRs), and Python 3.10+ for coordinated port allocation and the overlap check. Works on Windows through Git Bash. No network access, no push.
 ---
 
 # worktree-cycle
@@ -74,6 +74,10 @@ result, not a success.
 - If the local base trails its remote counterpart, that is **reported and the run continues**
   (see [references/finish.md](references/finish.md)).
 - A **block of 10 ports** is reserved for the worktree and printed with the result.
+- The **other active worktrees** are listed last, one line each with the area they change
+  (committed since their base plus uncommitted); the main worktree appears only while it is
+  dirty. Before editing in an area another worktree is changing, read its plan or diff. See
+  [Overlap with other worktrees](#overlap-with-other-worktrees).
 
 ### The reserved port block
 
@@ -169,8 +173,32 @@ Once the merge starts:
   re-run — finish by hand as printed. An empty, deregistered directory left by a Windows lock
   is the exception: reported, exit zero.
 - A base that trails its remote is reported, never blocked. Nothing fetches or pushes.
+- **Files another active worktree also changes** are listed as a warning before the
+  summary (skipped for `pr`). The run continues: landing first is legitimate. Put the
+  branches and files in the report so the other worktree rebases and re-checks them.
 
 Details and the reasoning behind each: [references/finish.md](references/finish.md).
+
+## Overlap with other worktrees
+
+`scripts/worktree_overlap.py` (Python 3.10+, git only) is what start and finish run. Call it
+directly to check at any point, for example before the final review:
+
+```bash
+python3 <skill-dir>/scripts/worktree_overlap.py list  [--exclude <this worktree>] [--json]
+python3 <skill-dir>/scripts/worktree_overlap.py check --branch <branch> [--base <base>] [--json]
+```
+
+- A worktree's changes: its branch's commits since the merge base with its base (the base
+  start recorded, else `worktree-cycle.base`, else the main worktree's branch), plus staged,
+  unstaged and untracked files. Git calls: one `worktree list`, one `config`, then one
+  `status` and at most one `diff` per worktree, run concurrently.
+- Overlap means the same file path. Both commands always exit 0. Without Python, start omits
+  the list (it already warns that Python is missing) and finish prints that the check was
+  skipped.
+- plan-graph's `overlap` command runs a byte-identical copy of this file and adds the other
+  worktrees' plan documents (including ignored `.plans/`). It is optional: nothing here
+  needs plan-graph.
 
 ## Traps
 

@@ -121,7 +121,7 @@ class PlanGraphCliTests(unittest.TestCase):
 
     def test_empty_store_context_and_doctor(self) -> None:
         doctor, _ = self.run_cli("doctor")
-        self.assertEqual(doctor["data"]["counts"], {"plans": 0, "active": 0, "done": 0})
+        self.assertEqual(doctor["data"]["counts"], {"plans": 0, "active": 0, "done": 0, "loose": 0})
         context, _ = self.run_cli("context", "--query", "anything")
         self.assertEqual(context["data"]["decision_pack"], [])
         self.assertEqual(context["data"]["candidates"], [])

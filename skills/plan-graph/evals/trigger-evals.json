@@ -94,5 +94,29 @@
   {
     "query": "Compare these three design options and give me a peer-review recommendation, but don't edit the repo.",
     "should_trigger": false
+  },
+  {
+    "query": "다른 워크트리에서 돌고 있는 에이전트들이 내가 고치려는 src/backend/report 쪽 파일을 건드리고 있는지, 그쪽 계획도 같이 봐 줘.",
+    "should_trigger": true
+  },
+  {
+    "query": "Three agents are working in parallel git worktrees of this repo. Before I land my branch, check whether any of them changed the same files or has an unlanded plan for them.",
+    "should_trigger": true
+  },
+  {
+    "query": "이 레포는 docs/plans 에 날짜 붙은 계획 문서를 쓴다. 지금 작업과 관련된 계획 문서를 찾아서 상태 줄부터 읽어 줘.",
+    "should_trigger": true
+  },
+  {
+    "query": "큰 작업이라 여러 단계로 나눠야 해. 코드 쓰기 전에 계획부터 세우고, 이미 있는 계획과 겹치는지 확인해 줘.",
+    "should_trigger": true
+  },
+  {
+    "query": "Our plans live in an ignored .plans/ folder in the main checkout. From this worktree, find which of them cover the files I'm changing.",
+    "should_trigger": true
+  },
+  {
+    "query": "Rename the local git branch feature/login to feature/sign-in and update its upstream.",
+    "should_trigger": false
   }
 ]

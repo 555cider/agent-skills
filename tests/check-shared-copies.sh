@@ -13,6 +13,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # byte-identical. The first path is the one named in the failure message as the reference.
 SHARED=(
   "skills/ui-audit/scripts/chrome-cdp.mjs skills/screen-map/scripts/chrome-cdp.mjs skills/dom-picker/scripts/chrome-cdp.mjs"
+  "skills/worktree-cycle/scripts/worktree_overlap.py skills/plan-graph/scripts/plan_graph/worktree_overlap.py"
 )
 
 status=0

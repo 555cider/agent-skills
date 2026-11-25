@@ -12,10 +12,10 @@ import subprocess
 from pathlib import Path
 
 from .model import (
-    PLAN_DIR,
     Diagnostic,
     Plan,
     compile_scope,
+    recover_command,
     repo_relative,
     scope_matches,
     unfilled_sections,
@@ -219,7 +219,7 @@ def explain_plan(
         mine = index.get(plan_id, set())
         closure = required_closure(plans, [plan_id])
         for other in sorted(index):
-            if other == plan_id:
+            if other == plan_id or (plan.is_loose and plans[other].is_loose):
                 continue
             shared = mine & index[other]
             if not shared:
@@ -250,7 +250,7 @@ def explain_plan(
         "lineage": [
             {
                 "replaced": old,
-                "recover": f"git log --all -- {(PLAN_DIR / f'{old}.md').as_posix()}",
+                "recover": recover_command(root, plan, old),
             }
             for old in plan.replaces
         ],
@@ -267,7 +267,9 @@ def near_duplicates(plans: dict[str, Plan], index: dict[str, set[str]]) -> list[
     """
     diagnostics: list[Diagnostic] = []
     active = sorted(
-        plan_id for plan_id, plan in plans.items() if plan.status == "active"
+        plan_id
+        for plan_id, plan in plans.items()
+        if plan.status == "active" and not plan.is_loose
     )
     for position, first in enumerate(active):
         first_tags = {tag.casefold() for tag in plans[first].tags}
@@ -309,6 +311,10 @@ def scope_overlaps(plans: dict[str, Plan], index: dict[str, set[str]]) -> list[D
     for position, first in enumerate(ids):
         first_closure = required_closure(plans, [first])
         for second in ids[position + 1 :]:
+            if plans[first].is_loose and plans[second].is_loose:
+                # Scopes inferred from two documents' prose overlap constantly; only a
+                # plan someone scoped on purpose makes the pair worth a warning.
+                continue
             shared = index[first] & index[second]
             if not shared:
                 continue

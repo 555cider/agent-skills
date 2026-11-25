@@ -29,7 +29,7 @@
       "version": "1.3.0",
       "author": { "name": "555cider" },
       "license": "MIT",
-      "description": "Persistent plan context per repository: explicit prerequisites, replacement lineage, and pruning of closed plan trees through a transactional CLI.",
+      "description": "Plans and changed files across parallel git worktrees, read before anything lands, plus persistent plan context per repository: explicit prerequisites, replacement lineage, and pruning of closed plan trees through a transactional CLI.",
       "category": "productivity"
     },
     {
@@ -79,7 +79,7 @@
       "version": "1.4.0",
       "author": { "name": "555cider" },
       "license": "MIT",
-      "description": "Git worktree lifecycle as two guarded scripts: start branches from the local integration branch and reserves a dev-server port block; finish, once the user approves, lands the branch as a squash, merge commit or fast-forward — or, in pull-request repositories, cleans up once the server merged the PR. Never pushes.",
+      "description": "Git worktree lifecycle as two guarded scripts: start branches from the local integration branch, reserves a dev-server port block and lists the other active worktrees with the area each changes; finish warns when another active worktree changes the same files and, once the user approves, lands the branch as a squash, merge commit or fast-forward — or, in pull-request repositories, cleans up once the server merged the PR. Never pushes.",
       "category": "development"
     },
     {
