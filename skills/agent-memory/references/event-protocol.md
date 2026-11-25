@@ -56,6 +56,12 @@ events expire after fourteen days.
 
 ## Hook output
 
+Prompt hooks recall on the user's own words only: host blocks
+(`<task-notification>`, `<agent-message>`, `<system-reminder>`) and pasted text
+(`<pasted_content>`) are dropped, and a slash command (`/name args` or
+`<command-name>`) contributes its arguments alone; a leading `/word` that exists
+as a path on disk is the user's text, not a command. Remember/forget detection
+reads the same text without host blocks, and never fires on a slash command.
 Prompt hooks emit `{}` when no material memory exists. Otherwise they emit
 `hookSpecificOutput.additionalContext`, plus the same `context`, `query_id`,
 and visibility fields for OpenCode and diagnostics. A prompt the hook itself

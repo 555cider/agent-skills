@@ -117,6 +117,8 @@ nothing is not logged, so its `query_id` has no feedback targets.
   reviewer should be shown so one question resolves the whole adoption. Its
   `skipped` list merges converter drops (`unsafe`, `unknown-project`) with the
   import's own, so a `--dry-run` reports the same outcome the real run produces.
+  With `--replace` it also carries `retracted` (`id`, `statement`, `path`): the
+  earlier adopted records this run retracted, or would retract under `--dry-run`.
 - `review approve ID`: the approved record as `review show` prints it;
   `review reject ID`: `{"removed": [ID]}`.
 - `review approve --batch` / `reject --batch`: `batch`, `decision`, `count`, and

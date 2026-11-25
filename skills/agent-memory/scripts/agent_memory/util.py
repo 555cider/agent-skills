@@ -165,8 +165,63 @@ HARNESS_MESSAGE_RE = re.compile(
 )
 
 
+# Host-written blocks that can sit inside a prompt next to what the user typed.
+HARNESS_BLOCK_RE = re.compile(
+    r"(?s)<(task-notification|agent-message|system-reminder|local-command-[\w-]+)\b[^>]*>.*?</\1\s*>"
+)
+# Claude Code wraps pasted text as `<pasted_content id="…">…</pasted_content id="…">`;
+# a paste cut short by the host has no closing tag and runs to the end.
+PASTED_RE = re.compile(r"(?s)<pasted_content\s+id=[^>]*>.*?(?:</pasted_content\b[^>]*>|\Z)")
+# `/name args` as typed, and the expanded form a host may deliver instead.
+SLASH_COMMAND_RE = re.compile(r"(?s)^\s*(/[\w:-]+)(?=\s|$)(.*)$")
+COMMAND_TAG_RE = re.compile(r"(?s)<command-(name|message|args)>(.*?)</command-\1>")
+
+
 def is_harness_message(prompt: str) -> bool:
-    return HARNESS_MESSAGE_RE.match(prompt) is not None
+    """True when nothing in the prompt was written by the user."""
+
+    if HARNESS_MESSAGE_RE.match(prompt) is None:
+        return False
+    # A leading block the host closed may be followed by the user's own words;
+    # one it did not close (or a `[SYSTEM NOTIFICATION` line) is host text throughout.
+    if HARNESS_BLOCK_RE.match(prompt.lstrip()) is None:
+        return True
+    return not HARNESS_BLOCK_RE.sub("", prompt).strip()
+
+
+def user_text(prompt: str) -> str:
+    """The prompt without host-written blocks; "" when only the host wrote it."""
+
+    if is_harness_message(prompt):
+        return ""
+    return HARNESS_BLOCK_RE.sub("", prompt).strip()
+
+
+def slash_command(prompt: str) -> tuple[bool, str]:
+    """(is a slash command, its arguments) for `/name args` and `<command-name>` prompts."""
+
+    tags = {name: value.strip() for name, value in COMMAND_TAG_RE.findall(prompt)}
+    if "name" in tags:
+        return True, tags.get("args", "")
+    match = SLASH_COMMAND_RE.match(prompt)
+    # `/tmp is full` names a directory, not a command.
+    if match and not os.path.exists(match.group(1)):
+        return True, match.group(2).strip()
+    return False, ""
+
+
+def recall_query(prompt: str) -> str:
+    """What recall searches for: the user's own words, "" when there are none.
+
+    Notifications and subagent reports are host text, a paste is material to
+    work on rather than the request, and a slash command's name is the command
+    the user already chose: recalling on it only returns memories about that
+    command. Its arguments are the request.
+    """
+
+    text = PASTED_RE.sub(" ", user_text(prompt)).strip()
+    command, arguments = slash_command(text)
+    return arguments if command else text
 
 
 def normalize_text(value: str) -> str:

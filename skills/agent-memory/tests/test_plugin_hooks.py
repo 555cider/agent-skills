@@ -16,11 +16,16 @@ from agent_memory.integration import integrate
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = SKILL_ROOT.parents[1]
-# (hooks.json, plugin root it is loaded from)
+# (hooks file, plugin root it is loaded from, the host that loads it). Codex
+# reads the file `.codex-plugin/plugin.json` names and Claude Code
+# `hooks/hooks.json`, so each file names its host instead of guessing it.
 PLUGIN_HOOK_FILES = (
-    (REPO_ROOT / "hooks" / "hooks.json", REPO_ROOT),
-    (SKILL_ROOT / "hooks" / "hooks.json", SKILL_ROOT),
+    (REPO_ROOT / "hooks" / "hooks.json", REPO_ROOT, "claude"),
+    (SKILL_ROOT / "hooks" / "hooks.json", SKILL_ROOT, "claude"),
+    (REPO_ROOT / "hooks" / "hooks.codex.json", REPO_ROOT, "codex"),
+    (SKILL_ROOT / "hooks" / "hooks.codex.json", SKILL_ROOT, "codex"),
 )
+CLAUDE_UUID = "6ad0f31a-9dbe-4291-9a5f-9ccea4690da6"
 needs_bash = pytest.mark.skipif(
     sys.platform == "win32" or shutil.which("bash") is None, reason="POSIX bash launcher"
 )
@@ -34,6 +39,24 @@ needs_bash = pytest.mark.skipif(
         ({"transcript_path": "/srv/codex-home/sessions/x.jsonl"}, {"CODEX_HOME": "/srv/codex-home"}, "codex"),
         ({"turn_id": "t1"}, {}, "codex"),
         ({}, {}, "claude"),
+        # One profile folder serving as both CLAUDE_CONFIG_DIR and CODEX_HOME:
+        # the transcript's own layout names the host, not the folder it is in.
+        (
+            {"transcript_path": f"C:\p\projects\C--opt-repo\{CLAUDE_UUID}.jsonl"},
+            {"CODEX_HOME": "C:\p"},
+            "claude",
+        ),
+        (
+            {"transcript_path": f"/p/projects/-srv-repo/{CLAUDE_UUID}/subagents/agent-a1.jsonl"},
+            {"CODEX_HOME": "/p"},
+            "claude",
+        ),
+        (
+            {"transcript_path": "/p/sessions/2026/11/24/rollout-2026-11-24T13-14-12-01a2.jsonl"},
+            {"CODEX_HOME": "/p"},
+            "codex",
+        ),
+        ({"prompt": "<task-notification><tool-use-id>toolu_01X</tool-use-id></task-notification>"}, {}, "claude"),
     ],
 )
 def test_detect_hook_harness_reads_the_payload(monkeypatch, payload, env, expected):
@@ -144,8 +167,8 @@ def test_plugin_integrate_refuses_the_opencode_adapter(tmp_path, monkeypatch):
         )
 
 
-@pytest.mark.parametrize(("hooks_file", "plugin_root"), PLUGIN_HOOK_FILES)
-def test_plugin_hooks_file_targets_the_shipped_launcher(hooks_file, plugin_root):
+@pytest.mark.parametrize(("hooks_file", "plugin_root", "host"), PLUGIN_HOOK_FILES)
+def test_plugin_hooks_file_targets_the_shipped_launcher(hooks_file, plugin_root, host):
     data = json.loads(hooks_file.read_text(encoding="utf-8"))
     events = {
         name: entry["hooks"][0]["command"]
@@ -155,9 +178,22 @@ def test_plugin_hooks_file_targets_the_shipped_launcher(hooks_file, plugin_root)
 
     assert set(events) == {"UserPromptSubmit", "Stop", "SessionEnd"}
     for command in events.values():
-        assert "--harness auto" in command
-        relative = command.split("}", 2)[2].split('"', 1)[0]
+        assert f"--harness {host} " in command
+        relative = command.split('"')[1].rsplit("}", 1)[1]
         assert (plugin_root / relative.lstrip("/")).resolve() == SKILL_ROOT / "bin" / "agent-memory"
+    # Codex substitutes `${PLUGIN_ROOT}` into the text and runs it through
+    # PowerShell on Windows, where a shell default (`${A:-${B}}`) is a variable
+    # name and comes out empty.
+    if host == "codex":
+        assert all('"${PLUGIN_ROOT}/' in command for command in events.values())
+
+
+@pytest.mark.parametrize("plugin_root", [REPO_ROOT, SKILL_ROOT])
+def test_codex_manifest_points_at_the_codex_hooks(plugin_root):
+    manifest = json.loads((plugin_root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+
+    assert manifest["hooks"] == "./hooks/hooks.codex.json"
+    assert (plugin_root / "hooks" / "hooks.codex.json").is_file()
 
 
 def _run_hook(command: str, env: dict[str, str], payload: dict) -> subprocess.CompletedProcess:
@@ -174,10 +210,12 @@ def _run_hook(command: str, env: dict[str, str], payload: dict) -> subprocess.Co
 
 @needs_bash
 @pytest.mark.parametrize("variable", ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"])
-@pytest.mark.parametrize(("hooks_file", "plugin_root"), PLUGIN_HOOK_FILES)
+@pytest.mark.parametrize(("hooks_file", "plugin_root", "host"), PLUGIN_HOOK_FILES)
 def test_plugin_prompt_hook_runs_under_either_host_variable(
-    tmp_path, hooks_file, plugin_root, variable
+    tmp_path, hooks_file, plugin_root, host, variable
 ):
+    if host == "codex" and variable != "PLUGIN_ROOT":
+        pytest.skip("Codex sets PLUGIN_ROOT")
     command = json.loads(hooks_file.read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"][0][
         "hooks"
     ][0]["command"]
@@ -210,7 +248,8 @@ def test_plugin_prompt_hook_runs_under_either_host_variable(
         rows = db.execute("SELECT harness, kind FROM events").fetchall()
     finally:
         db.close()
-    assert rows == [("codex", "user_prompt")]
+    # The transcript sits under `.codex`, yet the file's own host wins.
+    assert rows == [(host, "user_prompt")]
 
 
 def _copy_launcher(directory: Path) -> Path:
@@ -391,3 +430,33 @@ def test_checkout_launcher_still_prefers_the_install_sh_copy(tmp_path):
     )
 
     assert result.returncode == 7
+
+
+def _git_bash() -> str | None:
+    git = shutil.which("git")
+    if not git:
+        return None
+    roots = Path(git).parents[1:3]
+    for candidate in (root / sub / "bash.exe" for root in roots for sub in ("bin", "usr/bin")):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+@pytest.mark.skipif(sys.platform != "win32" or _git_bash() is None, reason="Git Bash on Windows")
+def test_launcher_hands_windows_python_a_windows_path_under_msys_no_pathconv(tmp_path):
+    # MSYS_NO_PATHCONV=1 stops Git Bash from rewriting `/c/...` arguments, so a
+    # Windows python was handed `/c/opt/...` and opened `C:\c\opt\...`.
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    (shim / "python3").write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$@"\n', newline="\n")
+    env = dict(os.environ)
+    env.update({"HOME": str(tmp_path / "home"), "MSYS_NO_PATHCONV": "1"})
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    env.pop("CODEX_HOME", None)
+    script = f'export PATH="$(cygpath -u "{shim}"):$PATH"; exec bash "$(cygpath -u "{SKILL_ROOT / "bin" / "agent-memory"}")" --version'
+
+    result = subprocess.run([_git_bash(), "-c", script], text=True, capture_output=True, env=env, timeout=60)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip()

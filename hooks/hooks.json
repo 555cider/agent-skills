@@ -1,12 +1,12 @@
 {
-  "description": "agent-memory recall and capture; Claude Code and Codex both load this file",
+  "description": "agent-memory recall and capture for Claude Code; Codex reads hooks.codex.json",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/skills/agent-memory/bin/agent-memory\" hook --harness auto --event user_prompt",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/skills/agent-memory/bin/agent-memory\" hook --harness claude --event user_prompt",
             "timeout": 10,
             "statusMessage": "Agent Memory user_prompt"
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/skills/agent-memory/bin/agent-memory\" hook --harness auto --event assistant_stop",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/skills/agent-memory/bin/agent-memory\" hook --harness claude --event assistant_stop",
             "timeout": 15,
             "statusMessage": "Agent Memory assistant_stop"
           }
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/skills/agent-memory/bin/agent-memory\" hook --harness auto --event session_end",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/skills/agent-memory/bin/agent-memory\" hook --harness claude --event session_end",
             "timeout": 3,
             "statusMessage": "Agent Memory session_end"
           }

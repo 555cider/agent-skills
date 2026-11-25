@@ -188,8 +188,9 @@ that directory's root. The bundle is the repository root itself, described by
 auto-loaded.
 
 Codex 0.166+ installs plugins from this same marketplace into
-`~/.codex/plugins/cache/` and loads their `hooks/hooks.json`, so the plugin also
-works there (agent-memory's hooks need a one-time trust in the Codex TUI). Other
+`~/.codex/plugins/cache/`, so the plugin also works there (agent-memory's hooks
+need a one-time trust in the Codex TUI). Codex reads `.codex-plugin/plugin.json`,
+which points it at `hooks/hooks.codex.json`; Claude Code reads `hooks/hooks.json`. Other
 harnesses use `install.sh` below.
 
 ### install.sh — every harness
@@ -271,7 +272,7 @@ skills it changed plus any whose split branch does not match `skills/<name>`
 Maintainers edit only `main` in this monorepo — the split branches are derived
 artifacts and must never be committed to directly. The same workflow runs on
 pull requests too: the validators (skill packages, evals, plugin manifests and
-`hooks/hooks.json`) and the remaining skills' `tests/run.sh` on Ubuntu, plus
+plugin hooks files) and the remaining skills' `tests/run.sh` on Ubuntu, plus
 `tests/install.sh` and the worktree-cycle, step-back, shrink-test-input,
 peer-review and agent-memory suites on Ubuntu, macOS (`/bin/bash` 3.2) and
 Windows (Git Bash).
@@ -353,7 +354,8 @@ is still unpublished.
    skill up on its own (it serves the repository root), but the individual
    plugin does not exist until the entry does. Bump that `version` when the
    skill's behavior changes, in the same commit, and bump the bundle's
-   `.claude-plugin/plugin.json` with it. It is what `claude plugin list` shows and
+   `.claude-plugin/plugin.json` with it, and the matching `.codex-plugin/plugin.json`
+   where one exists. It is what `claude plugin list` shows and
    what `claude plugin tag` releases against, and an installed copy is not
    refreshed until the version changes: a commit without a bump never reaches
    installs.

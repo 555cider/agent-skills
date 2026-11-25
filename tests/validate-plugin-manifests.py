@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the Claude Code marketplace, bundle-plugin manifests and plugin hooks.
+"""Validate the Claude Code marketplace, bundle-plugin and Codex manifests and plugin hooks.
 
 The plugin channel is a second delivery surface for the same skills/<name>/
 directories that install.sh ships. Nothing inside skills/ knows about it: the
@@ -235,33 +235,70 @@ def validate_hooks_file(path: Path, plugin_root: Path) -> list[tuple[str, str, o
 
 
 def validate_hooks(skills: list[str]) -> int:
-    """Validate the bundle's hooks/hooks.json and each skill's own copy.
+    """Validate the bundle's hooks files and each skill's own copies.
 
     The bundle plugin is served from the repository root and the per-skill
     plugin from skills/<name>, so one skill's hooks exist twice with different
-    paths. They must stay the same hooks apart from that prefix.
+    paths. They must stay the same hooks apart from that prefix. Claude Code
+    reads hooks/hooks.json and Codex the hooks.codex.json its manifest names.
     """
     count = 0
-    bundle_file = ROOT / "hooks" / "hooks.json"
-    bundle = validate_hooks_file(bundle_file, ROOT) if bundle_file.is_file() else []
-    count += bool(bundle)
-    for name in skills:
-        skill_file = SKILLS / name / "hooks" / "hooks.json"
-        prefix = "}/skills/" + name + "/"
-        bundled = [(e, c.replace(prefix, "}/"), t) for e, c, t in bundle if prefix in c]
-        if not skill_file.is_file():
+    for file_name in ("hooks.json", "hooks.codex.json"):
+        bundle_file = ROOT / "hooks" / file_name
+        bundle = validate_hooks_file(bundle_file, ROOT) if bundle_file.is_file() else []
+        count += bool(bundle)
+        for name in skills:
+            skill_file = SKILLS / name / "hooks" / file_name
+            prefix = "}/skills/" + name + "/"
+            bundled = [(e, c.replace(prefix, "}/"), t) for e, c, t in bundle if prefix in c]
+            if not skill_file.is_file():
+                require(
+                    not bundled,
+                    f"hooks/{file_name} runs skills/{name} but skills/{name}/hooks/{file_name} is missing; "
+                    "the per-skill plugin would ship without its hooks",
+                )
+                continue
+            own = validate_hooks_file(skill_file, SKILLS / name)
+            count += 1
             require(
-                not bundled,
-                f"hooks/hooks.json runs skills/{name} but skills/{name}/hooks/hooks.json is missing; "
-                "the per-skill plugin would ship without its hooks",
+                sorted(own, key=repr) == sorted(bundled, key=repr),
+                f"skills/{name}/hooks/{file_name} and the skills/{name} entries in hooks/{file_name} disagree",
             )
+    return count
+
+
+def validate_codex_manifests(skills: list[str]) -> int:
+    """`.codex-plugin/plugin.json` beside a Claude manifest must describe the same plugin.
+
+    Codex reads it instead of `.claude-plugin/plugin.json`; it exists to point
+    Codex at hooks.codex.json, so the name and version have to follow the
+    Claude side and its hooks file has to exist.
+    """
+    market = {entry["name"]: entry for entry in load_json(MARKETPLACE)["plugins"]}
+    bundle = load_json(PLUGIN)
+    count = 0
+    for root, name, version in (
+        (ROOT, BUNDLE, bundle.get("version")),
+        *((SKILLS / skill, skill, market.get(skill, {}).get("version")) for skill in skills),
+    ):
+        path = root / ".codex-plugin" / "plugin.json"
+        if not path.is_file():
             continue
-        own = validate_hooks_file(skill_file, SKILLS / name)
-        count += 1
+        rel = path.relative_to(ROOT).as_posix()
+        data = load_json(path)
+        require(isinstance(data, dict), f"{rel} must be a JSON object")
+        require(data.get("name") == name, f"{rel}.name must be {name!r}")
         require(
-            sorted(own, key=repr) == sorted(bundled, key=repr),
-            f"skills/{name}/hooks/hooks.json and the skills/{name} entries in hooks/hooks.json disagree",
+            data.get("version") == version,
+            f"{rel}.version {data.get('version')!r} must match the Claude manifest's {version!r}",
         )
+        hooks = data.get("hooks")
+        if hooks is not None:
+            require(
+                isinstance(hooks, str) and hooks.startswith("./") and (root / hooks).is_file(),
+                f"{rel}.hooks must be a ./ path to a file inside the plugin",
+            )
+        count += 1
     return count
 
 
@@ -270,9 +307,10 @@ def main() -> int:
     validate_bundle_plugin(skills)
     count = validate_marketplace(skills)
     hook_files = validate_hooks(skills)
+    codex = validate_codex_manifests(skills)
     print(
         f"OK plugin manifests ({count} marketplace entries, {len(skills)} skills, "
-        f"{hook_files} hooks files)"
+        f"{hook_files} hooks files, {codex} Codex manifests)"
     )
     return 0
 

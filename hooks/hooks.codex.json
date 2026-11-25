@@ -1,0 +1,41 @@
+{
+  "description": "agent-memory recall and capture for Codex, named by .codex-plugin/plugin.json",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/skills/agent-memory/bin/agent-memory\" hook --harness codex --event user_prompt",
+            "timeout": 10,
+            "statusMessage": "Agent Memory user_prompt"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/skills/agent-memory/bin/agent-memory\" hook --harness codex --event assistant_stop",
+            "timeout": 15,
+            "statusMessage": "Agent Memory assistant_stop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/skills/agent-memory/bin/agent-memory\" hook --harness codex --event session_end",
+            "timeout": 3,
+            "statusMessage": "Agent Memory session_end"
+          }
+        ]
+      }
+    ]
+  }
+}

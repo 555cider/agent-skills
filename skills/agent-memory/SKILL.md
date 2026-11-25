@@ -34,8 +34,12 @@ contents, or raw tool output. Do not convert a repository into memory records.
 
 With hooks installed (plugin or `integrate --mode primary`) the prompt hook
 already recalled: use its `<agent-memory …>` packet, and read no packet as
-nothing relevant. Run `recall` yourself only without hooks, or later with a
-different, narrower query; pass your harness so `harness=` conditions match:
+nothing relevant. The hook searches only the user's own words: pasted text and
+host notifications are left out, and a slash command contributes only its
+arguments, so a bare `/command` or a paste-only prompt gets no packet. Run
+`recall` yourself without hooks, for such a prompt once the task is clear, or
+later with a different, narrower query; pass your harness so `harness=`
+conditions match:
 
 ```bash
 agent-memory recall --cwd "$PWD" --harness <claude|codex|opencode> --prompt "<request>" --format json
@@ -112,7 +116,10 @@ the grouped table, and resolve accepted groups by `--batch`, never one by one.
   (never part of a plain `adopt`) reads `projects/*/memory/*.md` under `~/.claude` and `$CLAUDE_CONFIG_DIR`;
   add `--claude-config-dir <dir>` per other profile. Re-running it is the sync:
   unchanged facts merge, new or edited ones queue for review. An edited file
-  adds a record and leaves the old one; `forget` it if it now misleads.
+  adds a record and leaves the old one; add `--replace` (preview with
+  `--dry-run`) to retract what the files no longer produce. Claude sessions do
+  not get these records back from recall for the project they came from, since
+  Claude Code already loads that folder.
 - **Another machine or a backup.** `export --scope all > memory.json`, then
   `import --trust memory.json` on the other side for your own export. Without
   `--trust` (someone else's file) everything lands in the review queue. Import
