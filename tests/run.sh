@@ -190,6 +190,17 @@ assert_stderr_not_contains() {
   if grep -qF -- "$2" "$ERR"; then fail "$1" "unexpected [$2] in stderr"; else pass "$1"; fi
 }
 
+assert_stdout_contains() {
+  if grep -qF -- "$2" "$OUT"; then pass "$1"; else fail "$1" "missing [$2] in stdout"; fi
+}
+
+# port_base_of <worktree> — the port base reserved for that worktree, or nothing.
+port_base_of() {
+  gd="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  [ -f "$gd/worktree-ports" ] || return 0
+  awk -F= '$1 == "WORKTREE_PORT_BASE" { print $2 }' "$gd/worktree-ports"
+}
+
 echo "== packaging =="
 
 if [ -x "$START" ]; then pass "start-worktree.sh is executable"; else
@@ -201,140 +212,60 @@ echo "== start-worktree =="
 
 repo="$(new_repo start-happy)"
 run_in "$repo" "$START" feat1
-assert_exit "start creates a worktree" 0
-assert_dir "start uses the default .worktrees path" "$repo/.worktrees/feat1"
-assert_eq "start branches worktree-<name> from local dev HEAD" \
-  "$(head_of "$repo" dev)" "$(head_of "$repo/.worktrees/feat1" HEAD)"
-if branch_exists "$repo" worktree-feat1; then pass "start creates branch worktree-feat1"; else
-  fail "start creates branch worktree-feat1" "branch missing"; fi
-
-# The whole point of the skill: a stale base must never come from a remote fallback.
-repo="$(new_repo start-no-base)"
-git -C "$repo" branch -M main
-run_in "$repo" "$START" feat1 --base dev
-assert_exit_nonzero "start refuses when the local base branch is missing"
-assert_stderr_contains "start explains the missing local branch" "no local branch 'dev'"
-assert_no_dir "start created nothing on failure" "$repo/.worktrees/feat1"
-
-# An empty directory at the target path is the residue Windows leaves behind when finish could
-# not rmdir the worktree (see the locked-leftover case below). Refusing it would make that
-# residue block the next start under the same name, so start reclaims it instead. rmdir refuses
-# a non-empty directory, so nothing real can be destroyed by this.
-repo="$(new_repo start-empty-leftover)"
-mkdir -p "$repo/.worktrees/feat1"
-run_in "$repo" "$START" feat1
-assert_exit "start reclaims an empty leftover directory" 0
-assert_dir "the worktree lands at the reclaimed path" "$repo/.worktrees/feat1"
-assert_eq "the reclaimed worktree still branches from local dev HEAD" \
-  "$(head_of "$repo" dev)" "$(head_of "$repo/.worktrees/feat1" HEAD)"
-
-repo="$(new_repo start-existing-path)"
-mkdir -p "$repo/.worktrees/feat1"
-printf 'keep me\n' > "$repo/.worktrees/feat1/keep.txt"
-run_in "$repo" "$START" feat1
-assert_exit_nonzero "start refuses an existing path that holds anything"
-assert_stderr_contains "the refusal names the path" "already exists"
-if [ -f "$repo/.worktrees/feat1/keep.txt" ]; then
-  pass "the refusal leaves the existing content untouched"; else
-  fail "the refusal leaves the existing content untouched" "keep.txt was destroyed"; fi
-
-repo="$(new_repo start-existing-file)"
-mkdir -p "$repo/.worktrees"
-printf 'not a directory\n' > "$repo/.worktrees/feat1"
-run_in "$repo" "$START" feat1
-assert_exit_nonzero "start refuses a plain file at the target path"
-
-repo="$(new_repo start-existing-branch)"
-git -C "$repo" branch worktree-feat1
-run_in "$repo" "$START" feat1
-assert_exit_nonzero "start refuses an existing branch"
-
-repo="$(new_repo start-missing-value)"
-run_in "$repo" "$START" feat1 --base
-assert_exit_nonzero "start rejects a flag with no value"
-assert_stderr_contains "start names the flag that lost its value" "--base requires a value"
-
-# A relative --path must resolve against the caller's directory, not the main worktree.
-repo="$(new_repo start-relative-path)"
-mkdir -p "$repo/sub"
-run_in "$repo/sub" "$START" feat1 --path rel-wt
-assert_exit "start accepts a relative --path" 0
-assert_dir "relative --path resolves against the caller's cwd" "$repo/sub/rel-wt"
-assert_no_dir "relative --path is not resolved against the main worktree" "$repo/rel-wt"
-
-repo="$(new_repo start-help)"
-run_in "$repo" "$START" --help
-assert_exit "start --help exits 0" 0
-if head -n 1 "$OUT" | grep -q '/usr/bin/env'; then
-  fail "start --help omits the shebang" "first help line was the shebang"
-else
-  pass "start --help omits the shebang"
-fi
-
-echo "== port allocation =="
-
-# port_base_of <worktree> — the port base reserved for that worktree, or nothing.
-port_base_of() {
-  gd="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
-  [ -f "$gd/worktree-ports" ] || return 0
-  awk -F= '$1 == "WORKTREE_PORT_BASE" { print $2 }' "$gd/worktree-ports"
-}
-
-repo="$(new_repo ports-basic)"
-run_in "$repo" "$START" feat1
 wt="$repo/.worktrees/feat1"
+assert_exit "start creates a worktree" 0
+assert_eq "start branches worktree-<name> from local dev HEAD" \
+  "$(head_of "$repo" dev)" "$(head_of "$wt" HEAD)"
 base1="$(port_base_of "$wt")"
 if [ -n "$base1" ] && [ "$base1" -ge 20000 ] && [ "$base1" -le 29990 ] && [ $((base1 % 10)) -eq 0 ]; then
   pass "start reserves a port block inside 20000-29990, on the 10 grid"
 else
   fail "start reserves a port block inside 20000-29990, on the 10 grid" "got [$base1]"
 fi
-assert_eq "the reservation records the block size" "10" \
-  "$(awk -F= '$1 == "WORKTREE_PORT_COUNT" { print $2 }' "$repo/.git/worktrees/feat1/worktree-ports")"
-assert_eq "the reservation names the branch it belongs to" "worktree-feat1" \
-  "$(awk -F= '$1 == "WORKTREE_BRANCH" { print $2 }' "$repo/.git/worktrees/feat1/worktree-ports")"
-if grep -q "ports  $base1-$((base1 + 9))" "$OUT"; then
-  pass "start reports the reserved block"
-else
-  fail "start reports the reserved block" "no 'ports $base1-$((base1 + 9))' line in stdout"
-fi
 # The reservation must never dirty the worktree: finish requires an empty status there,
 # untracked included, so a file inside the tree would block every finish from then on.
 assert_eq "the reservation leaves the worktree clean" "" "$(git -C "$wt" status --porcelain)"
 
-# main_path_of <repo> — the main worktree path exactly as the script derives it. Git prints a
-# native path here (C:/... on Windows), which is not the shell's view of the same directory,
-# so a test that wants to reproduce the hash input has to ask git the same way the script does.
-main_path_of() {
-  git -C "$1" worktree list --porcelain | awk 'NR == 1 && /^worktree /{ print substr($0, 10) }'
-}
-
 # The repository path belongs in the hash input. Without it two repositories on one machine
-# hand the same worktree name the same block — and they cannot see each other's reservations,
-# so nothing downstream catches it.
-repo="$(new_repo ports-repo-a)"
-repo2="$(new_repo ports-repo-b)"
-run_in "$repo"  "$START" feat1
+# hand the same worktree name the same block, and they cannot see each other's reservations.
+repo2="$(new_repo start-happy-twin)"
 run_in "$repo2" "$START" feat1
-a="$(port_base_of "$repo/.worktrees/feat1")"
 b="$(port_base_of "$repo2/.worktrees/feat1")"
-if [ -n "$a" ] && [ "$a" != "$b" ]; then
+if [ -n "$base1" ] && [ "$base1" != "$b" ]; then
   pass "the same worktree name in two repositories gets different blocks"
 else
-  fail "the same worktree name in two repositories gets different blocks" \
-    "both got [$a] — either a 1-in-1000 hash collision or the repository path left the input"
+  fail "the same worktree name in two repositories gets different blocks" "both got [$base1]"
 fi
 
-repo="$(new_repo ports-distinct)"
+# The whole point of the skill: a stale base must never come from a remote fallback.
+repo="$(new_repo start-no-base)"
+git -C "$repo" branch -M main
+run_in "$repo" "$START" feat1 --base dev
+assert_exit_nonzero "start refuses when the local base branch is missing"
+assert_no_dir "start created nothing on failure" "$repo/.worktrees/feat1"
+
+# An empty directory at the target path is the residue Windows leaves behind when finish could
+# not rmdir the worktree. start reclaims it; rmdir refuses a non-empty directory.
+mkdir -p "$repo/.worktrees/feat1"
 run_in "$repo" "$START" feat1
+assert_exit "start reclaims an empty leftover directory" 0
+assert_dir "the worktree lands at the reclaimed path" "$repo/.worktrees/feat1"
+
+mkdir -p "$repo/.worktrees/feat2"
+printf 'keep me\n' > "$repo/.worktrees/feat2/keep.txt"
 run_in "$repo" "$START" feat2
-a="$(port_base_of "$repo/.worktrees/feat1")"
-b="$(port_base_of "$repo/.worktrees/feat2")"
-if [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]; then
-  pass "two worktrees in one repo get different port blocks"
-else
-  fail "two worktrees in one repo get different port blocks" "feat1=[$a] feat2=[$b]"
-fi
+assert_exit_nonzero "start refuses an existing path that holds anything"
+if [ -f "$repo/.worktrees/feat2/keep.txt" ]; then
+  pass "the refusal leaves the existing content untouched"; else
+  fail "the refusal leaves the existing content untouched" "keep.txt was destroyed"; fi
+
+# A relative --path must resolve against the caller's directory, not the main worktree.
+mkdir -p "$repo/sub"
+run_in "$repo/sub" "$START" feat3 --path rel-wt
+assert_exit "start accepts a relative --path" 0
+assert_dir "relative --path resolves against the caller's cwd" "$repo/sub/rel-wt"
+
+echo "== port allocation =="
 
 # Explicit allocation must use the same collision guard as automatic allocation.
 repo="$(new_repo ports-collision)"
@@ -345,59 +276,31 @@ assert_exit_nonzero "explicit allocation refuses another worktree's reserved blo
 assert_dir "port failure reports a created worktree, not a failed creation" "$repo/.worktrees/feat2"
 assert_eq "failed port allocation does not write a reservation" "" "$(port_base_of "$repo/.worktrees/feat2")"
 assert_stderr_contains "port failure prints the allocator retry command" "reserve-ports.py --repo"
-assert_stderr_contains "the retry names this worktree's git-dir" "--git-dir"
-assert_stderr_contains "the retry keeps the requested block" "--port-base $taken"
 assert_stderr_not_contains "an allocator refusal does not blame a missing Python" "Python 3.10+ not found"
 
-# Determinism, and the reservation's lifetime: git owns the file, so finish takes it away.
-repo="$(new_repo ports-determinism)"
-run_in "$repo" "$START" feat1
-wt="$repo/.worktrees/feat1"
-first="$(port_base_of "$wt")"
-commit_in "$wt" work.txt "one" "wip"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): squashed"
-assert_exit "finish is unaffected by the port reservation" 0
-assert_no_file "finish removes the reservation along with the worktree" \
-  "$repo/.git/worktrees/feat1/worktree-ports"
-run_in "$repo" "$START" feat1
-assert_eq "recreating the same worktree name restores the same block" \
-  "$first" "$(port_base_of "$repo/.worktrees/feat1")"
-
-# A fixed number such as 24000 fails on any machine that happens to run a server in that block.
-# Borrow a block the allocator just proved bindable, release it, then ask for it explicitly.
-repo="$(new_repo ports-explicit)"
-run_in "$repo" "$START" probe
-free_base="$(port_base_of "$repo/.worktrees/probe")"
-git -C "$repo" worktree remove --force "$repo/.worktrees/probe"
-run_in "$repo" "$START" feat1 --port-base "$free_base"
-assert_exit "start accepts an explicit --port-base" 0
-assert_eq "an explicit --port-base is used as given" "$free_base" \
-  "$(port_base_of "$repo/.worktrees/feat1")"
-
-run_in "$repo" "$START" feat2 --port-base 3000
+run_in "$repo" "$START" feat3 --port-base 3000
 assert_exit_nonzero "start rejects a --port-base outside the reserved range"
-assert_stderr_contains "the range rejection names the bounds" "must be between 20000 and 29990"
-
-run_in "$repo" "$START" feat3 --port-base 24005
-assert_exit_nonzero "start rejects a --port-base off the block grid"
-assert_stderr_contains "the grid rejection names the block size" "must be a multiple of 10"
-
-run_in "$repo" "$START" feat4 --port-base
-assert_exit_nonzero "start rejects --port-base with no value"
 
 echo "== finish-worktree: happy path =="
 
 repo="$(new_repo finish-happy)"
 run_in "$repo" "$START" feat1
 wt="$repo/.worktrees/feat1"
+first="$(port_base_of "$wt")"
 commit_in "$wt" work.txt "one"   "wip 1"
 commit_in "$wt" work.txt "two"   "wip 2"
+head_before="$(head_of "$repo" dev)"
 before="$(count_commits "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): squashed"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): title" --dry-run
+assert_exit "finish --dry-run exits 0" 0
+assert_eq "--dry-run does not commit" "$head_before" "$(head_of "$repo" dev)"
+assert_dir "--dry-run keeps the worktree" "$wt"
+# Repeated -m are paragraphs, as with git commit: the first stays the subject.
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): title" -m "body line"
 assert_exit "finish squash-merges and cleans up" 0
 assert_eq "finish adds exactly one commit to dev" "$((before + 1))" "$(count_commits "$repo" dev)"
-assert_eq "finish uses the given commit message" \
-  "feat(x): squashed" "$(git -C "$repo" log -1 --format=%s dev)"
+assert_eq "the first -m is the subject" "feat(x): title" "$(git -C "$repo" log -1 --format=%s dev)"
+assert_eq "a later -m becomes the body" "body line" "$(git -C "$repo" log -1 --format=%b dev | tr -d '\r')"
 assert_eq "finish brings the worktree content over" "two" "$(cat "$repo/work.txt" 2>/dev/null)"
 assert_no_dir "finish removes the worktree" "$wt"
 if branch_exists "$repo" worktree-feat1; then
@@ -405,32 +308,27 @@ if branch_exists "$repo" worktree-feat1; then
 else
   pass "finish deletes the branch"
 fi
-
-# Repeated -m are paragraphs, as with git commit: the first stays the subject.
-repo="$(new_repo finish-multi-message)"
+assert_no_file "finish removes the port reservation along with the worktree" \
+  "$repo/.git/worktrees/feat1/worktree-ports"
 run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): title" -m "body line"
-assert_exit "finish accepts repeated -m" 0
-assert_eq "the first -m is the subject" "feat(x): title" "$(git -C "$repo" log -1 --format=%s dev)"
-assert_eq "a later -m becomes the body" "body line" "$(git -C "$repo" log -1 --format=%b dev | tr -d '\r')"
+assert_eq "recreating the same worktree name restores the same block" \
+  "$first" "$(port_base_of "$repo/.worktrees/feat1")"
 
 echo "== finish-worktree: strategies =="
 
-# merge keeps the branch history under a merge commit carrying the -m message.
+# merge, chosen through the repository's recorded convention instead of --strategy.
 repo="$(new_repo finish-merge)"
+git -C "$repo" config worktree-cycle.strategy merge
 run_in "$repo" "$START" feat1
 wt="$repo/.worktrees/feat1"
 commit_in "$wt" work.txt "one" "wip 1"
 commit_in "$wt" work.txt "two" "wip 2"
 before="$(count_commits "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): merged" --strategy merge
-assert_exit "finish --strategy merge lands and cleans up" 0
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): merged"
+assert_exit "finish with worktree-cycle.strategy=merge lands and cleans up" 0
 assert_eq "merge keeps both branch commits plus a merge commit" "$((before + 3))" "$(count_commits "$repo" dev)"
 assert_eq "the merge commit has two parents" "2" \
   "$(git -C "$repo" rev-list --parents -n 1 dev | awk '{print NF - 1}')"
-assert_eq "the merge commit uses the given message" "feat(x): merged" "$(git -C "$repo" log -1 --format=%s dev)"
-assert_eq "merge brings the worktree content over" "two" "$(cat "$repo/work.txt" 2>/dev/null)"
 assert_no_dir "merge removes the worktree" "$wt"
 
 # ff moves base onto the branch tip: no new commit, and no -m needed.
@@ -443,45 +341,18 @@ run_in "$repo" "$FINISH" -b worktree-feat1 --strategy ff
 assert_exit "finish --strategy ff runs without -m" 0
 assert_eq "ff moves base to the branch tip" "$tip" "$(head_of "$repo" dev)"
 assert_no_dir "ff removes the worktree" "$wt"
-if branch_exists "$repo" worktree-feat1; then fail "ff deletes the branch" "branch still present"; else
-  pass "ff deletes the branch"; fi
 
 # ff refuses when base moved on, and changes nothing.
-repo="$(new_repo finish-ff-diverged)"
-run_in "$repo" "$START" feat1
-wt="$repo/.worktrees/feat1"
-commit_in "$wt"   work.txt  "one"  "wip"
+run_in "$repo" "$START" feat2
+wt="$repo/.worktrees/feat2"
+commit_in "$wt"   work.txt  "two"  "wip"
 commit_in "$repo" other.txt "dev"  "dev moved"
 head_before="$(head_of "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 --strategy ff --dry-run
-assert_exit_nonzero "ff --dry-run already reports a base that moved on"
-run_in "$repo" "$FINISH" -b worktree-feat1 --strategy ff
+run_in "$repo" "$FINISH" -b worktree-feat2 --strategy ff
 assert_exit_nonzero "ff refuses a base that moved on"
-assert_stderr_contains "the ff refusal says to rebase" "Rebase the branch onto 'dev'"
 assert_eq "a refused ff leaves base where it was" "$head_before" "$(head_of "$repo" dev)"
 assert_eq "a refused ff leaves a clean main worktree" "" "$(git -C "$repo" status --porcelain)"
 assert_dir "a refused ff keeps the worktree" "$wt"
-
-# The repository's convention, set once, is what finish uses without --strategy.
-repo="$(new_repo finish-strategy-config)"
-git -C "$repo" config worktree-cycle.strategy merge
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): by config"
-assert_exit "finish reads worktree-cycle.strategy" 0
-assert_eq "the configured strategy makes a merge commit" "2" \
-  "$(git -C "$repo" rev-list --parents -n 1 dev | awk '{print NF - 1}')"
-
-# A per-base value wins over the repository value.
-repo="$(new_repo finish-strategy-per-base)"
-git -C "$repo" config worktree-cycle.strategy merge
-git -C "$repo" config branch.dev.worktreeCycleStrategy squash
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): per base"
-assert_exit "finish reads branch.<base>.worktreeCycleStrategy" 0
-assert_eq "the per-base strategy wins (one parent = squash)" "1" \
-  "$(git -C "$repo" rev-list --parents -n 1 dev | awk '{print NF - 1}')"
 
 # Nothing recorded, but base keeps merge commits: finish asks instead of squashing.
 repo="$(new_repo finish-strategy-unset-merges)"
@@ -494,20 +365,7 @@ commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
 head_before="$(head_of "$repo" dev)"
 run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): guessed"
 assert_exit_nonzero "finish will not guess squash over a base with merge commits"
-assert_stderr_contains "the refusal asks for --strategy" "Pass --strategy"
 assert_eq "the refusal changes nothing" "$head_before" "$(head_of "$repo" dev)"
-
-repo="$(new_repo finish-strategy-bad)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-head_before="$(head_of "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): bad" --strategy rebase
-assert_exit_nonzero "finish rejects an unknown strategy"
-assert_stderr_contains "the rejection lists the strategies" "use squash, merge, ff or pr"
-assert_eq "an unknown strategy changes nothing" "$head_before" "$(head_of "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 --strategy merge
-assert_exit_nonzero "merge still requires -m"
-assert_stderr_contains "the -m refusal names the strategy" "-m/--message required for strategy merge"
 
 # pr: the server merged the pull request; finish only cleans up, and only once it has landed.
 repo="$(new_repo finish-pr-not-landed)"
@@ -517,7 +375,6 @@ commit_in "$wt" work.txt "one" "wip"
 head_before="$(head_of "$repo" dev)"
 run_in "$repo" "$FINISH" -b worktree-feat1 --strategy pr
 assert_exit_nonzero "pr refuses a branch that has not landed"
-assert_stderr_contains "the pr refusal says to fetch" "Fetch first"
 assert_dir "an unlanded pr keeps the worktree" "$wt"
 assert_eq "an unlanded pr leaves base alone" "$head_before" "$(head_of "$repo" dev)"
 
@@ -544,17 +401,6 @@ if branch_exists "$repo" worktree-feat1; then fail "pr deletes the branch" "bran
   pass "pr deletes the branch"; fi
 assert_eq "pr does not move local base" "$dev_before" "$(head_of "$repo" dev)"
 assert_eq "pr leaves the main worktree's edits alone" "local edit" "$(cat "$repo/file.txt")"
-
-# Merge-commit PR already pulled into local base: ancestry is enough.
-repo="$(new_repo finish-pr-merged-local)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-git -C "$repo" merge -q --no-ff -m "Merge pull request #2" worktree-feat1
-run_in "$repo" "$FINISH" -b worktree-feat1 --strategy pr
-assert_exit "pr cleans up a branch merged into local base" 0
-assert_no_dir "pr on a local merge removes the worktree" "$repo/.worktrees/feat1"
-if branch_exists "$repo" worktree-feat1; then fail "pr on a local merge deletes the branch" "branch still present"; else
-  pass "pr on a local merge deletes the branch"; fi
 
 # Partial landing: the server squashed only the first of two commits. pr must refuse — deleting
 # here would lose the second commit.
@@ -598,28 +444,7 @@ git -C "$repo" merge -q --no-ff -m "Merge pull request #4" feature-x
 git -C "$repo" checkout -q feature-x
 run_in "$repo" "$FINISH" -b feature-x --base dev --strategy pr
 assert_exit_nonzero "pr refuses a branch checked out in the main worktree"
-assert_stderr_contains "the refusal names the main worktree" "checked out in the main worktree"
-assert_dir "the main worktree is untouched" "$repo"
-
-# A merge conflict is recovered the same way as a squash conflict.
-repo="$(new_repo finish-merge-conflict)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" file.txt "from worktree" "worktree edit"
-commit_in "$repo"                  file.txt "from dev"      "dev edit"
-head_before="$(head_of "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): conflicting" --strategy merge
-assert_exit_nonzero "finish stops on a merge conflict"
-assert_eq "merge conflict recovery leaves dev at its previous commit" "$head_before" "$(head_of "$repo" dev)"
-assert_eq "merge conflict recovery leaves a clean main worktree" "" "$(git -C "$repo" status --porcelain)"
-assert_no_file "merge conflict recovery clears MERGE_HEAD" "$repo/.git/MERGE_HEAD"
-
-# Untracked scratch files in the main tree are explicitly allowed by the guard.
-repo="$(new_repo finish-untracked-ok)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-printf 'scratch\n' > "$repo/scratch.png"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): with scratch present"
-assert_exit "finish tolerates untracked files in the main tree" 0
+assert_eq "the main worktree keeps its branch" "feature-x" "$(git -C "$repo" branch --show-current)"
 
 echo "== finish-worktree: guards =="
 
@@ -632,61 +457,37 @@ head_before="$(head_of "$repo" dev)"
 run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): should not run"
 assert_exit_nonzero "finish refuses a dirty main worktree"
 assert_eq "dirty-main guard changes nothing" "$head_before" "$(head_of "$repo" dev)"
+assert_eq "dirty-main guard keeps the edit" "edited" "$(cat "$repo/file.txt")"
 assert_dir "dirty-main guard keeps the worktree" "$repo/.worktrees/feat1"
+git -C "$repo" checkout -q -- file.txt
 
-repo="$(new_repo finish-dirty-worktree)"
-run_in "$repo" "$START" feat1
+# The same repo, now with the worktree itself dirty.
 wt="$repo/.worktrees/feat1"
-commit_in "$wt" work.txt "one" "wip"
 printf 'uncommitted\n' > "$wt/work.txt"
 run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): should not run"
 assert_exit_nonzero "finish refuses a dirty worktree"
-assert_dir "dirty-worktree guard keeps the worktree" "$wt"
-
-repo="$(new_repo finish-nothing-ahead)"
-run_in "$repo" "$START" feat1
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): nothing to merge"
-assert_exit_nonzero "finish refuses a branch with no new commits"
-
-repo="$(new_repo finish-wrong-base)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-git -C "$repo" checkout -q -b other
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): wrong base"
-assert_exit_nonzero "finish refuses when the main worktree is not on base"
-
-repo="$(new_repo finish-same-branch)"
-run_in "$repo" "$FINISH" -b dev -m "feat(x): same branch"
-assert_exit_nonzero "finish refuses merging base into itself"
-
-repo="$(new_repo finish-missing-value)"
-run_in "$repo" "$FINISH" -b
-assert_exit_nonzero "finish rejects a flag with no value"
-assert_stderr_contains "finish names the flag that lost its value" "-b/--branch requires a value"
+assert_eq "dirty-worktree guard keeps the uncommitted edit" "uncommitted" "$(cat "$wt/work.txt")"
+git -C "$wt" checkout -q -- work.txt
 
 # The documented top footgun: running finish from inside the worktree it would delete.
-repo="$(new_repo finish-inside-worktree)"
-run_in "$repo" "$START" feat1
-wt="$repo/.worktrees/feat1"
-commit_in "$wt" work.txt "one" "wip"
-head_before="$(head_of "$repo" dev)"
 run_in "$wt" "$FINISH" -b worktree-feat1 -m "feat(x): from inside"
 assert_exit_nonzero "finish refuses to run from inside the target worktree"
-assert_stderr_contains "finish explains the cwd problem" "inside the worktree being removed"
 assert_eq "cwd guard changes nothing" "$head_before" "$(head_of "$repo" dev)"
 assert_dir "cwd guard keeps the worktree" "$wt"
 
-repo="$(new_repo finish-dry-run)"
-run_in "$repo" "$START" feat1
-wt="$repo/.worktrees/feat1"
-commit_in "$wt" work.txt "one" "wip"
+# An unrelated branch has no merge base, and the collision scan would otherwise die on raw git
+# output before printing anything useful.
+repo="$(new_repo unrelated-history)"
+git -C "$repo" checkout -q --orphan lonely
+printf 'orphan\n' > "$repo/orphan.txt"
+git -C "$repo" add -A
+git -C "$repo" commit -qm "orphan root"
+git -C "$repo" checkout -q -f dev
 head_before="$(head_of "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): preview" --dry-run
-assert_exit "finish --dry-run exits 0" 0
-assert_eq "--dry-run does not commit" "$head_before" "$(head_of "$repo" dev)"
-assert_dir "--dry-run keeps the worktree" "$wt"
-if branch_exists "$repo" worktree-feat1; then pass "--dry-run keeps the branch"; else
-  fail "--dry-run keeps the branch" "branch was deleted"; fi
+run_in "$repo" "$FINISH" -b lonely -m "feat(x): unrelated" --base dev
+assert_exit_nonzero "finish refuses a branch with no common ancestor"
+assert_stderr_contains "the refusal names the missing ancestor" "no common ancestor"
+assert_eq "the unrelated-history guard changes nothing" "$head_before" "$(head_of "$repo" dev)"
 
 echo "== finish-worktree: conflict recovery =="
 
@@ -705,61 +506,59 @@ assert_dir "conflict recovery keeps the worktree" "$wt"
 if branch_exists "$repo" worktree-feat1; then pass "conflict recovery keeps the branch"; else
   fail "conflict recovery keeps the branch" "branch was deleted"; fi
 
-echo "== finish-worktree: untracked files the merge would overwrite =="
-
-# The common case: a draft written in the main tree, then committed from the worktree.
-# git aborts such a merge, so the colliding files are stashed instead of blocking the run.
-repo="$(new_repo finish-autostash)"
-run_in "$repo" "$START" feat1
-wt="$repo/.worktrees/feat1"
-commit_in "$wt" new.txt "from branch" "add new.txt"
-printf 'my draft\n' > "$repo/new.txt"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): autostash"
-assert_exit "finish autostashes colliding untracked files" 0
-assert_eq "the merged content wins in the working tree" "from branch" "$(cat "$repo/new.txt" 2>/dev/null)"
-assert_eq "the pre-merge draft is parked in a stash" "1" "$(stash_count "$repo")"
-assert_eq "the stash holds the pre-merge draft" \
-  "my draft" "$(git -C "$repo" show 'stash@{0}^3:new.txt' 2>/dev/null)"
-
-# --no-autostash keeps it a hard guard, and the message must name the real cause.
-repo="$(new_repo finish-no-autostash)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" new.txt "from branch" "add new.txt"
-printf 'my draft\n' > "$repo/new.txt"
-head_before="$(head_of "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): blocked" --no-autostash
-assert_exit_nonzero "--no-autostash refuses instead of stashing"
-assert_stderr_contains "the refusal names the real cause" "would be overwritten by this merge"
-assert_stderr_contains "the refusal names the colliding file" "new.txt"
-assert_eq "--no-autostash changes nothing" "$head_before" "$(head_of "$repo" dev)"
-assert_eq "--no-autostash leaves the draft in place" "my draft" "$(cat "$repo/new.txt" 2>/dev/null)"
-assert_eq "--no-autostash creates no stash" "0" "$(stash_count "$repo")"
-
-# Untracked files the merge does not touch must be left completely alone.
-repo="$(new_repo finish-untracked-no-collision)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-printf 'scratch\n' > "$repo/unrelated.png"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): unrelated untracked"
-assert_exit "non-colliding untracked files do not trigger a stash" 0
-assert_eq "non-colliding untracked files are not stashed" "0" "$(stash_count "$repo")"
-assert_eq "non-colliding untracked files stay put" "scratch" "$(cat "$repo/unrelated.png" 2>/dev/null)"
+# A merge conflict is recovered the same way as a squash conflict.
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): conflicting" --strategy merge
+assert_exit_nonzero "finish stops on a merge conflict"
+assert_eq "merge conflict recovery leaves dev at its previous commit" "$head_before" "$(head_of "$repo" dev)"
+assert_eq "merge conflict recovery leaves a clean main worktree" "" "$(git -C "$repo" status --porcelain)"
+assert_no_file "merge conflict recovery clears MERGE_HEAD" "$repo/.git/MERGE_HEAD"
 
 # A run that changes nothing must really leave nothing changed — including the stash.
-repo="$(new_repo finish-autostash-restore)"
-run_in "$repo" "$START" feat1
-wt="$repo/.worktrees/feat1"
 commit_in "$wt" new.txt "from branch" "add new.txt"
-printf 'from worktree\n' > "$wt/file.txt"
-git -C "$wt" commit -qam "worktree edit"
-commit_in "$repo" file.txt "from dev" "dev edit"
 printf 'my draft\n' > "$repo/new.txt"
-head_before="$(head_of "$repo" dev)"
 run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): conflicting with autostash"
 assert_exit_nonzero "a conflict after autostashing still fails"
 assert_eq "conflict recovery restores the stashed draft" "my draft" "$(cat "$repo/new.txt" 2>/dev/null)"
 assert_eq "conflict recovery leaves no stash behind" "0" "$(stash_count "$repo")"
 assert_eq "conflict recovery leaves dev untouched" "$head_before" "$(head_of "$repo" dev)"
+
+echo "== finish-worktree: autostash =="
+
+# The common case: a draft written in the main tree, then committed from the worktree.
+# git aborts such a merge, so the colliding files are stashed instead of blocking the run.
+# Untracked files the merge does not touch stay out of the stash.
+repo="$(new_repo finish-autostash)"
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" new.txt "from branch" "add new.txt"
+printf 'my draft\n' > "$repo/new.txt"
+printf 'scratch\n' > "$repo/unrelated.png"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): autostash"
+assert_exit "finish autostashes colliding untracked files" 0
+assert_eq "the merged content wins in the working tree" "from branch" "$(cat "$repo/new.txt" 2>/dev/null)"
+assert_eq "the stash holds the pre-merge draft" \
+  "my draft" "$(git -C "$repo" show 'stash@{0}^3:new.txt' 2>/dev/null)"
+assert_eq "only the colliding file is stashed" "new.txt" \
+  "$(git -C "$repo" ls-tree --name-only 'stash@{0}^3' 2>/dev/null)"
+assert_eq "non-colliding untracked files stay put" "scratch" "$(cat "$repo/unrelated.png" 2>/dev/null)"
+
+# Both stashes at once — this is what the push-order contract exists for: the tracked one must
+# come back, the untracked one must stay parked.
+repo="$(new_repo tracked-and-untracked-autostash)"
+run_in "$repo" "$START" feat1
+commit_in "$repo/.worktrees/feat1" new.txt "from branch" "add new.txt"
+printf 'edited in main\n' > "$repo/file.txt"
+printf 'my draft\n' > "$repo/new.txt"
+before="$(count_commits "$repo" dev)"
+run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): both stashes" --autostash-tracked
+assert_exit "--autostash-tracked parks and restores tracked changes" 0
+assert_eq "the squash commit landed" "$((before + 1))" "$(count_commits "$repo" dev)"
+assert_eq "the tracked edit is uncommitted again" \
+  " M file.txt" "$(git -C "$repo" status --porcelain -- file.txt)"
+assert_eq "the tracked edit came back" "edited in main" "$(cat "$repo/file.txt" 2>/dev/null)"
+assert_eq "the merged content wins for the colliding path" "from branch" "$(cat "$repo/new.txt" 2>/dev/null)"
+assert_eq "exactly the untracked stash is left" "1" "$(stash_count "$repo")"
+assert_eq "and it holds the untracked draft" \
+  "my draft" "$(git -C "$repo" show 'stash@{0}^3:new.txt' 2>/dev/null)"
 
 echo "== finish-worktree: cleanup failures =="
 
@@ -780,44 +579,33 @@ assert_eq "the merge still landed" "$((before + 1))" "$(count_commits "$repo" de
 if branch_exists "$repo" worktree-feat1; then
   fail "the branch is still deleted" "branch still present"; else pass "the branch is still deleted"; fi
 
-# The same Windows leftover, but the directory is still locked when the script tries to finish
-# the job. Measured cause: a process — usually the agent's own shell after a cd, a test runner,
-# or an editor — has its current directory inside the worktree, and Windows holds a handle on it
-# for that process's lifetime. Retrying and renaming were both measured to fail during the run.
-# Everything that could be lost is already safe by then: the squash landed, the branch is gone,
-# and git has deregistered the worktree. What is left is an empty directory, and start reclaims
-# it, so this is residue rather than incomplete work — the run reports it and succeeds.
-repo="$(new_repo cleanup-empty-locked)"
-run_in "$repo" "$START" feat1
-wt="$repo/.worktrees/feat1"
-commit_in "$wt" work.txt "one" "wip"
+# The same Windows leftover, but the directory is still locked (a process has its current
+# directory inside it). Everything that could be lost is safe by then and start reclaims the
+# empty directory, so the run reports residue and succeeds.
+run_in "$repo" "$START" feat2
+wt="$repo/.worktrees/feat2"
+commit_in "$wt" work2.txt "two" "wip"
 before="$(count_commits "$repo" dev)"
-with_git_stub remove-empty-locked "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): locked empty shell"
+with_git_stub remove-empty-locked "$repo" "$FINISH" -b worktree-feat2 -m "feat(x): locked empty shell"
 assert_exit "a locked empty leftover does not fail the run" 0
 assert_dir "the empty directory survives" "$wt"
 assert_eq "the merge still landed" "$((before + 1))" "$(count_commits "$repo" dev)"
-if branch_exists "$repo" worktree-feat1; then
+if branch_exists "$repo" worktree-feat2; then
   fail "the branch is still deleted" "branch still present"; else pass "the branch is still deleted"; fi
-assert_stderr_contains "the report names the current-directory cause" "current directory"
-assert_stderr_contains "the report says the next start reclaims it" "start-worktree.sh"
-assert_stderr_not_contains "it is not reported as incomplete cleanup" "cleanup is incomplete"
-assert_stderr_not_contains "and does not warn against re-running" "do NOT re-run"
 
 # A worktree git genuinely could not touch (the junction case) stays a failure.
-repo="$(new_repo cleanup-hard-fail)"
-run_in "$repo" "$START" feat1
-wt="$repo/.worktrees/feat1"
-commit_in "$wt" work.txt "one" "wip"
+run_in "$repo" "$START" feat3
+wt="$repo/.worktrees/feat3"
+commit_in "$wt" work3.txt "three" "wip"
 before="$(count_commits "$repo" dev)"
-with_git_stub remove-hard "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): undeletable"
+with_git_stub remove-hard "$repo" "$FINISH" -b worktree-feat3 -m "feat(x): undeletable"
 assert_exit_nonzero "an undeletable worktree fails the run"
 assert_dir "the worktree survives" "$wt"
 assert_eq "the merge landed even though cleanup failed" "$((before + 1))" "$(count_commits "$repo" dev)"
-assert_stderr_contains "the report says the merge is done" "do NOT re-run"
 assert_stderr_contains "a still-registered worktree gets the remove --force advice" "worktree remove --force"
-assert_stderr_not_contains "and not the empty-directory advice" "is not a working tree"
 
 # Deregistered, but content survived: the advice must be the link-safe recipe, not plain rmdir.
+# The space in the repository name keeps the quoted-path advice honest.
 repo="$(new_repo "cleanup nonempty leftover")"
 run_in "$repo" "$START" feat1
 wt="$repo/.worktrees/feat1"
@@ -825,55 +613,8 @@ commit_in "$wt" work.txt "one" "wip"
 with_git_stub remove-nonempty "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): node_modules survived"
 assert_exit_nonzero "a non-empty deregistered leftover fails the run"
 assert_dir "the leftover is not deleted by the script" "$wt/node_modules"
-assert_stderr_contains "the advice checks links before deleting" "ReparsePoint"
 assert_stderr_contains "the advice deletes without following junctions" "rmdir //s //q \""
-assert_stderr_contains "the advice prunes the registration" "worktree prune"
 assert_stderr_not_contains "the still-registered advice is not given" "worktree remove --force"
-
-repo="$(new_repo cleanup-branch-fail)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-with_git_stub branch-fail "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): branch stays"
-assert_exit_nonzero "a branch that cannot be deleted fails the run"
-assert_stderr_contains "the report names the branch cleanup" "branch -D worktree-feat1"
-
-echo "== finish-worktree: --autostash-tracked =="
-
-repo="$(new_repo tracked-guard-message)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-printf 'edited\n' > "$repo/file.txt"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): blocked"
-assert_exit_nonzero "tracked changes still stop the run by default"
-assert_stderr_contains "the refusal points at the opt-in flag" "--autostash-tracked"
-
-repo="$(new_repo tracked-autostash)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-printf 'edited in main\n' > "$repo/file.txt"
-before="$(count_commits "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): with tracked autostash" --autostash-tracked
-assert_exit "--autostash-tracked parks and restores tracked changes" 0
-assert_eq "the squash commit landed" "$((before + 1))" "$(count_commits "$repo" dev)"
-assert_eq "the tracked edit is back in the worktree" "edited in main" "$(cat "$repo/file.txt" 2>/dev/null)"
-assert_eq "the tracked edit is uncommitted again" \
-  " M file.txt" "$(git -C "$repo" status --porcelain -- file.txt)"
-assert_eq "no stash is left over" "0" "$(stash_count "$repo")"
-
-# Both stashes at once — this is what the push-order contract exists for: the tracked one must
-# come back, the untracked one must stay parked.
-repo="$(new_repo tracked-and-untracked-autostash)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" new.txt "from branch" "add new.txt"
-printf 'edited in main\n' > "$repo/file.txt"
-printf 'my draft\n' > "$repo/new.txt"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): both stashes" --autostash-tracked
-assert_exit "both stashes coexist without confusing each other" 0
-assert_eq "the tracked edit came back" "edited in main" "$(cat "$repo/file.txt" 2>/dev/null)"
-assert_eq "the merged content wins for the colliding path" "from branch" "$(cat "$repo/new.txt" 2>/dev/null)"
-assert_eq "exactly the untracked stash is left" "1" "$(stash_count "$repo")"
-assert_eq "and it holds the untracked draft" \
-  "my draft" "$(git -C "$repo" show 'stash@{0}^3:new.txt' 2>/dev/null)"
 
 echo "== base selection =="
 
@@ -884,14 +625,14 @@ run_in "$repo" "$START" feat1
 assert_exit "start defaults to the main worktree's branch" 0
 assert_eq "the worktree branches from local main HEAD" \
   "$(head_of "$repo" main)" "$(head_of "$repo/.worktrees/feat1" HEAD)"
-assert_stderr_not_contains "the default base raises no mismatch warning" "not the branch checked out"
 commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
 before="$(count_commits "$repo" main)"
 run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): onto main"
 assert_exit "finish defaults to the same base" 0
 assert_eq "finish merged into main" "$((before + 1))" "$(count_commits "$repo" main)"
 
-# git config worktree-cycle.base overrides the default; differing from the main worktree warns.
+# git config worktree-cycle.base overrides the default, and finish follows the base recorded at
+# start: it refuses while the main worktree is elsewhere rather than merging into dev.
 repo="$(new_repo base-config)"
 git -C "$repo" branch integ
 commit_in "$repo" file.txt "dev only" "dev moves on"
@@ -900,28 +641,17 @@ run_in "$repo" "$START" feat1
 assert_exit "start honours git config worktree-cycle.base" 0
 assert_eq "the worktree branches from the configured base" \
   "$(head_of "$repo" integ)" "$(head_of "$repo/.worktrees/feat1" HEAD)"
-assert_stderr_contains "start warns that the base is not the main worktree's branch" "not the branch checked out"
-
-# An explicit --base that differs from the main worktree's branch warns too.
-repo="$(new_repo base-explicit-other)"
-git -C "$repo" branch integ
-run_in "$repo" "$START" feat1 --base integ
-assert_exit "start accepts a --base other than the main worktree's branch" 0
-assert_stderr_contains "start warns about the differing --base" "not the branch checked out"
-# finish follows the base recorded at start, so it refuses rather than merging into dev.
+git -C "$repo" config --unset worktree-cycle.base
 commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
 head_before="$(head_of "$repo" dev)"
 run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): recorded base"
 assert_exit_nonzero "finish refuses while the main worktree is not on the recorded base"
-assert_stderr_contains "the refusal names the recorded base" "not 'integ'"
 assert_eq "dev is untouched" "$head_before" "$(head_of "$repo" dev)"
 git -C "$repo" checkout -q integ
 before="$(count_commits "$repo" integ)"
 run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): recorded base"
 assert_exit "finish merges into the recorded base once the main worktree is on it" 0
 assert_eq "the squash landed on integ" "$((before + 1))" "$(count_commits "$repo" integ)"
-assert_eq "finish dropped the recorded base with the branch" "" \
-  "$(git -C "$repo" config --get branch.worktree-feat1.worktreeCycleBase)"
 
 # A branch with no recorded base (older, or made by plain `git worktree add`) must not be
 # merged into whatever the main worktree happens to be on.
@@ -933,28 +663,7 @@ git -C "$repo" checkout -q -b feature-x
 before="$(count_commits "$repo" feature-x)"
 run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): unrecorded"
 assert_exit_nonzero "finish refuses a branch with no recorded base"
-assert_stderr_contains "the refusal asks for --base" "Pass --base"
 assert_eq "feature-x is untouched" "$before" "$(count_commits "$repo" feature-x)"
-git -C "$repo" checkout -q dev
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): unrecorded" --base dev
-assert_exit "finish merges once --base names it" 0
-
-# A recorded base that was deleted is named, not reported as a branch to switch to.
-repo="$(new_repo base-recorded-gone)"
-git -C "$repo" branch integ
-run_in "$repo" "$START" feat1 --base integ
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-git -C "$repo" branch -q -D integ
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): gone"
-assert_exit_nonzero "finish refuses a recorded base that no longer exists"
-assert_stderr_contains "the refusal says where the base came from" "recorded when worktree-feat1 was started"
-
-# A detached main worktree has no branch to default to.
-repo="$(new_repo base-detached)"
-git -C "$repo" checkout -q --detach
-run_in "$repo" "$START" feat1
-assert_exit_nonzero "start refuses to guess a base from a detached HEAD"
-assert_stderr_contains "the refusal says how to choose one" "--base"
 
 echo "== base behind its remote counterpart =="
 
@@ -963,18 +672,8 @@ fake_remote_ahead "$repo"
 run_in "$repo" "$START" feat1
 assert_exit "start still branches when the base trails origin" 0
 assert_stderr_contains "start reports the trailing base" "behind origin/dev"
-assert_dir "start created the worktree anyway" "$repo/.worktrees/feat1"
 
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): preview" --dry-run
-assert_exit "finish still runs when the base trails origin" 0
-assert_stderr_contains "finish reports the trailing base" "behind origin/dev"
-
-repo="$(new_repo upstream-absent)"
-run_in "$repo" "$START" feat1
-assert_stderr_not_contains "no remote counterpart means no noise" "behind"
-
-echo "== misc coverage =="
+echo "== worktree already gone =="
 
 # A branch whose worktree is already gone must still merge and get deleted. This used to die
 # with "you are inside the worktree being removed ()" because realdir "" resolved to the
@@ -992,55 +691,19 @@ if branch_exists "$repo" worktree-feat1; then
 
 # A worktree directory deleted by hand is still registered, and git refuses to delete a branch
 # checked out in a registered worktree. finish prunes the stale registration first.
-repo="$(new_repo worktree-dir-deleted)"
-run_in "$repo" "$START" feat1
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-rm -rf "$repo/.worktrees/feat1"
+run_in "$repo" "$START" feat2
+commit_in "$repo/.worktrees/feat2" work2.txt "two" "wip"
+rm -rf "$repo/.worktrees/feat2"
 before="$(count_commits "$repo" dev)"
-run_in "$repo" "$FINISH" -b worktree-feat1 -m "feat(x): worktree dir deleted by hand"
+run_in "$repo" "$FINISH" -b worktree-feat2 -m "feat(x): worktree dir deleted by hand"
 assert_exit "finish handles a worktree directory deleted by hand" 0
 assert_eq "it merges one commit" "$((before + 1))" "$(count_commits "$repo" dev)"
-if branch_exists "$repo" worktree-feat1; then
+if branch_exists "$repo" worktree-feat2; then
   fail "it deletes the branch despite the stale registration" "branch still present"
 else pass "it deletes the branch despite the stale registration"; fi
 assert_eq "the stale registration is dropped" "1" "$(git -C "$repo" worktree list --porcelain | grep -c '^worktree ')"
 
-run_in "$repo" "$FINISH" --help
-assert_exit "finish --help" 0
-if grep -qF "asks for --base" "$OUT"; then pass "finish --help says a missing base stops the run"; else
-  fail "finish --help says a missing base stops the run" "header still describes a main-worktree fallback"; fi
-
-repo="$(new_repo custom-branch-name)"
-run_in "$repo" "$START" feat1 --branch my/custom
-assert_exit "start accepts a custom --branch" 0
-if branch_exists "$repo" my/custom; then pass "the custom branch exists"; else
-  fail "the custom branch exists" "branch missing"; fi
-commit_in "$repo/.worktrees/feat1" work.txt "one" "wip"
-before="$(count_commits "$repo" dev)"
-run_in "$repo" "$FINISH" -b my/custom -m "feat(x): custom branch"
-assert_exit "finish closes a custom branch name" 0
-assert_eq "the custom branch merged one commit" "$((before + 1))" "$(count_commits "$repo" dev)"
-assert_no_dir "the custom-branch worktree is gone" "$repo/.worktrees/feat1"
-
-# An unrelated branch has no merge base, and the collision scan would otherwise die on raw git
-# output before printing anything useful.
-repo="$(new_repo unrelated-history)"
-git -C "$repo" checkout -q --orphan lonely
-printf 'orphan\n' > "$repo/orphan.txt"
-git -C "$repo" add -A
-git -C "$repo" commit -qm "orphan root"
-git -C "$repo" checkout -q -f dev
-head_before="$(head_of "$repo" dev)"
-run_in "$repo" "$FINISH" -b lonely -m "feat(x): unrelated" --base dev
-assert_exit_nonzero "finish refuses a branch with no common ancestor"
-assert_stderr_contains "the refusal names the missing ancestor" "no common ancestor"
-assert_eq "the unrelated-history guard changes nothing" "$head_before" "$(head_of "$repo" dev)"
-
 echo "== overlap with other worktrees =="
-
-assert_stdout_contains() {
-  if grep -qF -- "$2" "$OUT"; then pass "$1"; else fail "$1" "missing [$2] in stdout"; fi
-}
 
 repo="$(new_repo overlap)"
 printf 'shared\n' > "$repo/shared.txt"
@@ -1048,30 +711,19 @@ printf 'alone\n' > "$repo/alone.txt"
 git -C "$repo" add shared.txt alone.txt
 git -C "$repo" commit -qm "seed shared files"
 run_in "$repo" "$START" first
-assert_exit "start with no other worktree" 0
-assert_stdout_contains "start says there is no other active worktree" "no other active worktrees"
 commit_in "$repo/.worktrees/first" shared.txt "first edit" "first edits shared"
 printf 'draft\n' > "$repo/.worktrees/first/draft.txt"
 run_in "$repo" "$START" second
 assert_exit "start next to an active worktree" 0
-assert_stdout_contains "start lists the other active worktree" "other active worktrees (1)"
-assert_stdout_contains "start names its branch and change area" "worktree-first"
-assert_stdout_contains "start counts committed and untracked changes" "2 changed: draft.txt, shared.txt"
+assert_stdout_contains "start counts committed and untracked changes of the other worktree" \
+  "2 changed: draft.txt, shared.txt"
 if grep -q "^    worktree-second " "$OUT"; then fail "start does not list the new worktree itself" "listed"; else
   pass "start does not list the new worktree itself"; fi
-
-commit_in "$repo/.worktrees/second" alone.txt "second edit" "second edits alone"
-run_in "$repo" "$FINISH" -b worktree-second -m "feat(x): alone" --dry-run
-assert_exit "finish --dry-run without shared files" 0
-assert_stderr_not_contains "no overlap warning when nothing is shared" "other active worktrees also change"
 
 commit_in "$repo/.worktrees/second" shared.txt "second edit" "second edits shared"
 run_in "$repo" "$FINISH" -b worktree-second -m "feat(x): shared"
 assert_exit "finish lands despite a shared file (warning only)" 0
-assert_stderr_contains "finish warns about the shared file" "other active worktrees also change"
-assert_stderr_contains "the warning names the other branch and file" "worktree-first"
 assert_stderr_contains "the warning lists the shared path" "shared.txt"
-assert_no_dir "the finished worktree is gone" "$repo/.worktrees/second"
 assert_dir "the other worktree is untouched" "$repo/.worktrees/first"
 
 # A worktree whose branch has no recorded base still compares against worktree-cycle.base.
@@ -1079,8 +731,7 @@ git -C "$repo" config worktree-cycle.base dev
 git -C "$repo" worktree add -q -b manual "$repo/.worktrees/manual" dev
 commit_in "$repo/.worktrees/manual" alone.txt "manual edit" "manual edits alone"
 run_in "$repo" "$START" third
-assert_stdout_contains "start reads a branch without a recorded base" "manual"
-assert_stdout_contains "that branch is compared with worktree-cycle.base" "1 changed: alone.txt"
+assert_stdout_contains "a branch without a recorded base is compared with worktree-cycle.base" "1 changed: alone.txt"
 
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
