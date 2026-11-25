@@ -125,6 +125,17 @@ The audit sees boxes, not a workflow. Judge whether the screen reads as a compos
 - **[visual]** Run a squint/thumbnail test on the existing screenshot: reduce detail
   until copy is unreadable. The primary task and action should remain identifiable;
   several equally loud regions or a disappearing CTA is `Risk`.
+- **[visual]** Section heading vs. its content: reading only the headings down the left
+  edge must tell what the panel holds. A heading that starts on the same left edge as its
+  body, at a similar size, makes headings and content one undifferentiated column — the
+  reader cannot skim. Each section must read as one group (heading bound to its body by
+  proximity, a shared block or rule) while heading and body stay clearly distinct: indent
+  the body under the heading, or give the heading its own column, or a clearly stronger
+  size/weight/colour step. A pattern users have liked: an icon in the slot where a
+  section number would go, a bold one-line heading beside it, the body indented by the
+  icon's width, and a thin rule between sections. Small muted caption headings over full-strength content on the
+  same edge fail this (the content outshouts its heading). `Risk` on a review/detail panel
+  whose job is scanning, else `Polish`.
 
 ## Typography & reading flow  *([hybrid]/[visual])*
 
