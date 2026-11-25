@@ -85,6 +85,14 @@ class Plan:
     tags: tuple[str, ...]
     body: str
     sections: dict[str, str]
+    # "graph": JSON frontmatter, managed by the CLI. "loose": a plan document without it
+    # (another planning convention), read for routing only and never rewritten.
+    kind: str = "graph"
+    status_line: str = ""
+
+    @property
+    def is_loose(self) -> bool:
+        return self.kind == "loose"
 
     def metadata(self) -> dict[str, object]:
         return {
@@ -99,20 +107,55 @@ class Plan:
         return replace(self, **updates)
 
     def as_summary(self) -> dict[str, object]:
-        return {
+        summary: dict[str, object] = {
             "id": self.id,
             "path": self.path.as_posix(),
             "title": self.title,
             "status": self.status,
+            "kind": self.kind,
             "requires": list(self.requires),
             "replaces": list(self.replaces),
             "scope": list(self.scope),
             "tags": list(self.tags),
         }
+        if self.is_loose:
+            summary["status_line"] = self.status_line
+        return summary
 
 
-def plan_path(root: Path, plan_id: str) -> Path:
-    return root / PLAN_DIR / f"{plan_id}.md"
+def plan_path(root: Path, plan_id: str, directory: PurePosixPath = PLAN_DIR) -> Path:
+    return root / directory / f"{plan_id}.md"
+
+
+def recover_command(root: Path, plan: Plan, old_id: str) -> str:
+    """How to find a replaced plan: it lived beside its replacement."""
+    directory = PurePosixPath(repo_relative(root, plan.path.parent))
+    return f"git log --all -- {(directory / f'{old_id}.md').as_posix()}"
+
+
+def has_graph_frontmatter(content: str) -> bool:
+    """Whether `content` opens with plan-graph frontmatter, broken or not.
+
+    Used outside `.agents/plans`, where a YAML or other tool's frontmatter is someone
+    else's convention and must not be reported as a broken plan-graph plan. A JSON
+    object holding all five keys is ours; so is a `{` block that no longer parses
+    (a hand-edited CLI plan), so that it is reported instead of read as loose. A JSON
+    object with other keys (`{"status": "draft", "owner": …}`) is another tool's.
+    """
+    match = FRONTMATTER_RE.match(content)
+    if not match:
+        return False
+    text = match.group("json").strip()
+    try:
+        metadata = json.loads(text)
+    except ValueError:
+        return text.startswith("{")
+    return isinstance(metadata, dict) and METADATA_KEYS <= set(metadata)
+
+
+def strip_frontmatter(content: str) -> str:
+    match = FRONTMATTER_RE.match(content)
+    return content[match.end():] if match else content
 
 
 def repo_relative(root: Path, path: Path) -> str:
@@ -290,7 +333,9 @@ def heading_matches(pattern: re.Pattern[str], body: str) -> list[re.Match[str]]:
     return list(pattern.finditer(mask_fences(body)))
 
 
-def parse_plan(path: Path, root: Path) -> tuple[Plan | None, list[Diagnostic]]:
+def parse_plan(
+    path: Path, root: Path, content: str | None = None
+) -> tuple[Plan | None, list[Diagnostic]]:
     diagnostics: list[Diagnostic] = []
     relative = repo_relative(root, path)
     plan_id = path.stem
@@ -309,13 +354,14 @@ def parse_plan(path: Path, root: Path) -> tuple[Plan | None, list[Diagnostic]]:
             Diagnostic("error", "symlink_plan", "plan files may not be symlinks", plan_id, relative)
         )
         return None, diagnostics
-    try:
-        content = path.read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeError) as exc:
-        diagnostics.append(
-            Diagnostic("error", "read_failed", f"failed to read plan: {exc}", plan_id, relative)
-        )
-        return None, diagnostics
+    if content is None:
+        try:
+            content = path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            diagnostics.append(
+                Diagnostic("error", "read_failed", f"failed to read plan: {exc}", plan_id, relative)
+            )
+            return None, diagnostics
 
     match = FRONTMATTER_RE.match(content)
     if not match:
@@ -510,6 +556,7 @@ def make_plan(
     replaces: Iterable[str] = (),
     scope: Iterable[str] = (),
     tags: Iterable[str] = (),
+    directory: PurePosixPath = PLAN_DIR,
 ) -> Plan:
     body_lines = [f"# {title.strip()}", ""]
     for section in REQUIRED_SECTIONS:
@@ -517,7 +564,7 @@ def make_plan(
     body = "\n".join(body_lines).rstrip() + "\n"
     return Plan(
         id=plan_id,
-        path=plan_path(root, plan_id),
+        path=plan_path(root, plan_id, directory),
         title=title.strip(),
         status="active",
         requires=tuple(dict.fromkeys(requires)),

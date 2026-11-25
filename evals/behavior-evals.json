@@ -153,6 +153,33 @@
         "Explains that dependent decisions must be revised explicitly."
       ],
       "files": []
+    },
+    {
+      "id": "check-parallel-worktrees-before-landing",
+      "prompt": "Several agents work in their own worktrees of this repository. I'm in .worktrees/report-export and about to land it. Make sure nobody else is changing the same files or planning to.",
+      "expected_output": "Runs overlap from the worktree, reports each other worktree's shared files and matching plans by branch, reads those plans or diffs before deciding, and does not block or rewrite anyone else's work.",
+      "files": [
+        "src/backend/report/export.py"
+      ],
+      "assertions": [
+        "Runs `plan-graph overlap` (or reads `other_worktrees` from context) instead of inspecting only the current worktree.",
+        "Names the other branch and the shared files or matching plan in the report.",
+        "Treats the result as coordination advice, not a reason to stop or to edit the other worktree."
+      ]
+    },
+    {
+      "id": "respect-existing-docs-plans-convention",
+      "prompt": "This repository keeps dated plan documents in docs/plans with a status line under the title and no frontmatter. Find the plan for the viewport HUD work and mark the part that landed today.",
+      "expected_output": "Routes with context, reads the loose plan's title and status line, updates the status line by hand following docs/plans/README.md, and does not add plan-graph frontmatter or run close/gc on it.",
+      "files": [
+        "docs/plans/README.md",
+        "docs/plans/2026-11-17-viewport-hud-redesign.md"
+      ],
+      "assertions": [
+        "Finds the document through context or why, where it appears with kind `loose`.",
+        "Edits the status line by hand instead of adding frontmatter or running close, update, or gc on the loose plan.",
+        "Follows the directory README's status line format."
+      ]
     }
   ]
 }

@@ -7,7 +7,8 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-from . import __version__, advice
+from . import __version__, advice, crossworktree
+from .loose import FileIndex
 from .model import (
     GATE_SECTIONS,
     REQUIRED_SECTIONS,
@@ -59,7 +60,24 @@ def build_parser() -> argparse.ArgumentParser:
     context.add_argument(
         "--worktree",
         action="store_true",
-        help="include staged, unstaged, and untracked Git paths with explicit selectors",
+        help="include this worktree's changed paths with explicit selectors",
+    )
+    context.add_argument(
+        "--no-other-worktrees",
+        action="store_true",
+        help="skip reading the other worktrees (the default selection then holds only uncommitted paths)",
+    )
+
+    overlap = subparsers.add_parser(
+        "overlap",
+        parents=[common],
+        help="find other worktrees changing, or planning, the same files",
+    )
+    overlap.add_argument(
+        "--path",
+        action="append",
+        default=[],
+        help="repository path to check (default: this worktree's changes since its base)",
     )
 
     subparsers.add_parser("status", parents=[common], help="show ready, waiting, and retained plans")
@@ -185,6 +203,8 @@ def _emit(
                 _print_status(data or {})
             elif command == "why":
                 _print_why(data or {})
+            elif command == "overlap":
+                _print_overlap(data or {})
             elif command == "doctor":
                 counts = (data or {}).get("counts", {})
                 print(f"OK plan store ({counts.get('plans', 0)} plans)")
@@ -223,6 +243,8 @@ def _print_context(data: dict[str, object]) -> None:
         print("  Read order: " + " -> ".join(read_order))
     for item in data.get("decision_pack", []):
         print(f"\n[{item['role']}] {item['id']} — {item['title']}")
+        if item.get("status_line"):
+            print("Status: " + str(item["status_line"]))
         if item.get("matched_by"):
             print("Matched: " + "; ".join(item["matched_by"]))
         staleness_line = _staleness_text(item.get("staleness") or {})
@@ -234,6 +256,10 @@ def _print_context(data: dict[str, object]) -> None:
             print("Outcome:\n" + str(item.get("outcome", "")))
             print("Decisions:\n" + str(item.get("decisions", "")))
             print("Acceptance:\n" + str(item.get("acceptance", "")))
+    others = data.get("other_worktrees", [])
+    if others:
+        print("\nOther worktrees touching these paths (read their plans before editing shared files):")
+        _print_overlap_entries(others)
     near_misses = data.get("near_misses", [])
     if near_misses and not selected:
         print("\nNear misses (read these before creating a new plan):")
@@ -246,6 +272,43 @@ def _print_context(data: dict[str, object]) -> None:
             print(f"  - {item['id']} ({item['readiness']}): {item['title']}")
     elif not selected:
         print("\nNo active plans matched.")
+
+
+def _print_overlap_entries(entries: list[dict[str, object]]) -> None:
+    for entry in entries:
+        label = entry.get("branch") or "detached"
+        tag = " (main)" if entry.get("main") else ""
+        print(f"  {label}{tag}  {entry['path']}")
+        files = entry.get("shared_files") or []
+        if files:
+            sample = ", ".join(files[:5]) + (f" (+{len(files) - 5} more)" if len(files) > 5 else "")
+            print(f"    shared files: {sample}")
+        for plan in entry.get("plans") or []:
+            status = f" [{plan['status_line']}]" if plan.get("status_line") else ""
+            print(f"    plan {plan['path']}: {plan['title']}{status}")
+            print("      matches: " + ", ".join(plan["matched"]))
+
+
+def _print_overlap(data: dict[str, object]) -> None:
+    here = data.get("here") or {}
+    if not data.get("available"):
+        print("Worktree overlap: unavailable (" + "; ".join(data.get("warnings", [])) + ")")
+        return
+    changed = here.get("changed") or []
+    base = here.get("base") or "?"
+    print(f"Worktree overlap for {here.get('branch') or 'detached'} ({len(changed)} changed since {base})")
+    others = data.get("worktrees") or []
+    overlaps = data.get("overlaps") or []
+    if overlaps:
+        _print_overlap_entries(overlaps)
+    else:
+        print(f"  none of {len(others)} other worktree(s) changes or plans these paths")
+    quiet = [item for item in others if item["path"] not in {entry["path"] for entry in overlaps}]
+    for item in quiet:
+        if item.get("changed"):
+            print(f"  · {item.get('branch') or 'detached'}: {item['changed']} changed in {item['area']}")
+    for line in data.get("warnings", []):
+        print(f"  (incomplete) {line}")
 
 
 def _staleness_text(staleness: dict[str, object]) -> str:
@@ -295,6 +358,10 @@ def _print_status(data: dict[str, object]) -> None:
             print("  none")
         for item in items:
             suffix = f"; blockers={','.join(item['blockers'])}" if item.get("blockers") else ""
+            if item.get("kind") == "loose":
+                line = str(item.get("status_line") or "")
+                line = line if len(line) <= 80 else line[:79] + "…"
+                suffix += f" (loose: {line})" if line else " (loose)"
             print(f"  - {item['id']}: {item['title']}{suffix}")
     path = data.get("critical_path", [])
     if path:
@@ -444,9 +511,15 @@ def _handle_context(args: argparse.Namespace, root: Path, store: Store) -> int:
         raise PlanGraphError("unknown plan IDs: " + ", ".join(unknown), code="unknown_plan")
     selectors_given = bool(args.plan or args.path or args.query.strip())
     paths = _normalize_paths(root, args.path)
-    if args.worktree or not selectors_given:
-        paths = list(dict.fromkeys([*paths, *git_worktree_paths(root)]))
+    dirty = _safe_worktree_paths(root)
     files = advice.repo_files(root)
+    collected = None if args.no_other_worktrees else _collect_worktrees(root)
+    if args.worktree or not selectors_given:
+        # Committed-since-base files come from the same snapshot, so a worktree whose
+        # work is already committed still routes to its plans.
+        committed = crossworktree.here_files(root, collected) if collected else []
+        paths = list(dict.fromkeys([*paths, *dirty, *committed]))
+    others = _other_worktrees(root, paths, files, collected) if collected and paths else None
     data = build_context(
         root,
         store.plans,
@@ -459,10 +532,11 @@ def _handle_context(args: argparse.Namespace, root: Path, store: Store) -> int:
     stale_map = advice.staleness(
         root,
         {plan_id: store.plans[plan_id] for plan_id in pack_ids},
-        dirty_paths=_safe_worktree_paths(root),
+        dirty_paths=dirty,
     )
     for item in data["decision_pack"]:
         item["staleness"] = stale_map[item["id"]]
+    data["other_worktrees"] = (others or {}).get("overlaps", []) if paths else []
     return _emit(
         ok=True,
         command="context",
@@ -473,8 +547,40 @@ def _handle_context(args: argparse.Namespace, root: Path, store: Store) -> int:
     )
 
 
+def _collect_worktrees(root: Path):
+    """Advisory: never fails the command that asked."""
+    try:
+        return crossworktree.collect(root)
+    except Exception:  # noqa: BLE001 - advisory read of other worktrees
+        return None
+
+
+def _other_worktrees(
+    root: Path, selectors: list[str] | None, files: list[str] | None, collected=None
+) -> dict[str, object] | None:
+    """Advisory: never fails the command that asked."""
+    try:
+        return crossworktree.report(
+            root, selectors, index=FileIndex.build(files), collected=collected
+        )
+    except Exception:  # noqa: BLE001 - advisory read of other directories
+        return None
+
+
 def _handle_create(args: argparse.Namespace, root: Path, store: Store) -> int:
-    id_warnings = assert_new_id(root, store.plans, args.id)
+    id_warnings = assert_new_id(root, store.plans, args.id, (store.dirs.write, *store.dirs.read))
+    if not store.dirs.configured and store.dirs.foreign():
+        id_warnings.append(
+            Diagnostic(
+                "warning",
+                "foreign_plan_dir",
+                "this repository already keeps plans in "
+                + ", ".join(item.as_posix() for item in store.dirs.foreign())
+                + f"; writing to {store.dirs.write.as_posix()}. To write there instead,"
+                " run `git config plan-graph.dir <dir>`",
+                args.id,
+            )
+        )
     title = _validated_title(args.title)
     unknown = sorted(set(args.require) - set(store.plans))
     if unknown:
@@ -486,6 +592,7 @@ def _handle_create(args: argparse.Namespace, root: Path, store: Store) -> int:
         requires=args.require,
         scope=args.scope,
         tags=args.tag,
+        directory=store.dirs.write,
     )
     after = {**store.plans, args.id: plan}
     return _finish_mutation(
@@ -507,8 +614,20 @@ def _require_plan(store: Store, plan_id: str) -> Plan:
         raise PlanGraphError(f"unknown plan ID: {plan_id}", code="unknown_plan") from exc
 
 
+def _require_graph_plan(store: Store, plan_id: str) -> Plan:
+    """A plan the CLI may rewrite; documents under another convention are read-only."""
+    plan = _require_plan(store, plan_id)
+    if plan.is_loose:
+        raise PlanGraphError(
+            f"{plan_id} ({plan.path.relative_to(store.root).as_posix()}) has no plan-graph"
+            " frontmatter; edit it by hand under that directory's convention",
+            code="loose_plan",
+        )
+    return plan
+
+
 def _handle_update(args: argparse.Namespace, root: Path, store: Store) -> int:
-    plan = _require_plan(store, args.id)
+    plan = _require_graph_plan(store, args.id)
     updated = plan
     if args.title is not None:
         updated = replace_title(updated, _validated_title(args.title))
@@ -538,9 +657,10 @@ def _handle_update(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 
 def _handle_rename(args: argparse.Namespace, root: Path, store: Store) -> int:
-    original = _require_plan(store, args.old)
-    id_warnings = assert_new_id(root, store.plans, args.new)
-    renamed = replace(original, id=args.new, path=plan_path(root, args.new))
+    original = _require_graph_plan(store, args.old)
+    directory = PurePosixPath(original.path.parent.relative_to(root).as_posix())
+    id_warnings = assert_new_id(root, store.plans, args.new, (directory, *store.dirs.read))
+    renamed = replace(original, id=args.new, path=plan_path(root, args.new, directory))
     if args.title is not None:
         renamed = replace_title(renamed, _validated_title(args.title))
     after = {plan_id: plan for plan_id, plan in store.plans.items() if plan_id != args.old}
@@ -570,7 +690,10 @@ def _handle_rename(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 
 def _handle_replace(args: argparse.Namespace, root: Path, store: Store) -> int:
-    _require_plan(store, args.old)
+    old_plan = _require_graph_plan(store, args.old)
+    # The replacement takes the replaced plan's place, so its lineage points at the
+    # directory where the old file's history is.
+    directory = PurePosixPath(old_plan.path.parent.relative_to(root).as_posix())
     title = _validated_title(args.title)
     dependents = _active_dependents(store.plans, args.old)
     if dependents:
@@ -578,7 +701,7 @@ def _handle_replace(args: argparse.Namespace, root: Path, store: Store) -> int:
             f"cannot replace {args.old}; active dependents require review: {', '.join(dependents)}",
             code="active_dependents",
         )
-    id_warnings = assert_new_id(root, store.plans, args.new)
+    id_warnings = assert_new_id(root, store.plans, args.new, (directory, *store.dirs.read))
     unknown = sorted(set(args.require) - (set(store.plans) - {args.old}))
     if unknown:
         raise PlanGraphError("unknown required plans: " + ", ".join(unknown), code="unknown_plan")
@@ -590,6 +713,7 @@ def _handle_replace(args: argparse.Namespace, root: Path, store: Store) -> int:
         replaces=[args.old],
         scope=args.scope,
         tags=args.tag,
+        directory=directory,
     )
     after = {plan_id: plan for plan_id, plan in store.plans.items() if plan_id != args.old}
     after[args.new] = replacement
@@ -613,7 +737,7 @@ def _handle_replace(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 
 def _handle_reopen(args: argparse.Namespace, root: Path, store: Store) -> int:
-    plan = _require_plan(store, args.id)
+    plan = _require_graph_plan(store, args.id)
     if plan.status == "active":
         raise PlanGraphError(f"{args.id} is already active", code="no_changes")
     after = {**store.plans, args.id: replace(plan, status="active")}
@@ -629,7 +753,7 @@ def _handle_reopen(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 
 def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
-    plan = _require_plan(store, args.id)
+    plan = _require_graph_plan(store, args.id)
     if plan.status == "done":
         raise PlanGraphError(
             f"{args.id} is already done; it is retained for its active dependents",
@@ -703,7 +827,7 @@ def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 
 def _handle_drop(args: argparse.Namespace, root: Path, store: Store) -> int:
-    _require_plan(store, args.id)
+    _require_graph_plan(store, args.id)
     dependents = _active_dependents(store.plans, args.id)
     if dependents:
         raise PlanGraphError(
@@ -753,10 +877,16 @@ def run(args: argparse.Namespace) -> int:
                 advisory.extend(advice.scope_overlaps(store.plans, index))
             advisory.extend(advice.near_duplicates(store.plans, index))
             # A done plan is history: nobody acts on it, so its churn is not a warning.
-            # context and why still report a done item's staleness when it is read.
+            # A loose document is a dated record whose scope is inferred from its prose,
+            # so its churn is not a warning either. context and why still report the
+            # staleness of any item when it is read.
             report = advice.staleness(
                 root,
-                {plan_id: plan for plan_id, plan in store.plans.items() if plan.status == "active"},
+                {
+                    plan_id: plan
+                    for plan_id, plan in store.plans.items()
+                    if plan.status == "active" and not plan.is_loose
+                },
                 dirty_paths=_safe_worktree_paths(root),
                 stale_after=args.stale_after,
             )
@@ -770,9 +900,22 @@ def run(args: argparse.Namespace) -> int:
                     "plans": len(store.plans),
                     "active": sum(plan.status == "active" for plan in store.plans.values()),
                     "done": sum(plan.status == "done" for plan in store.plans.values()),
-                }
+                    "loose": sum(plan.is_loose for plan in store.plans.values()),
+                },
+                "dirs": [item.as_posix() for item in store.dirs.read],
             },
             diagnostics=[*store.diagnostics, *advisory],
+            json_mode=args.json,
+        )
+
+    if args.command == "overlap":
+        selectors = _normalize_paths(root, args.path) if args.path else None
+        data = crossworktree.report(root, selectors, index=FileIndex.build(advice.repo_files(root)))
+        return _emit(
+            ok=True,
+            command="overlap",
+            root=root,
+            data=data,
             json_mode=args.json,
         )
 

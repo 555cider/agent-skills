@@ -1,4 +1,4 @@
 interface:
   display_name: "Plan Graph"
-  short_description: "Route work through persistent plan context."
-  default_prompt: "Use $plan-graph to route the current task and changed paths through .agents/plans, review prerequisites and affected plans, then maintain the smallest valid plan set with the lifecycle CLI."
+  short_description: "Plans and changed files across parallel worktrees."
+  default_prompt: "Use $plan-graph to check other worktrees for overlapping changes and plans, route the current task and changed paths through the repository's plan documents (.agents/plans, docs/plans, .plans), review prerequisites and affected plans, then maintain the smallest valid plan set with the lifecycle CLI."
