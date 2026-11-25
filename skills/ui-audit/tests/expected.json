@@ -535,6 +535,12 @@
       "mustNotAdvise": ["koreanButtonVerbForm"]
     },
     {
+      "file": "copy-conventions.html",
+      "viewport": { "width": 1280, "height": 900, "isMobile": false, "dpr": 1 },
+      "theme": "light",
+      "mustNotAdvise": [{ "rule": "koreanButtonVerbForm", "note": "the default respects Korean verb labels; the noun convention is opt-in" }]
+    },
+    {
       "file": "clean.html",
       "viewport": { "width": 390, "height": 844, "isMobile": true },
       "theme": "dark",
