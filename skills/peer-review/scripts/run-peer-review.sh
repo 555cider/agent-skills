@@ -1155,6 +1155,9 @@ build_cmd() {
     codex)
       require_flags codex "read-only reviewer" --sandbox --ephemeral --ignore-user-config --ignore-rules || return
       CMD=(codex exec --sandbox read-only --ephemeral --ignore-user-config --ignore-rules)
+      # --ignore-user-config also drops the user's [windows] sandbox, and without one
+      # every shell command is "blocked by policy": the reviewer never reads the repo.
+      [ "$IS_WINDOWS_SHELL" = 1 ] && CMD+=(-c 'windows.sandbox="unelevated"')
       if [ -z "$REPO_ROOT" ]; then
         CMD+=(--skip-git-repo-check)
       fi

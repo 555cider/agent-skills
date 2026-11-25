@@ -352,9 +352,11 @@ is still unpublished.
    a semver `version`, and a one-line description. The bundle plugin picks the
    skill up on its own (it serves the repository root), but the individual
    plugin does not exist until the entry does. Bump that `version` when the
-   skill's behavior changes — it is what `claude plugin list` shows and what
-   `claude plugin tag` releases against; installs themselves track the commit,
-   so a stale number misinforms rather than breaks.
+   skill's behavior changes, in the same commit, and bump the bundle's
+   `.claude-plugin/plugin.json` with it. It is what `claude plugin list` shows and
+   what `claude plugin tag` releases against, and an installed copy is not
+   refreshed until the version changes: a commit without a bump never reaches
+   installs.
    `tests/validate-plugin-manifests.py` fails the build if the manifest and
    `skills/` disagree, so a skill cannot be published half-registered.
 3. Commit and push to `main`.
