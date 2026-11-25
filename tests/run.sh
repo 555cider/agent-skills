@@ -126,6 +126,12 @@ assert_file_has_line "effort forwarded to codex config" "$D/args.txt" "model_rea
 assert_file_not_contains "effort not misread as model flag" "$D/args.txt" "--model"
 assert_file_contains "codex uses an ephemeral session" "$D/args.txt" "--ephemeral"
 assert_file_contains "codex ignores ambient user config" "$D/args.txt" "--ignore-user-config"
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    assert_file_has_line "codex keeps a Windows sandbox that can run reads" "$D/args.txt" 'windows.sandbox="unelevated"' ;;
+  *)
+    assert_file_not_contains "codex sandbox override is Windows-only" "$D/args.txt" "windows.sandbox" ;;
+esac
 assert_file_contains "all focus reviews correctness" "$D/prompt-all.md" "Correctness"
 assert_file_contains "all focus reviews feasibility" "$D/prompt-all.md" "Feasibility and dependencies"
 assert_file_contains "all focus reviews assumptions" "$D/prompt-all.md" "Hidden assumptions"
