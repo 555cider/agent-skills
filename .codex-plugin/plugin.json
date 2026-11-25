@@ -1,6 +1,6 @@
 {
   "name": "agent-skills",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "description": "Every skill in the agent-skills collection at once: durable agent memory, plan graph, peer review, UI audit, DOM picker, screen map, worktree lifecycle, step-back, and shrink-test-input.",
   "hooks": "./hooks/hooks.codex.json"
 }
