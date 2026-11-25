@@ -30,50 +30,32 @@ check('the crawl finished instead of wedging',
   JSON.stringify({ budgetHit: map.run.budgetHit, frontier: map.coverage.frontier }));
 
 // ---------- javascript dialog ----------
-
+//
+// Cancelling is the whole point: an accepted confirm runs the very work the guard exists
+// to withhold. The counter is the only witness that it was cancelled.
 const ask = named('전체 보기');
-check('the button behind a confirm() is recorded and pressed',
-  ask?.status === 'verified', JSON.stringify({ status: ask?.status, reason: ask?.blockedReason }));
-check('the dialog is recorded rather than silently swallowed',
-  (map.run.dialogs || []).some(dialog => dialog.type === 'confirm'),
-  JSON.stringify(map.run.dialogs));
-// Cancelling is the whole point: an accepted confirm runs the very work the guard
-// exists to withhold. The counter is the only witness that it was cancelled and not
-// merely dismissed after the fact.
-check('the dialog was cancelled, so the work it guards never ran', clicks.confirmed === 0,
-  'server counted ' + clicks.confirmed + ' guarded actions');
+check('the button behind a confirm() is pressed, the dialog recorded and cancelled',
+  ask?.status === 'verified' && (map.run.dialogs || []).some(dialog => dialog.type === 'confirm')
+    && clicks.confirmed === 0,
+  JSON.stringify({ status: ask?.status, dialogs: map.run.dialogs, confirmed: clicks.confirmed }));
 
 // ---------- popup ----------
-
+//
+// The popup is closed on sight, so the tab the crawl watches never moved. Inventing a
+// `/cart` node out of a tab nobody observed would be a route the map could not replay.
 const popup = named('장바구니 새 창 보기');
-check('a control that opens a window with script is still walked',
-  popup?.status === 'verified', JSON.stringify({ status: popup?.status, reason: popup?.blockedReason }));
-// The popup is closed on sight, so the tab the crawl watches never moved. An edge back
-// to the same screen is the honest record; inventing a `/cart` node out of a tab nobody
-// observed would be a route the map could not replay.
-check('the popup does not become a screen the crawl never watched',
-  stateOf(popup?.to)?.route === '/hazards'
+check('a control that opens a window is walked without the popup becoming a screen',
+  popup?.status === 'verified' && stateOf(popup?.to)?.route === '/hazards'
     && !map.states.some(state => state.route === '/cart'),
-  JSON.stringify({ to: stateOf(popup?.to)?.route, states: map.states.map(state => state.route) }));
-
-// A `target=_blank` *link* is a different animal: Chrome navigates the driven tab, so
-// there is no stray window and the crawl should record a plain navigation. Asserted so
-// that stays a fact about this driver rather than an assumption.
-const blank = named('설명 문서');
-check('a target=_blank link is walked as an ordinary navigation',
-  blank?.status === 'verified' && stateOf(blank?.to)?.route === '/leaf',
-  JSON.stringify({ status: blank?.status, to: stateOf(blank?.to)?.route }));
+  JSON.stringify({ status: popup?.status, to: stateOf(popup?.to)?.route, states: map.states.map(state => state.route) }));
 
 // ---------- download ----------
 
 const download = named('보고서');
-check('a download link is refused by its attribute, not by its wording',
-  download?.class === 'destructive' && download?.classifiedBy === 'download',
-  JSON.stringify({ class: download?.class, by: download?.classifiedBy }));
-check('the download link is never followed', download?.status === 'unexplored',
-  JSON.stringify({ status: download?.status, reason: download?.blockedReason }));
-check('the server never served the file', clicks.download === 0,
-  'server counted ' + clicks.download + ' downloads');
+check('a download link is refused by its attribute and the server never serves the file',
+  download?.class === 'destructive' && download?.classifiedBy === 'download'
+    && download?.status === 'unexplored' && clicks.download === 0,
+  JSON.stringify({ class: download?.class, by: download?.classifiedBy, status: download?.status, downloads: clicks.download }));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

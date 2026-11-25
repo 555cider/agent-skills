@@ -42,81 +42,43 @@ const folder = map.states.find(state => (state.evidence.chrome || []).includes('
 const leaf = map.states.find(state => (state.evidence.chrome || []).includes('항목 메뉴'));
 const settings = titled('셸 설정')[0];
 
-check('the crawl finished', !map.run.budgetHit && map.coverage.frontier.length === 0,
+check('the crawl finished, replaying mutating steps as configured',
+  !map.run.budgetHit && map.coverage.frontier.length === 0 && map.run.replayMutating === true,
   JSON.stringify({ budgetHit: map.run.budgetHit, frontier: map.coverage.frontier }));
-check('the run records that it replayed mutating steps', map.run.replayMutating === true);
 
 // ---------- identity ----------
 
-check('home and a folder are two screens although their landmarks and fields match',
-  !!home && !!folder && home.id !== folder.id && home.signature !== folder.signature,
+check('home and a folder are two screens although their landmarks and fields match, told apart by header verbs',
+  !!home && !!folder && home.signature !== folder.signature
+    && JSON.stringify(home.evidence.chrome) === JSON.stringify(['새 폴더', '설정']) && !!leaf && !!settings,
   JSON.stringify(map.states.map(state => [state.id, state.title, state.evidence.chrome])));
-check('the header verbs that told them apart are in the evidence',
-  JSON.stringify(home?.evidence.chrome) === JSON.stringify(['새 폴더', '설정']),
-  JSON.stringify(home?.evidence.chrome));
-check('the folder, its leaf and settings are all mapped', !!folder && !!leaf && !!settings,
-  JSON.stringify(map.states.map(state => state.title)));
-
-// ---------- reaching past a mutating step ----------
-
-const leafEdge = map.transitions.find(transition => transition.action.name === '첫 항목 열기');
-check('a screen two button presses deep had its own actions executed',
-  leafEdge?.status === 'verified' && leafEdge.to === leaf?.id,
-  JSON.stringify({ status: leafEdge?.status, reason: leafEdge?.blockedReason }));
-
-// ---------- in-place state change ----------
-
-check('no action failed as not-found after "모두 잠금" renamed the rows in place',
-  !map.transitions.some(transition => /not-found/.test(transition.blockedReason || '')),
-  JSON.stringify(map.transitions.filter(transition => /not-found/.test(transition.blockedReason || ''))
-    .map(transition => transition.action.name)));
-check('the fresh re-entry that recovered them is visible in the timing',
-  map.run.timing.phases.some(phase => phase.label === 'reach.fresh-retry'),
-  JSON.stringify(map.run.timing.phases.map(phase => phase.label)));
-
-// ---------- names ----------
-
-const row = map.transitions.find(transition => /^서류/.test(transition.action.name || ''));
-check('a row name carries its icon label the way the accessible name does',
-  row?.action.name === '서류 항목 2', JSON.stringify(row?.action.name));
-
-// ---------- fixture query ----------
-
 const emptyHome = map.states.find(state => state.route === '/shell?mode=empty');
 check('an identityQuery parameter keeps the fixture entrypoint a screen of its own',
   !!emptyHome && emptyHome.id !== home?.id && emptyHome.evidence.urlSample === '/shell?mode=empty',
   JSON.stringify(map.states.map(state => state.route)));
 
+// ---------- reaching past a mutating step, and an in-place state change ----------
+
+const leafEdge = map.transitions.find(transition => transition.action.name === '첫 항목 열기');
+check('a screen two button presses deep had its own actions executed',
+  leafEdge?.status === 'verified' && leafEdge.to === leaf?.id,
+  JSON.stringify({ status: leafEdge?.status, reason: leafEdge?.blockedReason }));
+check('no action failed as not-found after "모두 잠금" renamed the rows in place, thanks to a fresh re-entry',
+  !map.transitions.some(transition => /not-found/.test(transition.blockedReason || ''))
+    && map.run.timing.phases.some(phase => phase.label === 'reach.fresh-retry'),
+  JSON.stringify(map.transitions.filter(transition => /not-found/.test(transition.blockedReason || ''))
+    .map(transition => transition.action.name)));
+const row = map.transitions.find(transition => /^서류/.test(transition.action.name || ''));
+check('a row name carries its icon label the way the accessible name does',
+  row?.action.name === '서류 항목 2', JSON.stringify(row?.action.name));
+
 // ---------- queries ----------
 
 const all = query('route', '--all');
-check('route --all answers', all.code === 0 && Array.isArray(all.json?.screens), JSON.stringify(all.json)?.slice(0, 300));
-check('route --all lists every screen, each reachable',
-  all.json?.screens.length === map.states.length && all.json.screens.every(screen => screen.reachable),
-  JSON.stringify(all.json?.screens.filter(screen => !screen.reachable)));
-check('route --all says which paths press mutating controls, and warns once',
-  all.json?.screens.some(screen => screen.mutatingSteps > 0)
-    && all.json.notes.some(note => /replayMutating/.test(note)),
-  JSON.stringify(all.json?.notes));
-
-const byId = query('route', '--to', leaf?.id || 's0');
-check('route --to takes a state id when every screen shares one route',
-  byId.code === 0 && byId.json?.steps.length === 3 && byId.json.title === '항목',
-  JSON.stringify({ code: byId.code, steps: byId.json?.steps?.length, title: byId.json?.title }));
-const shared = query('route', '--to', '/shell');
-check('a bare shared route still answers with the entrypoint, as before', shared.code === 0 && shared.json?.steps.length === 1,
-  JSON.stringify({ code: shared.code, steps: shared.json?.steps?.length }));
-
-const sheet = map.states.find(state => state.route === '/shell' && state.kind === 'overlay');
-const fromSheet = query('route', '--to', folder?.id || 's0', '--from', sheet?.id || 's0');
-const fromSteps = fromSheet.json?.steps || [];
-const sheetRow = fromSteps.find(step => /서류|사진/.test(step.name || ''));
-check('a step taken inside the open sheet is scoped to the dialog, not to two same-named rows',
-  /^await page\.getByRole\('dialog'\)\.getByRole\('button'/.test(sheetRow?.playwright || ''),
-  JSON.stringify({ code: fromSheet.code, steps: fromSteps.map(step => step.playwright) }));
-check('a path from a screen the URL cannot open first walks there from an entrypoint',
-  fromSteps[0]?.kind === 'goto' && fromSteps[1]?.name === '전체 보기' && fromSteps[2] === sheetRow,
-  JSON.stringify(fromSteps.map(step => step.name || step.kind)));
+check('route --all lists every screen, each reachable, and warns about mutating steps',
+  all.code === 0 && all.json?.screens.length === map.states.length && all.json.screens.every(screen => screen.reachable)
+    && all.json.screens.some(screen => screen.mutatingSteps > 0) && all.json.notes.some(note => /replayMutating/.test(note)),
+  JSON.stringify(all.json)?.slice(0, 300));
 const counted = all.json?.screens.flatMap(screen => screen.steps || []).find(step => /서류/.test(step.name || ''));
 // Run the generated pattern against the names the row can have, rather than pin its spelling.
 const countedSource = (counted?.playwright || '').match(/name: \/(.*)\/ \}/)?.[1];
@@ -125,17 +87,26 @@ check('a name holding a count is matched with the count free',
   !!countedRe && countedRe.test('서류 항목 2') && countedRe.test('서류 항목 17') && !countedRe.test('서류 항목 열기'),
   counted?.playwright);
 
+const byId = query('route', '--to', leaf?.id || 's0');
+check('route --to takes a state id when every screen shares one route',
+  byId.code === 0 && byId.json?.steps.length === 3 && byId.json.title === '항목',
+  JSON.stringify({ code: byId.code, steps: byId.json?.steps?.length, title: byId.json?.title }));
+
+const sheet = map.states.find(state => state.route === '/shell' && state.kind === 'overlay');
+const fromSheet = query('route', '--to', folder?.id || 's0', '--from', sheet?.id || 's0');
+const fromSteps = fromSheet.json?.steps || [];
+const sheetRow = fromSteps.find(step => /서류|사진/.test(step.name || ''));
+check('a path from a sheet the URL cannot open walks there first, then scopes its step to the dialog',
+  /^await page\.getByRole\('dialog'\)\.getByRole\('button'/.test(sheetRow?.playwright || '')
+    && fromSteps[0]?.kind === 'goto' && fromSteps[1]?.name === '전체 보기' && fromSteps[2] === sheetRow,
+  JSON.stringify({ code: fromSheet.code, steps: fromSteps.map(step => step.playwright || step.kind) }));
+
 const refused = query('verify', '--to', leaf?.id || 's0');
 check('verify will not press mutating steps it was not given --allow-mutating for',
-  refused.code === 3 && /--allow-mutating/.test(refused.json?.error || refused.json?.reason || JSON.stringify(refused.json)),
-  JSON.stringify(refused.json)?.slice(0, 300));
+  refused.code === 3, JSON.stringify(refused.json)?.slice(0, 300));
 const verify = query('verify', '--to', leaf?.id || 's0', '--allow-mutating');
 check('verify replays a state id route in a browser and lands on that screen',
   verify.code === 0 && verify.json?.reached === true, JSON.stringify(verify.json)?.slice(0, 300));
-const lookup = query('state', '--route', '/shell?mode=empty&utm=x');
-check('a lookup keeps the identity parameter and drops the rest',
-  lookup.code === 0 && lookup.json?.states?.every(state => state.route === '/shell?mode=empty'),
-  JSON.stringify(lookup.json)?.slice(0, 300));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

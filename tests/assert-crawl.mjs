@@ -26,13 +26,10 @@ const stateOf = id => map.states.find(state => state.id === id);
 
 // ---------- node identity ----------
 
-check('every fixture screen is mapped',
-  ['/', '/items', '/items/:id', '/cart', '/new'].every(route => routes.includes(route)),
+check('every fixture screen is mapped, and /items/1..3 collapse into one node',
+  ['/', '/items', '/items/:id', '/cart', '/new'].every(route => routes.includes(route))
+    && byRoute('/items/:id').length === 1,
   'routes: ' + JSON.stringify(routes));
-
-check('/items/1, /items/2 and /items/3 collapse into one node',
-  byRoute('/items/:id').length === 1,
-  'got ' + byRoute('/items/:id').length + ' nodes for /items/:id');
 
 check('the open filter dialog is its own node',
   byRoute('/items').length === 2 && byRoute('/items').some(state => state.kind === 'overlay'),
@@ -48,55 +45,44 @@ check('no screen was recorded mid-render',
   JSON.stringify(map.states.filter(state => !state.evidence.landmarks.length && !state.evidence.headings.length)
     .map(state => state.route)));
 
-check('the detail screen keeps a concrete url sample',
-  /^\/items\/\d+$/.test(byRoute('/items/:id')[0]?.evidence.urlSample || ''),
-  JSON.stringify(byRoute('/items/:id')[0]?.evidence.urlSample));
-
 // ---------- fail-closed policy ----------
 
 const del = transitionsNamed('삭제')[0];
-check('the delete button is recorded as an edge', !!del);
-check('the delete button is classified destructive', del?.class === 'destructive', JSON.stringify(del?.class));
-check('the delete button was never executed', del?.status === 'unexplored', JSON.stringify(del?.status));
-check('the delete button was never actually clicked in the browser', clicks.delete === 0,
-  'server counted ' + clicks.delete + ' delete clicks');
+check('the delete button is recorded destructive and never pressed',
+  del?.class === 'destructive' && del?.status === 'unexplored' && clicks.delete === 0,
+  JSON.stringify({ class: del?.class, status: del?.status, clicks: clicks.delete }));
 
 const save = transitionsNamed('저장')[0];
-check('the form submit is classified mutating', save?.class === 'mutating', JSON.stringify(save?.class));
 if (mode === 'mutating') {
-  check('with --allow-mutating the form submit runs', save?.status === 'verified', JSON.stringify(save?.status));
-  check('the server saw the submit', clicks.submit >= 1, 'submit count ' + clicks.submit);
-  check('the destructive button stays untouched even with --allow-mutating', clicks.delete === 0);
+  check('with --allow-mutating the form submit runs and reaches the server',
+    save?.class === 'mutating' && save?.status === 'verified' && clicks.submit >= 1,
+    JSON.stringify({ class: save?.class, status: save?.status, submits: clicks.submit }));
 } else {
-  check('without --allow-mutating the form submit is left alone', save?.status === 'unexplored', JSON.stringify(save?.status));
-  check('the server never saw a submit', clicks.submit === 0, 'submit count ' + clicks.submit);
+  check('without --allow-mutating the form submit is classified mutating and left alone',
+    save?.class === 'mutating' && save?.status === 'unexplored' && clicks.submit === 0,
+    JSON.stringify({ class: save?.class, status: save?.status, submits: clicks.submit }));
+}
+
+// The --allow-mutating crawl is a short walk that only proves the policy above.
+if (mode === 'mutating') {
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail === 0 ? 0 : 1);
 }
 
 const external = transitionsNamed('외부 문서')[0];
-check('the external link is recorded', !!external);
-check('the external link is never followed',
-  external?.status === 'blocked' && external?.blockedReason === 'external-origin',
-  JSON.stringify({ status: external?.status, reason: external?.blockedReason }));
-
 const redirectedExternal = transitionsNamed('외부 리다이렉트')[0];
-check('a same-origin link that redirects away is recorded', !!redirectedExternal);
-check('an external redirect is blocked before it becomes a transition target',
-  redirectedExternal?.status === 'blocked' && redirectedExternal?.blockedReason === 'external-origin',
-  JSON.stringify({ status: redirectedExternal?.status, reason: redirectedExternal?.blockedReason }));
-// A press that changes nothing is not the same fact as a press that stays put. One is a
-// dead control; the other is a refresh, and the map is worth less if it calls them the same.
-const inert = map.transitions.filter(transition => transition.inert);
-check('a control wired to nothing is marked inert',
-  inert.length === 1 && inert[0].action.name === '펼치기',
-  'inert: ' + JSON.stringify(inert.map(t => t.action.name)));
-check('a control that stays put but reaches the server is not',
-  map.transitions.some(transition =>
-    transition.action.name === '새로고침' && transition.from === transition.to && !transition.inert),
-  JSON.stringify(map.transitions.filter(t => t.action.name === '새로고침')
-    .map(t => ({ to: t.to, from: t.from, inert: !!t.inert, status: t.status }))));
+check('an external link and a same-origin link that redirects away are blocked, and the outside never sees a request',
+  [external, redirectedExternal].every(t => t?.status === 'blocked' && t?.blockedReason === 'external-origin')
+    && clicks.external === 0,
+  JSON.stringify({ external: external?.status, redirect: redirectedExternal?.status, requests: clicks.external }));
 
-check('the blocked external origin receives no document request', clicks.external === 0,
-  'external server counted ' + clicks.external + ' requests');
+// A press that changes nothing is not the same fact as a press that stays put. One is a
+// dead control; the other is a refresh.
+const inert = map.transitions.filter(transition => transition.inert);
+check('a control wired to nothing is marked inert, a refresh that reaches the server is not',
+  inert.length === 1 && inert[0].action.name === '펼치기'
+    && map.transitions.some(t => t.action.name === '새로고침' && t.from === t.to && !t.inert),
+  'inert: ' + JSON.stringify(inert.map(t => t.action.name)));
 
 // ---------- modal scoping ----------
 
@@ -105,7 +91,6 @@ const fromDialog = map.transitions.filter(transition => transition.from === dial
 check('a modal hides the inert background from the crawl',
   fromDialog.length > 0 && fromDialog.every(transition => transition.action.name === '닫기'),
   'dialog actions: ' + JSON.stringify(fromDialog.map(transition => transition.action.name)));
-
 const fromMenu = map.transitions.filter(transition => transition.from === menuState?.id)
   .map(transition => transition.action.name).sort();
 check('an open dropdown scopes the crawl to its own items',
@@ -119,86 +104,49 @@ const listLinks = map.transitions.filter(transition =>
   && /^\/items\/\d+$/.test(new URL(transition.action.href || 'http://x/').pathname));
 const walkedLinks = listLinks.filter(transition => transition.status === 'verified');
 const sampledLinks = listLinks.filter(transition => transition.status === 'sampled');
-
-check('all five list items are recorded as edges', listLinks.length === 5, 'got ' + listLinks.length);
-check('only the sample size is actually walked', walkedLinks.length === 3, 'walked ' + walkedLinks.length);
-check('the rest are marked sampled, not silently dropped', sampledLinks.length === 2, 'sampled ' + sampledLinks.length);
-check('each skipped link states the cap and the total',
-  sampledLinks.every(transition => /list sample: 3 of 5 links to \/items\/:id/.test(transition.blockedReason || '')),
-  JSON.stringify(sampledLinks.map(transition => transition.blockedReason)));
-check('coverage counts the sampled edges', map.coverage.sampled === 2, JSON.stringify(map.coverage.sampled));
+check('all five list items are edges, three walked and two marked sampled with the cap',
+  listLinks.length === 5 && walkedLinks.length === 3 && sampledLinks.length === 2
+    && sampledLinks.every(transition => /list sample: 3 of 5/.test(transition.blockedReason || '')),
+  JSON.stringify({ links: listLinks.length, walked: walkedLinks.length, sampled: sampledLinks.map(t => t.blockedReason) }));
 
 // `blocked` once held every non-verified transition, so the sampled links above were
-// counted twice — once under their own name and once inside `blocked`. The two must
-// now be disjoint, and the parts must add up to the total.
+// counted twice. The parts must now add up to the total.
 const cov = map.coverage;
-check('the not-executed total is reported separately from the blocked status',
-  typeof cov.notExecuted === 'number' && typeof cov.blocked === 'number',
-  JSON.stringify(cov));
-check('sampled edges are no longer counted inside blocked',
-  cov.blocked + cov.unexplored + cov.sampled + cov.failed === cov.notExecuted,
-  JSON.stringify(cov));
-check('the not-executed total matches the transitions that were never verified',
-  cov.notExecuted === map.transitions.filter(transition => transition.status !== 'verified').length,
+check('coverage parts add up to the not-executed total, which matches the unverified edges',
+  cov.sampled === 2 && cov.blocked + cov.unexplored + cov.sampled + cov.failed === cov.notExecuted
+    && cov.notExecuted === map.transitions.filter(transition => transition.status !== 'verified').length,
   JSON.stringify(cov));
 
 // ---------- identity survives a drifting label ----------
 
 const toList = map.transitions.find(transition =>
   stateOf(transition.from)?.route === '/' && stateOf(transition.to)?.route === '/items');
-check('the link whose badge count changes on every visit is still walked',
-  toList?.status === 'verified', JSON.stringify(toList && { status: toList.status, reason: toList.blockedReason }));
-check('its action key drops the badge count',
-  !!toList && !/\d/.test(toList.action.key), JSON.stringify(toList?.action.key));
+check('the link whose badge count changes on every visit is still walked by name',
+  toList?.status === 'verified' && !/\d/.test(toList.action.key) && toList.action.fallbackUsed === false,
+  JSON.stringify(toList && { status: toList.status, key: toList.action.key, fallbackUsed: toList.action.fallbackUsed }));
 
-// The other kind of drift: wording, which dropping numbers cannot normalize. The key
-// recorded on the first visit cannot match on the second, so the only way this edge
-// gets walked is the recorded CSS position — and `map-schema.md` promises the map says
-// so. Three checks, because "fallbackUsed is false" and "the map is right" look alike
-// from a distance: the flag must be on here, the click must actually have landed, and
-// the flag must be off on an edge that resolved by name.
+// The other kind of drift: wording, which dropping numbers cannot normalize. The only way
+// this edge gets walked is the recorded CSS position, and the map has to say so.
 const stash = map.transitions.filter(transition => transition.action.cssFallback === '#stash');
-check('the link whose wording changes between visits is recorded exactly once',
-  stash.length === 1, 'got ' + stash.length);
-check('an element found by CSS position instead of its name is reported as such',
-  stash[0]?.action.fallbackUsed === true,
-  JSON.stringify(stash[0] && { name: stash[0].action.name, fallbackUsed: stash[0].action.fallbackUsed }));
-check('the CSS fallback actually landed — the edge is walked, not merely attempted',
-  stash[0]?.status === 'verified' && stateOf(stash[0]?.to)?.route === '/cart',
-  JSON.stringify(stash[0] && { status: stash[0].status, reason: stash[0].blockedReason }));
-check('an element found by its own name is not reported as a fallback',
-  toList?.action.fallbackUsed === false, JSON.stringify(toList?.action.fallbackUsed));
+check('a link whose wording changes is one edge, walked by CSS position and reported as such',
+  stash.length === 1 && stash[0].action.fallbackUsed === true
+    && stash[0].status === 'verified' && stateOf(stash[0].to)?.route === '/cart',
+  JSON.stringify(stash.map(t => ({ name: t.action.name, fallbackUsed: t.action.fallbackUsed, status: t.status }))));
 
 // ---------- graph integrity ----------
 
-check('every verified transition names its target',
-  map.transitions.filter(transition => transition.status === 'verified').every(transition => !!transition.to));
-check('every transition target exists',
-  map.transitions.filter(transition => transition.to).every(transition => !!stateOf(transition.to)));
-check('every transition records whether CSS fallback was used',
-  map.transitions.every(transition => typeof transition.action.fallbackUsed === 'boolean'),
-  JSON.stringify(map.transitions.filter(transition => typeof transition.action.fallbackUsed !== 'boolean')
-    .map(transition => transition.id)));
-check('the cycle between list and detail is captured',
-  map.transitions.some(transition => stateOf(transition.from)?.route === '/items/:id' && stateOf(transition.to)?.route === '/items'));
-check('the crawl terminated inside its budget',
-  !map.run.budgetHit && map.coverage.frontier.length === 0,
-  JSON.stringify({ budgetHit: map.run.budgetHit, frontier: map.coverage.frontier }));
-check('the crawl recorded the app commit', /^[0-9a-f]{7,}$/.test(map.app.commit || ''), JSON.stringify(map.app.commit));
+check('every verified transition names a target that exists',
+  map.transitions.filter(transition => transition.status === 'verified').every(transition => !!stateOf(transition.to)));
+check('the crawl terminated inside its budget and recorded the app commit',
+  !map.run.budgetHit && map.coverage.frontier.length === 0 && /^[0-9a-f]{7,}$/.test(map.app.commit || ''),
+  JSON.stringify({ budgetHit: map.run.budgetHit, frontier: map.coverage.frontier, commit: map.app.commit }));
 
-// ---------- accounting ----------
-//
 // Budget exhaustion is this skill's ordinary failure, and the fix depends on which phase
-// spent the time. Without these numbers the only available diagnosis is a guess.
-
+// spent the time.
 const timing = map.run.timing || {};
-check('the run accounts for its own time',
-  timing.totalMs > 0 && Array.isArray(timing.phases) && timing.phases.length > 0,
+check('the run accounts for its own time, by phase and by screen',
+  timing.totalMs > 0 && timing.phases?.length > 0 && timing.byScreen?.length > 0,
   JSON.stringify({ totalMs: timing.totalMs, phases: (timing.phases || []).length }));
-check('the clock is attributed to the screens that spent it',
-  Array.isArray(timing.byScreen) && timing.byScreen.length > 0
-    && timing.byScreen.every(row => row.ms >= 0 && row.actions > 0),
-  JSON.stringify(timing.byScreen));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

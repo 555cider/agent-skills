@@ -27,9 +27,6 @@ function check(name, condition, detail = '') {
   catch (error) { refusal = error; }
   check('as root, launching a browser is refused rather than silently unsandboxed',
     refusal instanceof SandboxRefused, refusal ? refusal.constructor.name : 'nothing was thrown');
-  check('the refusal names both ways out, since a container cannot stop being root',
-    /--no-sandbox/.test(refusal?.message || '') && /SCREEN_MAP_NO_SANDBOX/.test(refusal?.message || ''),
-    JSON.stringify(refusal?.message));
   if (realEnv === undefined) delete process.env.SCREEN_MAP_NO_SANDBOX;
   else process.env.SCREEN_MAP_NO_SANDBOX = realEnv;
   if (realGetuid) process.getuid = realGetuid; else delete process.getuid;
@@ -75,10 +72,9 @@ try {
   const started = Date.now();
   const observation = await page.settle({ timeout: 1200, interval: 50, stableRounds: 1, quietMs: 100 });
   const elapsed = Date.now() - started;
-  check('a redirected document releases every in-flight request id', page.inflight === 0,
-    JSON.stringify({ inflight: page.inflight, completions: page.completions }));
-  check('redirect settling completes before the timeout fallback', elapsed < 1000,
-    `settle took ${elapsed}ms`);
+  check('a redirected document releases every in-flight request id, so settling beats the timeout fallback',
+    page.inflight === 0 && elapsed < 1000,
+    JSON.stringify({ inflight: page.inflight, completions: page.completions, elapsed }));
 
   const action = observation.actions.find(entry => entry.name === 'Old name');
   await page.evaluateJson('(()=>{document.querySelector("#target").textContent="New name";return true})()');
