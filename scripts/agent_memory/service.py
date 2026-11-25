@@ -43,13 +43,14 @@ from .util import (
     MemoryError,
     digest_text,
     head_tail,
-    is_harness_message,
     jsonable_row,
     normalize_text,
     repo_key,
     semantic_tokens,
+    slash_command,
     stable_json,
     utc_after,
+    user_text,
     utc_now,
     word_tokens,
 )
@@ -464,8 +465,10 @@ class MemoryService:
         superseded: list[dict[str, str]] = []
         forgotten: list[str] = []
         forget_skipped = 0
-        if inserted and kind == "user_prompt" and not is_harness_message(str(payload.get("prompt", ""))):
-            prompt = str(payload.get("prompt", ""))
+        # Remember/forget read the user's own words. A slash command's arguments
+        # are addressed to that command, not to memory, so it changes nothing here.
+        prompt = user_text(str(payload.get("prompt", ""))) if kind == "user_prompt" else ""
+        if inserted and prompt and not slash_command(prompt)[0]:
             forget_query = self.explicit_forget_query(prompt)
             if forget_query:
                 scope_rows = self.db.conn.execute(
@@ -1668,6 +1671,9 @@ class MemoryService:
             "review_queued": 0,
             "skipped": [],
         }
+        # Ids this payload maps onto, existing or new; `retract_unproduced_imports`
+        # must never touch them.
+        produced: list[str] = []
         known_ids = {
             row[0] for row in self.db.conn.execute("SELECT id FROM memories").fetchall()
         }
@@ -1705,10 +1711,11 @@ class MemoryService:
 
             if dry_run:
                 existing = self.db.conn.execute(
-                    "SELECT 1 FROM memories WHERE content_hash=? AND state!='retracted'",
+                    "SELECT id FROM memories WHERE content_hash=? AND state!='retracted'",
                     (content_digest(candidate, target),),
                 ).fetchone()
                 if existing:
+                    produced.append(str(existing["id"]))
                     report["merged"] += 1
                 else:
                     report["imported"] += 1
@@ -1724,6 +1731,7 @@ class MemoryService:
             if stored is None:
                 self._skip(report, item, "forgotten")
                 continue
+            produced.append(str(stored["id"]))
             if stored["id"] in known_ids:
                 report["merged"] += 1
                 continue
@@ -1732,7 +1740,62 @@ class MemoryService:
             if stored["state"] == "provisional":
                 report["review_queued"] += 1
 
+        report["memory_ids"] = produced
         return report
+
+    def retract_unproduced_imports(
+        self, files: dict[str, set[str]], keep: set[str], *, dry_run: bool = False
+    ) -> list[dict[str, str]]:
+        """Retract what an earlier `adopt` took from these files and this run did not.
+
+        `files` maps an adopt source to the file labels this run re-read. A
+        record qualifies only when all of its evidence is that import from those
+        files and it is not `explicit`: one the user stated or another source
+        also produced stays.
+        """
+
+        retracted: list[dict[str, str]] = []
+        candidates: dict[str, sqlite3.Row] = {}
+        for source in files:
+            for row in self.db.conn.execute(
+                "SELECT m.* FROM memories m WHERE m.state!='retracted' AND EXISTS("
+                "SELECT 1 FROM evidence e WHERE e.memory_id=m.id AND e.kind=?)",
+                (f"import.{source}",),
+            ):
+                candidates[str(row["id"])] = row
+        stale: list[tuple[str, str, str]] = []
+        for memory_id, row in candidates.items():
+            # `remember` wrote it; batch approval of an adoption stays retractable,
+            # since it accepted the file's content rather than this wording.
+            if memory_id in keep or row["authority"] == "explicit":
+                continue
+            labels: list[str] = []
+            foreign = False
+            for item in self.db.conn.execute(
+                "SELECT kind, summary FROM evidence WHERE memory_id=?", (memory_id,)
+            ):
+                kind = str(item["kind"])
+                if kind == IMPORT_BATCH_EVIDENCE:
+                    continue
+                source = kind.removeprefix("import.")
+                if not kind.startswith("import.") or source not in files:
+                    foreign = True
+                    break
+                label = re.split(r" § | — why: ", str(item["summary"]), maxsplit=1)[0].strip()
+                if label not in files[source]:
+                    foreign = True
+                    break
+                labels.append(label)
+            if foreign or not labels:
+                continue
+            stale.append((memory_id, str(row["statement"]), labels[0]))
+        if dry_run:
+            return [{"id": key, "statement": text, "path": label} for key, text, label in stale]
+        with self.db.transaction(immediate=True):
+            for memory_id, statement, label in stale:
+                self._change_state(memory_id, "retracted", f"no longer produced by adopting {label}")
+                retracted.append({"id": memory_id, "statement": statement, "path": label})
+        return retracted
 
     @staticmethod
     def _batch_token(count: int) -> str:

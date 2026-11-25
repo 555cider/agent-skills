@@ -53,12 +53,20 @@ deterministic SQLite/FTS core remains available.
 ## Plugin install (Claude Code and Codex)
 
 Installed as the `agent-memory` or `agent-skills` plugin, the skill carries its
-own `hooks/hooks.json` (prompt recall, stop and session-end capture). Claude Code
-and Codex both load it from their own plugin cache, so nothing is written to
+own hooks (prompt recall, stop and session-end capture): `hooks/hooks.json` for
+Claude Code (`--harness claude`) and `hooks/hooks.codex.json` for Codex
+(`--harness codex`), which `.codex-plugin/plugin.json` names. Each host loads its
+file from its own plugin cache, so nothing is written to
 `~/.claude/settings.json` or `~/.codex/hooks.json`, and plugin updates cannot
-leave a hook pointing at a deleted version. The hook passes `--harness auto`; the
-event's `transcript_path` tells Codex and Claude apart. Codex runs a plugin hook
-only after you trust it once in the TUI (again whenever the hook file changes).
+leave a hook pointing at a deleted version. The host is named in the file rather
+than guessed because one folder can be both `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
+`--harness auto` remains for hand-written hooks: it reads the transcript layout
+(`projects/<slug>/<uuid>.jsonl` is Claude Code, `sessions/…/rollout-*.jsonl` is
+Codex) before the folder it sits in. The Codex file uses `${PLUGIN_ROOT}` alone:
+Codex substitutes it into the command text and on Windows runs the command
+through PowerShell, where a shell default such as `${A:-${B}}` comes out empty.
+Codex runs a plugin hook only after you trust it once in the TUI (again whenever
+the hook file changes).
 
 The plugin needs no venv: the core runs on the system `python3` (3.11+; older
 interpreters make the hooks no-ops). For the CLI on your PATH, copy the launcher

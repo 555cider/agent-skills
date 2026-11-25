@@ -1,0 +1,6 @@
+{
+  "name": "agent-memory",
+  "version": "1.5.1",
+  "description": "Evidence-aware durable memory shared across Claude, Codex, and OpenCode, authoritative in SQLite, with redacted observation and lifecycle review.",
+  "hooks": "./hooks/hooks.codex.json"
+}

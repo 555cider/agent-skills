@@ -90,4 +90,11 @@ elif [ -x "$skill_root/.venv/Scripts/python.exe" ]; then
 else
   python_bin="python3"
 fi
-exec "$python_bin" "$skill_root/scripts/memory.py" "$@"
+script="$skill_root/scripts/memory.py"
+# Git Bash rewrites a `/c/...` argument for a Windows program, unless
+# MSYS_NO_PATHCONV=1 is set; then Windows Python opens `C:\c\...`. Hand it the
+# Windows form either way.
+if command -v cygpath >/dev/null 2>&1; then
+  script="$(cygpath -w "$script")"
+fi
+exec "$python_bin" "$script" "$@"

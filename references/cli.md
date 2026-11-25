@@ -70,6 +70,8 @@ adopt [list]
                              projects/*/memory is read; repeatable
   --llm                      let the provider classify and restate parsed blocks
   --include-episodic         also read session narrative
+  --replace                  retract earlier adopted records the files read now
+                             no longer produce
   --dry-run
 gc
 doctor

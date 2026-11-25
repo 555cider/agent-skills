@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent_memory.instructions import loaded_rules, mirrored
+from agent_memory.instructions import loaded_rules, mirrored, native_memory_dirs
 from agent_memory.models import Candidate
 from agent_memory.retrieval import Retriever
 
@@ -50,3 +50,89 @@ def test_recall_skips_records_the_host_already_loaded(memory):
     )
     ids = {item["id"] for item in packet["items"]}
     assert loaded["id"] not in ids and other["id"] in ids
+
+
+def test_claude_follows_imports_four_hops_from_the_config_dir(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    profile = tmp_path / "profile"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(profile))
+    _write(profile / "CLAUDE.md", "# 프로필\n\n@~/.claude/CLAUDE.md\n\n```\n@code.md\n```\nInline `@code.md` too.\n")
+    _write(home / ".claude" / "CLAUDE.md", "- 발견한 버그를 고칠까요로 넘기지 않는다.\n\nSee @one.md for more.\n")
+    _write(home / ".claude" / "one.md", "- hop two rule about release notes\n@two.md\n")
+    _write(home / ".claude" / "two.md", "- hop three rule about changelog entries\n@three.md\n")
+    _write(home / ".claude" / "three.md", "- hop four rule about version tags\n@four.md\n")
+    _write(home / ".claude" / "four.md", "- hop five rule is beyond the limit\n")
+    _write(profile / "punct.md", "- rule imported with trailing punctuation\n")
+    _write(profile / "paren.md", "- rule imported from inside parentheses\n")
+    (profile / "CLAUDE.md").write_text(
+        (profile / "CLAUDE.md").read_text(encoding="utf-8") + "Also @punct.md, and (@paren.md).\n",
+        encoding="utf-8",
+    )
+    _write(profile / "code.md", "- inside a code span rule\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    rules = loaded_rules("claude", repo, home=home)
+
+    assert any("고칠까요" in rule for rule in rules)
+    assert any("hop four" in rule for rule in rules)
+    assert not any("hop five" in rule for rule in rules)
+    assert not any("code span" in rule for rule in rules)
+    assert any("trailing punctuation" in rule for rule in rules)
+    assert any("inside parentheses" in rule for rule in rules)
+    # Codex has no import syntax; its AGENTS.md is read as written.
+    assert not any("고칠까요" in rule for rule in loaded_rules("codex", repo, home=home))
+
+
+def test_claude_counts_the_projects_auto_memory_index_as_loaded(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    profile = tmp_path / "profile"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(profile))
+    repo = tmp_path / "opt" / "repo"
+    worktree = repo / ".worktrees" / "topic"
+    worktree.mkdir(parents=True)
+    memory_dir = profile / "projects" / _slug(repo) / "memory"
+    _write(memory_dir / "MEMORY.md", "- [Deploy](deploy.md) — deploys go through rsync to staging first\n")
+
+    rules = loaded_rules("claude", worktree, home=home, project_root=repo)
+
+    assert any("rsync to staging" in rule for rule in rules)
+    assert native_memory_dirs("claude", worktree, home=home, project_root=repo) == [memory_dir.resolve()]
+    assert native_memory_dirs("codex", worktree, home=home, project_root=repo) == []
+
+
+def _slug(path):
+    import re
+
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path.resolve()))
+
+
+def test_claude_recall_skips_records_adopted_from_its_own_auto_memory(memory, tmp_path, monkeypatch):
+    db, service, project = memory
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    native = tmp_path / "home" / ".claude" / "projects" / "C--repo" / "memory"
+    elsewhere = tmp_path / "home" / ".claude" / "projects" / "C--other" / "memory"
+
+    def adopted(statement, directory):
+        return service.create_memory(
+            Candidate(
+                kind="preference",
+                scope="project",
+                statement=statement,
+                authority="explicit",
+                evidence=[
+                    {"kind": "import.claude-memory", "summary": f"~/{(directory / 'deploy.md').relative_to(tmp_path / 'home').as_posix()} § deploy"}
+                ],
+            ),
+            project=project,
+        )
+
+    own = adopted("Deploys go through rsync to the staging host first.", native)
+    other = adopted("Deploys run the rsync smoke check after upload.", elsewhere)
+    retriever = Retriever(db, service.provider)
+
+    claude = retriever.recall(project=project, prompt="rsync deploy", harness="claude", native_memory_dirs=[native])
+    codex = retriever.recall(project=project, prompt="rsync deploy", harness="codex", session_id="c")
+
+    assert {item["id"] for item in claude["items"]} == {other["id"]}
+    assert {item["id"] for item in codex["items"]} == {own["id"], other["id"]}

@@ -9,6 +9,7 @@ import struct
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .constants import (
@@ -19,7 +20,7 @@ from .constants import (
     REEXPOSE_AFTER_MINUTES,
 )
 from .db import Database
-from .instructions import mirrored
+from .instructions import from_native_memory, mirrored
 from .providers import NullProvider, Provider, ProviderError
 from .redaction import redact_text
 from .service import record_from_row
@@ -29,8 +30,8 @@ from .util import (
     concepts_in,
     digest_text,
     fts_query,
-    is_harness_message,
     normalize_text,
+    recall_query,
     rough_tokens,
     semantic_tokens,
     utc_now,
@@ -410,6 +411,7 @@ class Retriever:
         exclude_ids: set[str] | None = None,
         session_id: str | None = None,
         loaded_rules: Sequence[str] = (),
+        native_memory_dirs: Sequence[Path] = (),
         changes: Sequence[str] = (),
         suppress_maintenance: bool = False,
     ) -> dict[str, Any]:
@@ -421,9 +423,11 @@ class Retriever:
         was carried out, so leftovers are not presented as the records being changed.
         """
         started = datetime.now(UTC)
-        mode = "maintenance" if is_maintenance_prompt(prompt) and not is_harness_message(prompt) else "recall"
+        # Only the user's own words are searched; see recall_query.
+        prompt = recall_query(prompt)
+        harness_message = not prompt
+        mode = "maintenance" if not harness_message and is_maintenance_prompt(prompt) else "recall"
         query_id = f"qry_{uuid.uuid4().hex[:24]}"
-        harness_message = is_harness_message(prompt)
         vector = [] if harness_message else self._vector(prompt)
         lexical = [] if harness_message else self._lexical(prompt)
         records = self._records(list(dict.fromkeys([*lexical, *vector])))
@@ -483,6 +487,9 @@ class Retriever:
                 continue
             if loaded_rules and mirrored(record["statement"], loaded_rules):
                 # The host already has this rule in its instruction files.
+                continue
+            if native_memory_dirs and from_native_memory(record, native_memory_dirs):
+                # Adopted from the auto-memory this host loads on its own.
                 continue
             score = combined[memory_id]
             if record["scope"] == "project":

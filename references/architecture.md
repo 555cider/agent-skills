@@ -13,7 +13,9 @@ harness semantic event
   -> current record + immutable revision + evidence + indexes
 
 current prompt
-  -> harness messages (<task-notification>, <agent-message>) stop here: no recall
+  -> host blocks (<task-notification>, <agent-message>, <system-reminder>) and
+     pasted text (<pasted_content>) leave the query; a slash command keeps
+     only its arguments; nothing left means no recall (util.recall_query)
   -> maintenance detection
   -> FTS5 + optional sqlite-vec candidates; trigram only when no lexical hit
      in scope clears the relevance floor
@@ -22,7 +24,9 @@ current prompt
      in the last 2 hours, minus records restating a rule the host already
      loads (CLAUDE.md for Claude, AGENTS.md for Codex/OpenCode; home file —
      under CLAUDE_CONFIG_DIR / CODEX_HOME when set — and every directory up
-     from cwd; instructions.py)
+     from cwd; for Claude also `@path` imports four hops deep and the
+     project's auto-memory MEMORY.md; instructions.py), and for Claude minus
+     records adopted from that project's auto-memory folder
   -> reciprocal-rank fusion and bounded boosts
   -> <=8 record / ~1200 token packet
 

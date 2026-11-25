@@ -31,9 +31,27 @@ directory no longer exists is skipped as `unknown-project`. Frontmatter
 `type: user` facts are global preferences; every other type stays with its
 repository. `MEMORY.md` is the index and is not read. `**Why:**` paragraphs go
 into the evidence summary; `**How to apply:**` becomes its own statement; a
-block over 600 characters is skipped as `too-long`. Re-running is a one-way
-sync: identical facts merge, an edited fact arrives as a new record beside the
-old one.
+label's hard-wrapped lines stay in its paragraph up to the next blank line,
+heading, bullet or label; a block over 600 characters is skipped as `too-long`.
+Re-running is a one-way sync: identical facts merge, an edited fact arrives as a
+new record beside the old one. Claude Code loads this folder itself, so recall in
+a Claude session skips records adopted from the current project's folder; Codex
+and OpenCode still get them.
+
+**Re-adopting with `--replace`.** It retracts records an earlier `adopt` took
+from a file this run read and no longer produces: an edited rule's old wording,
+or the sentence fragments versions before the wrapped-paragraph fix stored. Only
+records whose every evidence is that import qualify; an `explicit` record or one
+another source also produced stays. Approving the adopted batch does not protect
+a record: it accepted the file's content, not that wording. A file whose
+checkout cannot be resolved (`unknown-project`) retracts nothing. Run `--replace`
+the same way the records were adopted: with or without `--llm`, because the
+other mode words them differently and would retract them all. Preview first:
+
+```bash
+agent-memory adopt --source claude-memory --replace --dry-run --format json   # lists `retracted`
+agent-memory adopt --source claude-memory --replace --format json
+```
 
 **Scope is decided per record, never in bulk.** Home files are global; repo
 files are keyed to that repository; a Codex `Task Group` is routed by its

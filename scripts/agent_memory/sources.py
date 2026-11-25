@@ -704,6 +704,7 @@ def _codex_records(source: SourceFile, text: str) -> tuple[list[dict[str, Any]],
                         "statement": f"{group or section} ({applies[:80]})",
                         "reason": "unknown-project",
                         "source": source.source,
+                        "path": source.label,
                     }
                 )
                 continue
@@ -774,6 +775,7 @@ def _claude_memory_records(
                 "statement": f"{name} ({source.label})"[:200],
                 "reason": "unknown-project",
                 "source": source.source,
+                "path": source.label,
             }
         ]
 
@@ -781,13 +783,25 @@ def _claude_memory_records(
     # The convention writes `**Why:**` and `**How to apply:**` on adjacent lines
     # (sometimes as bullets, sometimes nested under the rule), which the
     # paragraph parser would join into one block; give each its own paragraph.
+    # A label's paragraph is often hard-wrapped: its following lines, up to a
+    # blank line, heading, bullet or the next label, belong to it.
     lines = []
+    in_label = False
     for line in body.splitlines():
         bare = LABEL_BULLET_RE.sub("", line, count=1)
         if WHY_RE.match(bare) or HOW_RE.match(bare):
-            lines.extend(["", bare.strip(), ""])
-        else:
-            lines.append(line)
+            lines.extend(["", bare.strip()])
+            in_label = True
+            continue
+        if in_label:
+            if line.strip() and not (
+                HEADING_RE.match(line) or BULLET_RE.match(line) or ORDERED_RE.match(line)
+            ):
+                lines.append(line.strip())
+                continue
+            lines.append("")
+            in_label = False
+        lines.append(line)
     body = "\n".join(lines)
     blocks: list[Block] = []
     why: list[str] = []

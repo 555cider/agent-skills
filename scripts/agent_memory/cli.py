@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -23,7 +24,7 @@ from .constants import (
     TOMBSTONE_TTL_DAYS,
 )
 from .db import Database
-from .instructions import loaded_rules
+from .instructions import loaded_rules, native_memory_dirs
 
 # Commands the hook never runs import their modules lazily: every prompt and
 # shell command pays this module's import time.
@@ -32,7 +33,16 @@ from .providers import NullProvider, ProviderError, UnavailableProvider, provide
 from .redaction import redact_text
 from .retrieval import Retriever
 from .service import MemoryService
-from .util import MemoryError, expand_user_path, git_root, memory_home, repo_key, resolve_cwd
+from .util import (
+    MemoryError,
+    expand_user_path,
+    git_root,
+    key_for,
+    memory_home,
+    repo_identity,
+    repo_key,
+    resolve_cwd,
+)
 
 
 def _emit(value: Any, output_format: str = "text") -> None:
@@ -330,6 +340,20 @@ def command_adopt(args: argparse.Namespace) -> int:
         report["skipped"] = built["skipped"] + report["skipped"]
         report["read"] = built["read"]
         report["groups"] = built["groups"]
+        produced = set(report.pop("memory_ids", []))
+        if args.replace:
+            # A file whose checkout could not be resolved produced nothing this
+            # time, which says nothing about the records it gave earlier.
+            unresolved = {
+                item.get("path") for item in built["skipped"] if item.get("reason") == "unknown-project"
+            }
+            files: dict[str, set[str]] = {}
+            for item in built["read"]:
+                if item["path"] not in unresolved:
+                    files.setdefault(item["source"], set()).add(item["path"])
+            report["retracted"] = service.retract_unproduced_imports(
+                files, produced, dry_run=args.dry_run
+            )
         _emit(report, args.format)
         return 0
     finally:
@@ -418,16 +442,15 @@ def command_import(args: argparse.Namespace) -> int:
         raise MemoryError(f"export payload is not valid JSON: {exc}") from exc
     db, service = _open(args, provider=False)
     try:
-        _emit(
-            service.import_records(
-                payload,
-                project=_project(args) if args.cwd else None,
-                trust=args.trust,
-                scope=args.scope,
-                dry_run=args.dry_run,
-            ),
-            args.format,
+        report = service.import_records(
+            payload,
+            project=_project(args) if args.cwd else None,
+            trust=args.trust,
+            scope=args.scope,
+            dry_run=args.dry_run,
         )
+        report.pop("memory_ids", None)
+        _emit(report, args.format)
         return 0
     finally:
         db.close()
@@ -617,22 +640,40 @@ def _defer_capture(args: argparse.Namespace, data: dict[str, Any], kind: str) ->
             os.environ[DEFERRED_CAPTURE_ENV] = previous
 
 
+CLAUDE_TRANSCRIPT_RE = re.compile(
+    r"/projects/[^/]+/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.jsonl$|/)", re.I
+)
+CODEX_TRANSCRIPT_RE = re.compile(r"/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl$")
+
+
 def detect_hook_harness(data: dict[str, Any]) -> str:
     """Name the host that fired a plugin hook, from its payload first.
 
     The environment alone is not enough: a Codex started from a Claude Code shell
-    inherits CLAUDECODE. Each host writes its transcript under its own home.
+    inherits CLAUDECODE. The shipped hook files name their host; this guess is
+    for hand-written hooks and older plugin copies that still pass `auto`.
+
+    The transcript's own layout comes first because one folder can be both
+    CLAUDE_CONFIG_DIR and CODEX_HOME: Claude Code writes
+    `projects/<slug>/<session uuid>.jsonl`, Codex `sessions/YYYY/MM/DD/rollout-*.jsonl`.
     """
 
     transcript = str(data.get("transcript_path") or "").replace("\\", "/")
     codex_home = os.environ.get("CODEX_HOME", "").replace("\\", "/").rstrip("/")
+    if CLAUDE_TRANSCRIPT_RE.search(transcript):
+        return "claude"
+    if CODEX_TRANSCRIPT_RE.search(transcript):
+        return "codex"
+    if "turn_id" in data:
+        return "codex"
+    if "toolu_" in str(data.get("prompt") or ""):
+        # Claude Code's tool-use ids, carried by its task notifications.
+        return "claude"
     if transcript:
         if (codex_home and transcript.startswith(codex_home + "/")) or "/.codex/" in transcript:
             return "codex"
         if "/.claude/" in transcript or "/.config/claude/" in transcript:
             return "claude"
-    if "turn_id" in data:
-        return "codex"
     return "claude"
 
 
@@ -678,7 +719,8 @@ def command_hook(args: argparse.Namespace) -> int:
             db, service = _open(args)
         else:
             db, service = _open(args, busy_timeout_ms=HOOK_BUSY_TIMEOUT_MS)
-        project = repo_key(cwd)
+        identity, root = repo_identity(cwd)
+        project = key_for(root, identity)
         try:
             try:
                 capture = service.capture_event(
@@ -716,7 +758,8 @@ def command_hook(args: argparse.Namespace) -> int:
                     global_kind_ceiling=_repo_global_ceiling(cwd),
                     exclude_ids=set(capture.get("immediate_memories") or []),
                     session_id=capture.get("session_id"),
-                    loaded_rules=loaded_rules(args.harness, cwd),
+                    loaded_rules=loaded_rules(args.harness, cwd, project_root=root),
+                    native_memory_dirs=native_memory_dirs(args.harness, cwd, project_root=root),
                     changes=hook_change_lines(capture),
                     suppress_maintenance=bool(capture.get("forgotten")),
                 )
@@ -809,8 +852,9 @@ def command_reindex(args: argparse.Namespace) -> int:
 
 def _add_hook_parser(sub: Any) -> None:
     hook = sub.add_parser("hook", help="Process a fail-open host hook event")
-    # Plugin hooks ship one hooks.json that Claude Code and Codex both load, so
-    # they pass `auto` and the event payload names the host.
+    # Plugin hooks name their host: Claude Code loads hooks/hooks.json, Codex the
+    # hooks/hooks.codex.json its .codex-plugin/plugin.json names. `auto` reads the
+    # payload, for hand-written hooks and plugin copies from before that split.
     hook.add_argument("--harness", choices=sorted(HARNESSES | {"auto"}), required=True)
     hook.add_argument("--event")
     hook.add_argument("--cwd")
@@ -945,6 +989,12 @@ def build_parser(*, hook_only: bool = False) -> argparse.ArgumentParser:
         "--include-episodic",
         action="store_true",
         help="Also read session narrative that records what happened, not what to do",
+    )
+    adopt.add_argument(
+        "--replace",
+        action="store_true",
+        help="Retract records an earlier adopt took from the files read now that this run "
+        "no longer produces (fragments, edited rules); keeps explicit records and ones another source also produced",
     )
     adopt.add_argument("--dry-run", action="store_true")
     _format(adopt)

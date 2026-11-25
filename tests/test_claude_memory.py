@@ -203,3 +203,175 @@ def test_cli_adopts_a_profile_into_the_review_queue(layout, capsys):
     assert main(args) == 0  # re-running is the sync: it merges, never duplicates
     again = json.loads(capsys.readouterr().out)
     assert again["imported"] == 0
+
+
+WRAPPED = """\
+---
+name: no-unasked-loops
+type: feedback
+---
+
+Do not start long autonomous side-quests the user did not ask for: CI polling
+loops after a push, exhaustive option surveys.
+
+**Why:** they are the sole maintainer of this repo and want the change made,
+not a research narrative.
+
+**How to apply:** make the decision, do the work, verify the thing actually
+changed, report in a few lines.
+- **Why:** a second, bulleted reason that wraps
+  onto an indented line.
+"""
+
+
+def test_wrapped_why_and_how_paragraphs_stay_whole(layout):
+    folder = layout["home"] / ".claude" / "projects" / _slug(layout["repo"]) / "memory"
+    (folder / "no-unasked-loops.md").write_text(WRAPPED, encoding="utf-8")
+
+    built = _built(layout)
+    statements = [item["statement"] for item in built["payload"]["memories"] if item["conditions"] == ["no-unasked-loops"]]
+
+    assert statements == [
+        "Do not start long autonomous side-quests the user did not ask for: CI polling "
+        "loops after a push, exhaustive option surveys.",
+        "make the decision, do the work, verify the thing actually changed, report in a few lines.",
+    ]
+    summary = _find(built, "make the decision")["evidence"][0]["summary"]
+    assert "want the change made, not a research narrative" in summary
+    assert "wraps onto an indented line" in summary
+
+
+def _adopt(layout, store, *extra):
+    return main(
+        ["--memory-home", str(store), "adopt", "--source", "claude-memory",
+         "--home", str(layout["home"]), "--format", "json", *extra]
+    )
+
+
+def test_replace_retracts_fragments_an_earlier_adopt_left(layout, capsys):
+    from agent_memory.db import Database
+    from agent_memory.models import Candidate
+    from agent_memory.providers import NullProvider
+    from agent_memory.service import MemoryService
+
+    store = layout["tmp"] / "store"
+    label = f"~/.claude/projects/{_slug(layout['repo'])}/memory/verify-chart-interaction.md"
+    project = repo_key(layout["repo"])
+
+    def seed(statement, *evidence):
+        with Database(store) as db:
+            return MemoryService(db, NullProvider()).create_memory(
+                Candidate(kind="preference", scope="project", statement=statement,
+                          authority="inferred", confidence=0.5, evidence=list(evidence)),
+                project=project,
+            )
+
+    fragment = seed("changed, report in a few lines of the chart.", {"kind": "import.claude-memory", "summary": f"{label} § x"})
+    confirmed = seed("tooltip broke twice in static screenshots before.",
+                     {"kind": "import.claude-memory", "summary": f"{label} § x"},
+                     {"kind": "user_prompt", "summary": "the user said so"})
+    other = seed("another file's fragment stays put here.", {"kind": "import.claude-memory", "summary": "~/.claude/projects/x/memory/other.md § y"})
+
+    assert _adopt(layout, store, "--replace", "--dry-run") == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert [item["id"] for item in preview["retracted"]] == [fragment["id"]]
+
+    assert _adopt(layout, store, "--replace") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert [item["id"] for item in report["retracted"]] == [fragment["id"]]
+
+    with Database(store) as db:
+        states = dict(db.conn.execute("SELECT id, state FROM memories").fetchall())
+    assert states[fragment["id"]] == "retracted"
+    assert states[confirmed["id"]] != "retracted" and states[other["id"]] != "retracted"
+
+    assert _adopt(layout, store, "--replace") == 0  # what this run produced is never retracted
+    assert json.loads(capsys.readouterr().out)["retracted"] == []
+
+
+def test_replace_retracts_a_batch_approved_fragment_but_not_an_explicit_record(layout, capsys):
+    from agent_memory.db import Database
+    from agent_memory.models import Candidate
+    from agent_memory.providers import NullProvider
+    from agent_memory.service import MemoryService
+
+    store = layout["tmp"] / "store"
+    label = f"~/.claude/projects/{_slug(layout['repo'])}/memory/verify-chart-interaction.md"
+    evidence = {"kind": "import.claude-memory", "summary": f"{label} § x"}
+    with Database(store) as db:
+        service = MemoryService(db, NullProvider())
+        approved = service.create_memory(
+            Candidate(kind="preference", scope="project", statement="changed, report in a few lines of it.",
+                      authority="inferred", confidence=0.5, evidence=[evidence]),
+            project=repo_key(layout["repo"]),
+        )
+        service.approve(approved["id"], force=True)
+        explicit = service.create_memory(
+            Candidate(kind="preference", scope="project", statement="An explicit rule that names this file.",
+                      authority="explicit", confidence=1.0, evidence=[evidence]),
+            project=repo_key(layout["repo"]),
+        )
+
+    assert _adopt(layout, store, "--replace") == 0
+    retracted = {item["id"] for item in json.loads(capsys.readouterr().out)["retracted"]}
+
+    # Approving an adopted batch accepts the file's content, not this wording.
+    assert approved["id"] in retracted
+    assert explicit["id"] not in retracted
+
+
+def test_replace_keeps_a_codex_group_whose_checkout_is_gone(tmp_path, capsys):
+    from agent_memory.db import Database
+    from agent_memory.models import Candidate
+    from agent_memory.providers import NullProvider
+    from agent_memory.service import MemoryService
+
+    home = tmp_path / "home"
+    memory = home / ".codex" / "memories" / "MEMORY.md"
+    memory.parent.mkdir(parents=True)
+    memory.write_text(
+        "# Task Group: gone\napplies_to: cwd=" + (tmp_path / "gone").as_posix() + "\n\n## User preferences\n\n"
+        "- Keep the release notes short and lead with the result.\n",
+        encoding="utf-8",
+    )
+    store = tmp_path / "store"
+    with Database(store) as db:
+        kept = MemoryService(db, NullProvider()).create_memory(
+            Candidate(kind="preference", scope="project", statement="A rule from the moved checkout stays.",
+                      authority="inferred", confidence=0.5,
+                      evidence=[{"kind": "import.codex-memory", "summary": "~/.codex/memories/MEMORY.md § gone"}]),
+            project="moved-repo",
+        )
+
+    assert main(["--memory-home", str(store), "adopt", "--source", "codex-memory", "--home", str(home),
+                 "--replace", "--format", "json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert any(item["reason"] == "unknown-project" for item in report["skipped"])
+    assert report["retracted"] == []
+    assert kept["id"]
+
+
+def test_replace_keeps_what_a_file_with_a_moved_checkout_gave(layout, capsys):
+    from agent_memory.db import Database
+    from agent_memory.models import Candidate
+    from agent_memory.providers import NullProvider
+    from agent_memory.service import MemoryService
+
+    store = layout["tmp"] / "store"
+    lost = layout["profile"] / "projects" / _slug(layout["tmp"] / "gone") / "memory" / "lost.md"
+    with Database(store) as db:
+        kept = MemoryService(db, NullProvider()).create_memory(
+            Candidate(kind="preference", scope="project", statement="A rule from a checkout that moved away.",
+                      authority="inferred", confidence=0.5,
+                      evidence=[{"kind": "import.claude-memory", "summary": f"{lost.as_posix()} § lost"}]),
+            project="moved-repo",
+        )
+
+    assert _adopt(layout, store, "--claude-config-dir", str(layout["profile"]), "--replace") == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert any(item.get("path") == lost.as_posix() for item in report["skipped"])
+    assert report["retracted"] == []
+    with Database(store) as db:
+        assert db.conn.execute("SELECT state FROM memories WHERE id=?", (kept["id"],)).fetchone()[0] != "retracted"
