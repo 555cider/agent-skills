@@ -18,10 +18,17 @@ from .model import (
     recover_command,
     repo_relative,
     scope_matches,
+    unexpanded,
     unfilled_sections,
 )
 from .routing import blockers, readiness, tokens
-from .store import prunable_done, required_closure, reverse_dependents
+from .store import (
+    ancestors,
+    children_index,
+    prunable_done,
+    required_closure,
+    reverse_dependents,
+)
 
 WALK_SKIP = {
     ".git",
@@ -203,6 +210,11 @@ def file_index(plans: dict[str, Plan], files: list[str]) -> dict[str, set[str]]:
     return index
 
 
+def _in_line(plans: dict[str, Plan], first: str, second: str) -> bool:
+    """Whether one plan is an ancestor of the other: a parent's scope covers its pieces."""
+    return first in ancestors(plans, second) or second in ancestors(plans, first)
+
+
 def explain_plan(
     root: Path,
     plans: dict[str, Plan],
@@ -224,15 +236,27 @@ def explain_plan(
             shared = mine & index[other]
             if not shared:
                 continue
-            if other in closure or plan_id in required_closure(plans, [other]):
+            if (
+                other in closure
+                or plan_id in required_closure(plans, [other])
+                or _in_line(plans, plan_id, other)
+            ):
                 continue
             overlaps.append(
                 {"plan": other, "shared_files": sorted(shared)[:OVERLAP_SAMPLES]}
             )
+    children = children_index(plans).get(plan_id, ())
     return {
         "plan": plan.as_summary(),
         "readiness": readiness(plans, plan_id),
         "blockers": blockers(plans, plan_id),
+        "parent": plan.parent,
+        "ancestors": ancestors(plans, plan_id),
+        "children": {
+            "active": [c for c in children if c in plans and plans[c].status == "active"],
+            "done": [c for c in children if c in plans and plans[c].status == "done"],
+        },
+        "unexpanded": unexpanded(plan, bool(children)),
         "dependents": {
             "active": sorted(d for d in dependents if plans[d].status == "active"),
             "done": sorted(d for d in dependents if plans[d].status == "done"),
@@ -279,7 +303,11 @@ def near_duplicates(plans: dict[str, Plan], index: dict[str, set[str]]) -> list[
             shared_tags = first_tags & {tag.casefold() for tag in plans[second].tags}
             if not shared_tags:
                 continue
-            if second in first_closure or first in required_closure(plans, [second]):
+            if (
+                second in first_closure
+                or first in required_closure(plans, [second])
+                or _in_line(plans, first, second)
+            ):
                 continue
             shared_files = index.get(first, set()) & index.get(second, set())
             second_title = tokens(plans[second].title)
@@ -318,7 +346,11 @@ def scope_overlaps(plans: dict[str, Plan], index: dict[str, set[str]]) -> list[D
             shared = index[first] & index[second]
             if not shared:
                 continue
-            if second in first_closure or first in required_closure(plans, [second]):
+            if (
+                second in first_closure
+                or first in required_closure(plans, [second])
+                or _in_line(plans, first, second)
+            ):
                 continue
             samples = ", ".join(sorted(shared)[:OVERLAP_SAMPLES])
             diagnostics.append(

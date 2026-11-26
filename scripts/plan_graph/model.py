@@ -26,6 +26,8 @@ REQUIRED_SECTIONS = (
     "Completion",
 )
 METADATA_KEYS = {"status", "requires", "replaces", "scope", "tags"}
+# Optional keys: absent means the default, and a plan without them reads exactly as before.
+OPTIONAL_METADATA_KEYS = {"parent"}
 VALID_STATUSES = {"active", "done"}
 TBD_MARKER = "TBD"
 GATE_SECTIONS = ("Outcome", "Decisions", "Completion")
@@ -89,19 +91,26 @@ class Plan:
     # (another planning convention), read for routing only and never rewritten.
     kind: str = "graph"
     status_line: str = ""
+    # The plan this one is a piece of; None for a top-level plan.
+    parent: str | None = None
 
     @property
     def is_loose(self) -> bool:
         return self.kind == "loose"
 
     def metadata(self) -> dict[str, object]:
-        return {
-            "status": self.status,
-            "requires": list(self.requires),
-            "replaces": list(self.replaces),
-            "scope": list(self.scope),
-            "tags": list(self.tags),
-        }
+        data: dict[str, object] = {"status": self.status}
+        if self.parent is not None:
+            data["parent"] = self.parent
+        data.update(
+            {
+                "requires": list(self.requires),
+                "replaces": list(self.replaces),
+                "scope": list(self.scope),
+                "tags": list(self.tags),
+            }
+        )
+        return data
 
     def with_metadata(self, **updates: object) -> "Plan":
         return replace(self, **updates)
@@ -113,6 +122,7 @@ class Plan:
             "title": self.title,
             "status": self.status,
             "kind": self.kind,
+            "parent": self.parent,
             "requires": list(self.requires),
             "replaces": list(self.replaces),
             "scope": list(self.scope),
@@ -218,9 +228,20 @@ def field_diagnostics(
     scope: tuple[str, ...],
     tags: tuple[str, ...],
     path: str | None = None,
+    parent: str | None = None,
 ) -> list[Diagnostic]:
     """Per-plan metadata checks; the single implementation for parsed and new plans."""
     diagnostics: list[Diagnostic] = []
+    if parent is not None and not ID_RE.fullmatch(parent):
+        diagnostics.append(
+            Diagnostic(
+                "error",
+                "invalid_relation_id",
+                f"parent is not a valid plan ID: {parent!r}",
+                plan_id,
+                path,
+            )
+        )
     if status not in VALID_STATUSES:
         diagnostics.append(
             Diagnostic("error", "invalid_status", "status must be 'active' or 'done'", plan_id, path)
@@ -280,6 +301,7 @@ def validate_plan(plan: Plan) -> list[Diagnostic]:
             replaces=plan.replaces,
             scope=plan.scope,
             tags=plan.tags,
+            parent=plan.parent,
         )
     )
     return diagnostics
@@ -409,7 +431,7 @@ def parse_plan(
         )
         return None, diagnostics
     missing_keys = sorted(METADATA_KEYS - set(metadata))
-    unknown_keys = sorted(set(metadata) - METADATA_KEYS)
+    unknown_keys = sorted(set(metadata) - METADATA_KEYS - OPTIONAL_METADATA_KEYS)
     if missing_keys:
         diagnostics.append(
             Diagnostic(
@@ -436,6 +458,23 @@ def parse_plan(
     replaces = _string_array(metadata, "replaces", plan_id=plan_id, diagnostics=diagnostics)
     scope = _string_array(metadata, "scope", plan_id=plan_id, diagnostics=diagnostics)
     tags = _string_array(metadata, "tags", plan_id=plan_id, diagnostics=diagnostics)
+    parent: str | None = None
+    if "parent" in metadata:
+        raw_parent = metadata["parent"]
+        # null and "" are rejected rather than read as "no parent": a top-level plan
+        # omits the key, so the file has one spelling for it.
+        if isinstance(raw_parent, str) and raw_parent.strip():
+            parent = raw_parent.strip()
+        else:
+            diagnostics.append(
+                Diagnostic(
+                    "error",
+                    "invalid_metadata",
+                    "parent must be a plan ID string; omit the key for a top-level plan",
+                    plan_id,
+                    relative,
+                )
+            )
     diagnostics.extend(
         field_diagnostics(
             plan_id,
@@ -445,6 +484,7 @@ def parse_plan(
             scope=scope,
             tags=tags,
             path=relative,
+            parent=parent,
         )
     )
     status = raw_status if raw_status in VALID_STATUSES else "active"
@@ -518,6 +558,7 @@ def parse_plan(
         tags=tags,
         body=body,
         sections=sections,
+        parent=parent,
     )
     return plan, diagnostics
 
@@ -557,6 +598,7 @@ def make_plan(
     scope: Iterable[str] = (),
     tags: Iterable[str] = (),
     directory: PurePosixPath = PLAN_DIR,
+    parent: str | None = None,
 ) -> Plan:
     body_lines = [f"# {title.strip()}", ""]
     for section in REQUIRED_SECTIONS:
@@ -573,6 +615,17 @@ def make_plan(
         tags=tuple(dict.fromkeys(tags)),
         body=body,
         sections=extract_sections(body),
+        parent=parent,
+    )
+
+
+def unexpanded(plan: Plan, has_children: bool) -> bool:
+    """An active CLI plan with no children whose Implementation is still the template."""
+    return (
+        not has_children
+        and not plan.is_loose
+        and plan.status == "active"
+        and plan.sections.get("Implementation", "").strip() == TBD_MARKER
     )
 
 

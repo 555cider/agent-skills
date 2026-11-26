@@ -15,25 +15,27 @@ Without `--root`, the CLI uses `git rev-parse --show-toplevel`.
 |---|---|
 | `context [--plan ID] [--path PATH] [--query TEXT] [--worktree] [--no-other-worktrees]` | Select context and produce a decision pack, plus the other worktrees touching the routed paths. No selectors means this worktree's changes: uncommitted, and committed since its base. Explicit selectors include those changes only with `--worktree`. `--no-other-worktrees` skips reading other worktrees; the default selection then holds only uncommitted paths. A relative `--path` is read from the working directory when that is inside the root, else from the root; a directory (existing, or written with a trailing `/`) selects every scope that reaches into it. |
 | `overlap [--path PATH]` | Other worktrees of the repository that changed, or plan to change, the given paths (default: this worktree's changes since its base). Reads their ignored plan directories too. Never fails on another worktree's state. |
-| `status` | List ready, waiting, retained-done plans, `requires` edges, and the longest active chain. |
-| `why ID` | Aggregate every signal about one plan: readiness, blockers, dependents, staleness, overlaps, lineage, prunability, unfilled sections. |
+| `status` | List ready, waiting, retained-done plans, `requires` edges, and the longest active chain. A parent waiting on active children shows `children=a,b`. |
+| `tree [ID]` | Plans as a parent/child tree from the roots (plans without `parent`), siblings in `requires` order, each with title, status or readiness, and an `unexpanded` mark. `ID` shows only that subtree. Plans whose parent is missing or on a parent cycle follow under a `Detached` heading. |
+| `why ID` | Aggregate every signal about one plan: readiness, blockers, parent and ancestors, children, dependents, staleness, overlaps, lineage, prunability, unfilled sections. |
 | `doctor [--stale-after N] [--structural-only]` | Return all format, graph, safety, nested-store, legacy-store, and pruning diagnostics plus advisory warnings. `--stale-after` sets the stale commit threshold (default 5); `--structural-only` skips git/filesystem-backed advisory checks. |
 
 Read commands refuse structurally invalid stores except `doctor`, which reports
-all diagnostics in one pass, and `overlap`, which does not load this worktree's
-store.
+all diagnostics in one pass, `overlap`, which does not load this worktree's
+store, and `tree`, which renders the plans that loaded and returns the store's
+errors as diagnostics with exit 0, so a broken parent link can be seen.
 
 ## Mutation commands
 
 | Command | Behavior |
 |---|---|
-| `create ID --title TITLE [--scope GLOB] [--tag TAG] [--require ID]` | Create strict metadata plus the six-section template. Repeat list options as needed. |
+| `create ID --title TITLE [--parent ID] [--scope GLOB] [--tag TAG] [--require ID]` | Create strict metadata plus the six-section template. Repeat list options as needed. `--parent` must name an existing plan. |
 | `update ID` | Preserve the body while updating metadata or title. |
-| `rename OLD NEW [--title TITLE]` | Rename the file and update every current `requires` reference. Historical `replaces` strings stay unchanged. |
-| `replace OLD NEW --title TITLE ...` | Refuse active dependents, create a fresh plan with `replaces: [OLD]`, delete OLD, and prune orphaned done plans. Metadata and requirements are not inherited. |
+| `rename OLD NEW [--title TITLE]` | Rename the file and update every current `requires` and `parent` reference. Historical `replaces` strings stay unchanged. |
+| `replace OLD NEW --title TITLE [--subtree] ...` | Refuse active dependents, create a fresh plan with `replaces: [OLD]` under OLD's parent, delete OLD, and prune orphaned done plans. Other metadata and requirements are not inherited. Without `--subtree`, refuses while OLD has active descendants (`active_children`). `--subtree` also deletes every descendant of OLD (`drop` changes, saved to the recovery directory like any deletion) and refuses while an active plan outside the subtree requires anything inside it (`active_dependents`). |
 | `reopen ID` | Change a retained done plan back to active. |
-| `close ID [--force]` | Normal close marks done and prunes; refuses (`unverified_completion`) while Outcome, Decisions, or Completion is `TBD`. `--force` abandons instead, refuses active dependents, and removes the plan without satisfying prerequisites. Reports `abandoned: true`, empty `unblocked`, and a `forced_close` warning for abandonment. |
-| `drop ID` | Refuse active dependents, delete the target, and prune orphaned done plans. |
+| `close ID [--force]` | Normal close marks done and prunes; refuses (`unverified_completion`) while Outcome, Decisions, or Completion is `TBD`, and (`active_children`) while the plan has active descendants. `--force` abandons instead, refuses active dependents and active children, and removes the plan without satisfying prerequisites. Reports `abandoned: true`, empty `unblocked`, and a `forced_close` warning for abandonment. |
+| `drop ID` | Refuse active children and active dependents, delete the target, and prune orphaned done plans. Done children still required by other plans move to the target's parent (`relink` changes); `close --force` does the same, and `replace` moves them under NEW. |
 | `gc` | Delete all done plans outside active prerequisite closures. |
 
 `create` writes to the first `git config plan-graph.dir`, else `.agents/plans`;
@@ -53,7 +55,12 @@ and returns the exact change list without creating the store, lock, or files.
 --add-scope   / --remove-scope
 --add-tag     / --remove-tag
 --title
+--parent ID   | --clear-parent
 ```
+
+`--parent` must name an existing plan and may not make the plan its own
+ancestor (`parent_cycle`); `--clear-parent` makes it top-level. The two are
+mutually exclusive (usage error, exit 2).
 
 ## Output
 
@@ -80,10 +87,14 @@ These six top-level keys are stable across commands.
   `path`.
 - A change has `action` and the affected `plan`, or `from`/`to` for identity
   changes.
-- `context.data` contains `selectors`, `selected`, `required`, `affected`,
-  `overlapping`, `read_order`, `decision_pack`, fallback `candidates`, and
-  `near_misses` (query-only sub-threshold matches, at most three). Pack items
-  carry a `staleness` object, `kind` (`graph` or `loose`), `status_line` for a
+- `context.data` contains `selectors`, `selected`, `ancestors` (the selected
+  plans' ancestors that are not selected themselves, root first), `required`,
+  `affected`, `overlapping`, `read_order` (ancestors first), `decision_pack`,
+  fallback `candidates`, and `near_misses` (query-only sub-threshold matches, at
+  most three). Pack, status, and candidate items carry `parent` (null when
+  top-level) and `active_children` (active plans anywhere below it); an
+  ancestor's pack role is `ancestor`. Pack
+  items carry a `staleness` object, `kind` (`graph` or `loose`), `status_line` for a
   loose plan, and, when `replaces` is non-empty, `lineage`. Overlapping items
   omit section excerpts. `other_worktrees` lists overlap entries as in
   `overlap.data.overlaps` for the routed paths; empty when there are none or
@@ -97,11 +108,18 @@ These six top-level keys are stable across commands.
   "changed", "area"}`.
 - `doctor.data` contains `counts` (`plans`, `active`, `done`, `loose`) and
   `dirs`, the plan directories read.
-- `status.data` contains `ready`, `waiting`, `retained_done`, `critical_path`,
-  and `edges` (`{"from", "to", "kind": "requires"}`).
-- `why.data` contains `plan`, `readiness`, `blockers`, `dependents`
-  (`active`/`done`), `staleness`, `overlaps`, `lineage`, `prunable`, and
-  `unfilled_sections`.
+- `status.data` contains `ready`, `waiting`, `retained_done`, `critical_path`
+  (a parent counts its children as prerequisites), and `edges` (`{"from", "to",
+  "kind": "requires"}`).
+- `why.data` contains `plan` (its summary includes `parent`), `readiness`,
+  `blockers`, `parent`, `ancestors` (root first), `children`
+  (`active`/`done`), `unexpanded`, `dependents` (`active`/`done`), `staleness`,
+  `overlaps`, `lineage`, `prunable`, and `unfilled_sections`.
+- `tree.data` contains `top` (the `ID` argument or null), `ancestors` of `top`
+  (root first), `counts` (`plans`, `unexpanded`, `detached`), and `nodes`, a flat
+  list in display order: `{"id", "title", "status", "kind", "readiness",
+  "unexpanded", "depth", "parent", "children"}` plus `detached`
+  (`missing_parent` or `parent_cycle`) on the first node of a detached branch.
 - Mutations deleting files add `data.recovery_directory` after saving their exact
   pre-mutation bytes. Text output prints the same location. Dry-run creates no copy.
 - `close.data` adds `unblocked` (dependents whose readiness flipped
@@ -128,7 +146,9 @@ keys and the exit codes are stable.
 | `tbd_sections` | warning | Sections still hold the `TBD` template (on close, or on a done plan). |
 | `unverified_completion` | error | `close` refused: Outcome, Decisions, or Completion is unfilled. |
 | `forced_close` | warning | `close --force` abandoned work without completing it. |
-| `prunable_done` | warning | A done plan is required by no active plan; `gc` would remove it. |
+| `prunable_done` | warning | A done plan is required by no active plan and is neither an ancestor nor a descendant of one; `gc` would remove it. |
+| `redundant_parent_require` | warning | A parent lists its own child in `requires`; it already waits for its active children. |
+| `done_parent` | warning | An active plan sits under a done parent. |
 
 ### Store and plan-file errors
 
@@ -146,14 +166,14 @@ error becomes the command's error).
 | `invalid_id` | A filename or ID is not lowercase kebab-case. |
 | `duplicate_id` | Two plan files resolve to the same ID; the first is kept. A warning when either is loose. |
 | `invalid_json` | Frontmatter in `.agents/plans` is not strict JSON (syntax, duplicate keys, `NaN`/`Infinity`). A file without frontmatter is a loose plan, not an error. |
-| `invalid_metadata` | Frontmatter is not an object, or an array field is not single-line non-empty strings. |
+| `invalid_metadata` | Frontmatter is not an object, an array field is not single-line non-empty strings, or `parent` is not a non-empty string (`null` and `""` included). |
 | `missing_metadata` | One of `status`, `requires`, `replaces`, `scope`, `tags` is absent. |
-| `unknown_metadata` | Frontmatter holds a key outside those five. |
+| `unknown_metadata` | Frontmatter holds a key outside those five and the optional `parent`. |
 | `invalid_status` | `status` is not `active` or `done`. |
 | `duplicate_metadata` | An array field repeats a value (case-insensitive). |
 | `unroutable_plan` | Neither `scope` nor `tags` has an entry. |
 | `invalid_scope` | A scope is absolute, `.`, contains `\` or `..`, or is not a supported glob. |
-| `invalid_relation_id` | `requires` or `replaces` holds a malformed plan ID. |
+| `invalid_relation_id` | `requires`, `replaces`, or `parent` holds a malformed plan ID. |
 | `missing_title` | The body has no `# Title` heading. |
 | `title_not_first` | Content precedes the H1 title. |
 | `duplicate_title` | The body has more than one H1. |
@@ -166,7 +186,9 @@ error becomes the command's error).
 |---|---|
 | `self_dependency` | A plan requires itself. |
 | `dangling_requirement` | `requires` names a plan that does not exist. |
-| `cycle` | `requires` edges form a cycle; the message lists the chain. |
+| `cycle` | `requires` edges form a cycle, or `requires` together with parent-waits-for-child edges does (a child requiring its ancestor); the message lists the chain. |
+| `dangling_parent` | `parent` names a plan that does not exist. |
+| `parent_cycle` | A plan is its own parent or ancestor; the message lists the chain. |
 | `self_replacement` | A plan replaces itself. |
 | `live_replacement_target` | `replaces` names a plan that still exists. |
 | `duplicate_replacement` | Two plans claim to replace the same ID. |
@@ -175,12 +197,13 @@ error becomes the command's error).
 
 | Code | Meaning |
 |---|---|
-| `unknown_plan` | A named or required plan ID does not exist. |
+| `unknown_plan` | A named, required, or parent plan ID does not exist. |
 | `loose_plan` | The target has no plan-graph frontmatter; edit it by hand under its directory's convention. |
 | `id_reused` | The new ID for `create`, `rename`, or `replace` is live, reserved by `replaces`, or in Git history. |
 | `invalid_title` | `--title` is empty or spans lines. |
 | `no_changes` | The command would change nothing (`update` without effect, `reopen` on an active plan, `close` on a done plan). |
-| `active_dependents` | `drop`, `replace`, or `close --force` refused while active plans rely on the target. |
+| `active_dependents` | `drop`, `replace`, or `close --force` refused while active plans, or done plans kept as ancestors of active ones, rely on the target (for `replace --subtree`, on anything in the subtree). |
+| `active_children` | `close`, `close --force`, `drop`, or `replace` without `--subtree` refused while the target has active descendants. |
 | `path_escape` | A routing path or write target resolves outside the repository or store. |
 | `root_not_found` | No `--root` and the working directory is not inside a Git worktree. |
 | `root_not_toplevel` | `--root` points inside a Git worktree but not at its toplevel. |

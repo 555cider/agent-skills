@@ -91,6 +91,7 @@ unrelated dirty worktree unless you add `--worktree`. Use `--plan <id>` when the
 The decision pack separates:
 
 - `selected`: plans matched by an explicit ID, path scope, or query;
+- `ancestors`: the plans a selected plan is a piece of, read first, root first;
 - `required`: transitive prerequisite decisions to read first;
 - `affected`: active downstream plans that may need propagation review;
 - `overlapping`: active plans that currently match the same concrete files as a
@@ -112,6 +113,8 @@ After reviewing the routed plans, choose the smallest truthful action:
 - Create a new plan only for distinct work that should persist across sessions.
 - Add `requires` only when the new plan genuinely relies on another plan's
   outcome. Scope or keyword similarity is never a dependency.
+- Split a plan too large for one session into child plans (`--parent`, below)
+  instead of growing one document.
 - Replace a plan when its conclusion is wrong. A replacement starts fresh and
   does not require the plan it replaces.
 - Skip persistent plan changes for a one-off task that needs no future context.
@@ -140,8 +143,8 @@ never persisted. Each one requires a concrete response, not acknowledgement:
   before creating a new plan; the most common routing failure is a duplicate
   plan created over a weak query match.
 
-`why <id>` aggregates readiness, blockers, dependents, staleness, overlaps,
-replacement lineage, and unfilled sections for one plan — run it before
+`why <id>` aggregates readiness, blockers, parent and children, dependents,
+staleness, overlaps, replacement lineage, and unfilled sections for one plan — run it before
 deciding whether to trust, revise, or replace a specific plan:
 
 ```bash
@@ -168,10 +171,35 @@ Use `update` for metadata and title changes; it preserves the plan body:
   --remove-require legacy-errors
 ```
 
-Use `rename` to change an ID and every live `requires` reference together. Use
-`replace` only after reviewing active dependents; it refuses to proceed while
-any still rely on the old plan. Use `reopen` when a retained done prerequisite
-needs revision.
+Use `rename` to change an ID and every live `requires` and `parent` reference
+together. Use `replace` only after reviewing active dependents; it refuses to
+proceed while any still rely on the old plan. Use `reopen` when a retained done
+prerequisite needs revision.
+
+## Split large work into a plan tree
+
+When one outcome needs several sessions of work, keep it as a parent plan and
+create each piece under it with `--parent`. Order sibling pieces with
+`requires`; never make a parent require its child or a child require its
+ancestor:
+
+```bash
+<skill-dir>/bin/plan-graph create checkout-retry-api \
+  --title "Checkout retry API" --parent checkout-recovery \
+  --scope "apps/backend/checkout/retry/**" --tag checkout
+<skill-dir>/bin/plan-graph tree checkout-recovery
+```
+
+- A parent stays `waiting` while any child is active and cannot be closed,
+  dropped, or abandoned until its children are done (`active_children`). Close
+  the pieces, then fill and close the parent.
+- `tree [<id>]` shows the tree with readiness and marks `unexpanded` plans: no
+  children and Implementation still `TBD`. Split those further or implement
+  them.
+- `update --parent ID` moves a plan; `update --clear-parent` makes it top-level.
+- When a parent's design turns out wrong, `replace OLD NEW --subtree` deletes
+  it and every piece under it (saved to the recovery directory) and puts NEW in
+  its place. Without `--subtree`, `replace` refuses a plan with active children.
 
 Do not hand-edit frontmatter when a CLI operation exists. Directly edit the
 Markdown body for evidence, decisions, implementation, and acceptance details.
@@ -204,8 +232,9 @@ its directory's README says.
   and never satisfies their prerequisites. Revise dependencies explicitly first.
   A successful close reports `unblocked` dependents and whether the plan was
   `retained` for active dependents.
-- `close` marks the target done, then removes every done plan outside the
-  prerequisite closure of active plans.
+- `close` marks the target done, then removes every done plan that is not a
+  prerequisite, ancestor, or descendant of an active plan. Closed pieces of a
+  tree stay until its active ancestors close.
 - `drop` refuses active dependents, deletes the target, and removes newly
   orphaned done plans.
 - `gc` removes already-prunable done plans.
@@ -224,7 +253,8 @@ Run structural validation after editing a plan body or completing CLI changes:
 ```
 
 `doctor` checks strict metadata, required headings, path safety, dangling
-requirements, live replacement targets, cycles, nested stores, and closed
+requirements and parents, live replacement targets, `requires` and parent
+cycles, nested stores, and closed
 plans ready for pruning, lists the plan directories it read (`dirs`) and how
 many loose documents they hold, plus the advisory checks above (staleness, scope
 overlap, near-duplicates; tune with `--stale-after N`, skip with

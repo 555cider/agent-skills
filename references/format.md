@@ -121,7 +121,23 @@ object:
 ```
 
 All five keys are required; unknown or duplicate keys and non-standard JSON
-constants are errors.
+constants are errors. One optional key, `parent`, places the plan in a tree:
+
+```json
+{
+  "status": "active",
+  "parent": "checkout",
+  "requires": [],
+  "replaces": [],
+  "scope": ["apps/backend/checkout/retry/**"],
+  "tags": ["checkout", "retry"]
+}
+```
+
+A plan without `parent` is top-level and reads exactly as before the key
+existed. A top-level plan omits the key: `"parent": null` and `"parent": ""`
+are `invalid_metadata`, so the file has one spelling for "no parent". The CLI
+writes `parent` right after `status`.
 
 - The filename stem is the plan ID. It must be lowercase kebab-case and is not
   duplicated in metadata.
@@ -140,6 +156,9 @@ constants are errors.
   Absolute paths, `..`, backslashes, and character classes are invalid.
 - `tags` contains routing phrases. Matching is Unicode-aware and case-folded.
 - At least one `scope` or `tags` value is required so the plan is routable.
+- `parent`, when present, is the ID of the plan this one is a piece of. It must
+  exist (`dangling_parent`), and no plan may be its own ancestor
+  (`parent_cycle`).
 
 IDs are never reused. Creation checks current IDs, all `replaces` tombstones,
 and the file's Git history when available.
@@ -153,9 +172,31 @@ For `A requires B`, B is read and completed before A becomes ready.
 - An active plan with any active prerequisite is `waiting`; those active
   prerequisites are its blockers.
 - A done plan is retained only when it is in the transitive prerequisite
-  closure of at least one active plan.
+  closure of at least one active plan, or in its plan tree (see below).
 - Reverse traversal through both active and done nodes identifies active plans
   affected by a change to a prerequisite.
+
+## Plan trees
+
+`C` with `"parent": "P"` is one piece of P's work.
+
+- Active children are implicit prerequisites: P is `waiting` while any plan
+  below it is active (an active piece under a done child counts too), and
+  `status` lists them as `active_children` (`children=a,b` in text).
+  They are not `blockers`, which stay the active `requires` closure.
+- `requires` between siblings orders the pieces. A parent listing its own child
+  in `requires` is redundant (`redundant_parent_require` warning). A child
+  requiring its ancestor, directly or through other plans, waits for a plan
+  that waits for it: `cycle` error.
+- A parent's `requires` does not pass to its children; a child that builds on
+  the same prerequisite lists it itself.
+- An active plan under a done parent is a `done_parent` warning: reopen the
+  parent or close the piece.
+- Unexpanded: an active CLI plan with no children whose Implementation is still
+  `TBD`. `tree` and `why` mark it; it is the next plan to split or implement.
+- Overlap and near-duplicate advisories, and `context`'s `overlapping`, skip
+  ancestor/descendant pairs: a parent's scope covers its pieces on purpose.
+- `context` reads the selected plans' ancestors first, root first.
 
 ## Context routing
 
@@ -169,9 +210,10 @@ Selection is deterministic and read-only:
 3. A query scores title phrases, title tokens, tags, scope segments, then tokens
    from Outcome and Decisions. Query-only matches require a title/tag/scope hit
    or at least two body tokens; at most the top three are selected.
-4. The router adds transitive prerequisites as `required` and active reverse
-   dependents as `affected`.
-5. The decision pack is ordered prerequisite-first and includes Outcome,
+4. The router adds the selected plans' ancestors as `ancestor`, transitive
+   prerequisites as `required`, and active reverse dependents as `affected`.
+5. The decision pack lists ancestors first (root first), then the rest
+   prerequisite-first, and includes Outcome,
    Decisions, and Acceptance excerpts capped at 1,200 characters per section.
 
 Routing never changes `requires`. A matched plan is related context, not proof
@@ -246,10 +288,17 @@ fails a command, and a worktree git cannot read is listed under `warnings`.
 
 ## Closing and garbage collection
 
-After marking a plan done, compute the keep set as all active plans plus their
-transitive prerequisites. Delete every done plan outside that set. `replaces`
-does not retain a plan. As a result, closing the last active leaf removes its
-entire completed tree. Git archives committed history; the mutation also preserves
+After marking a plan done, compute the keep set as all active plans and every
+done plan below one, then add prerequisites and parents of every kept plan
+until nothing changes. A tree stays whole while any ancestor is active: closed
+pieces remain under an active parent (it does not read as unexpanded again), a
+done ancestor of an active plan stays, and so do their own prerequisites, so
+pruning never leaves a dangling `requires` or `parent`. Delete every done plan
+outside that set. `replaces` does not retain a plan. As a result, closing the
+last active plan of a tree, its root included, removes the entire completed tree. `close`, `close --force`,
+and `drop` refuse a plan with active descendants (`active_children`); done
+children still needed move up to the removed plan's parent (to the replacement
+for `replace`). Git archives committed history; the mutation also preserves
 the current bytes, including uncommitted changes, outside the live plan store and
 reports the recovery directory. `close --force` means abandonment: active dependents
 block it, and it removes the target rather than marking a prerequisite complete.

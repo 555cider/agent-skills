@@ -20,6 +20,13 @@ Coverage includes:
 - ID tombstones, active-dependent refusal, dry-run, locks, rollback, and path
   or symlink escape prevention;
 - legacy/nested store diagnostics and the stable JSON envelope;
+- plan trees (`PlanTreeTests`): the optional `parent` key and its invalid forms,
+  a parent waiting on active children, `close`/`drop` refusing them, `gc`
+  keeping done ancestors, `dangling_parent`/`parent_cycle`/child-requires-ancestor
+  `cycle`/`redundant_parent_require`, `tree` (depth, readiness, unexpanded,
+  detached branches of a broken store), ancestors in `context` and `why`,
+  `create`/`update --parent`, `--clear-parent`, `rename` relinking children,
+  and `replace --subtree` with recovery copies;
 - loose plan documents in `docs/plans` and `.agents/plans` (status line forms,
   backtick scope, read-only refusal), `git config plan-graph.dir`, and the v1
   store skipped with a warning;
