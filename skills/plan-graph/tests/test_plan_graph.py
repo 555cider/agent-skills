@@ -96,8 +96,11 @@ class PlanGraphCliTests(unittest.TestCase):
         scopes: tuple[str, ...] = (),
         tags: tuple[str, ...] = (),
         requires: tuple[str, ...] = (),
+        parent: str | None = None,
     ) -> dict[str, object]:
         args = ["create", plan_id, "--title", title or plan_id.replace("-", " ").title()]
+        if parent is not None:
+            args.extend(["--parent", parent])
         for scope in scopes:
             args.extend(["--scope", scope])
         for tag in tags:
@@ -743,6 +746,426 @@ x
                 ("nested_store", "apps/web/.agents/plans"),
             ],
         )
+
+
+class PlanTreeTests(unittest.TestCase):
+    """`parent`: plans split into pieces, a parent waiting for its active children."""
+
+    # The CLI helpers, without inheriting (and rerunning) every CLI test.
+    setUp = PlanGraphCliTests.setUp
+    run_cli = PlanGraphCliTests.run_cli
+    run_text = PlanGraphCliTests.run_text
+    create = PlanGraphCliTests.create
+    plan_file = PlanGraphCliTests.plan_file
+    fill_sections = PlanGraphCliTests.fill_sections
+
+    MISSING = object()
+
+    def set_metadata(self, plan_id: str, key: str, value: object) -> None:
+        path = self.plan_file(plan_id)
+        content = path.read_text(encoding="utf-8")
+        _, head, body = content.split("---\n", 2)
+        metadata = json.loads(head)
+        if value is self.MISSING:
+            metadata.pop(key, None)
+        else:
+            metadata[key] = value
+        path.write_text("---\n" + json.dumps(metadata, indent=2) + "\n---\n" + body, encoding="utf-8")
+
+    def codes(self, payload: dict[str, object], severity: str | None = None) -> list[str]:
+        return [
+            item["code"]
+            for item in payload["diagnostics"]
+            if severity is None or item["severity"] == severity
+        ]
+
+    def test_parent_key_is_optional_and_validated(self) -> None:
+        self.create("root-plan", tags=("root",))
+        before = self.plan_file("root-plan").read_text(encoding="utf-8")
+        self.assertNotIn('"parent"', before)
+        self.create("piece", tags=("piece",), parent="root-plan")
+        content = self.plan_file("piece").read_text(encoding="utf-8")
+        self.assertIn('"parent": "root-plan"', content)
+        self.assertEqual(load_store(self.root).plans["piece"].parent, "root-plan")
+        doctor, _ = self.run_cli("doctor", "--structural-only")
+        self.assertEqual(self.codes(doctor, "error"), [])
+        for value, code in ((None, "invalid_metadata"), ("", "invalid_metadata"),
+                            (3, "invalid_metadata"), ("Not An Id", "invalid_relation_id")):
+            self.set_metadata("piece", "parent", value)
+            failed, _ = self.run_cli("doctor", "--structural-only", expect=1)
+            self.assertIn(code, self.codes(failed, "error"), value)
+            self.assertNotIn("unknown_metadata", self.codes(failed), value)
+        self.set_metadata("piece", "parent", self.MISSING)
+        self.run_cli("doctor", "--structural-only")
+
+    def test_active_children_make_parent_wait_and_close_unblocks_it(self) -> None:
+        self.create("app", tags=("app",))
+        self.create("app-auth", tags=("auth",), parent="app")
+        self.create("app-ui", tags=("ui",), parent="app", requires=("app-auth",))
+        status, _ = self.run_cli("status")
+        waiting = {item["id"]: item for item in status["data"]["waiting"]}
+        self.assertEqual(set(waiting), {"app", "app-ui"})
+        self.assertEqual(waiting["app"]["active_children"], ["app-auth", "app-ui"])
+        self.assertEqual(waiting["app"]["blockers"], [])
+        self.assertEqual([item["id"] for item in status["data"]["ready"]], ["app-auth"])
+        self.assertIn("app: App; children=app-auth,app-ui", self.run_text("status"))
+        failed, _ = self.run_cli("close", "app", expect=1)
+        self.assertEqual(failed["diagnostics"][0]["code"], "active_children")
+        forced, _ = self.run_cli("close", "app", "--force", expect=1)
+        self.assertEqual(forced["diagnostics"][0]["code"], "active_children")
+        dropped, _ = self.run_cli("drop", "app", expect=1)
+        self.assertEqual(dropped["diagnostics"][0]["code"], "active_children")
+        self.fill_sections("app-auth")
+        self.fill_sections("app-ui")
+        self.run_cli("close", "app-auth")
+        closed, _ = self.run_cli("close", "app-ui")
+        self.assertEqual(closed["data"]["unblocked"], ["app"])
+        # Done children no longer hold the parent, but stay under it until it closes,
+        # so the parent is not read as unexpanded again.
+        self.assertEqual(set(load_store(self.root).plans), {"app", "app-auth", "app-ui"})
+        gc, _ = self.run_cli("gc", "--dry-run")
+        self.assertEqual(gc["changes"], [])
+        tree, _ = self.run_cli("tree")
+        by_id = {node["id"]: node for node in tree["data"]["nodes"]}
+        self.assertFalse(by_id["app"]["unexpanded"])
+        self.assertEqual(by_id["app"]["readiness"], "ready")
+        self.assertEqual(by_id["app"]["children"], ["app-auth", "app-ui"])
+        why, _ = self.run_cli("why", "app")
+        self.assertFalse(why["data"]["unexpanded"])
+        self.assertEqual(why["data"]["children"]["done"], ["app-auth", "app-ui"])
+        self.fill_sections("app")
+        closed_app, _ = self.run_cli("close", "app")
+        self.assertEqual(
+            sorted(c["plan"] for c in closed_app["changes"] if c["action"] == "prune"),
+            ["app", "app-auth", "app-ui"],
+        )
+        self.assertEqual(load_store(self.root).plans, {})
+
+    def test_closed_pieces_stay_while_any_ancestor_is_active(self) -> None:
+        self.create("root-plan", tags=("root",))
+        self.create("branch", tags=("branch",), parent="root-plan")
+        self.create("leaf", tags=("leaf",), parent="branch")
+        for plan_id in ("leaf", "branch"):
+            self.fill_sections(plan_id)
+            self.run_cli("close", plan_id)
+        self.assertEqual(set(load_store(self.root).plans), {"root-plan", "branch", "leaf"})
+        status, _ = self.run_cli("status")
+        self.assertEqual(
+            [item["id"] for item in status["data"]["retained_done"]], ["branch", "leaf"]
+        )
+
+    def test_critical_path_runs_through_children_to_the_parent(self) -> None:
+        self.create("p", tags=("p",))
+        self.create("c1", tags=("c1",), parent="p")
+        self.create("c2", tags=("c2",), parent="p", requires=("c1",))
+        self.create("c3", tags=("c3",), parent="p", requires=("c2",))
+        self.create("x", tags=("x",), requires=("p",))
+        status, _ = self.run_cli("status")
+        self.assertEqual(status["data"]["critical_path"], ["c1", "c2", "c3", "p", "x"])
+        self.assertIn("Critical path: c1 -> c2 -> c3 -> p -> x", self.run_text("status"))
+
+    def test_context_does_not_list_its_own_tree_as_overlapping(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.create("checkout", scopes=("apps/checkout/**",), tags=("checkout",))
+        self.create(
+            "checkout-api", scopes=("apps/checkout/api/**",), tags=("api",), parent="checkout"
+        )
+        self.create(
+            "checkout-api-retry", scopes=("apps/checkout/api/**",), tags=("retry",),
+            parent="checkout-api",
+        )
+        self.create("billing", scopes=("apps/checkout/api/**",), tags=("billing",))
+        shared = self.root / "apps" / "checkout" / "api" / "x.py"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("x\n", encoding="utf-8")
+        payload, _ = self.run_cli("context", "--plan", "checkout-api", "--no-other-worktrees")
+        self.assertEqual(payload["data"]["ancestors"], ["checkout"])
+        self.assertEqual(payload["data"]["overlapping"], ["billing"])
+
+    def test_gc_keeps_done_ancestors_of_active_plans(self) -> None:
+        self.create("prereq", tags=("prereq",))
+        self.create("phase", tags=("phase",), requires=("prereq",))
+        self.create("consumer", tags=("consumer",), requires=("phase",))
+        self.fill_sections("prereq")
+        self.fill_sections("phase")
+        self.run_cli("close", "prereq")
+        self.run_cli("close", "phase")
+        # A piece added under a done plan: the parent is kept for the tree, and the
+        # parent's own prerequisite for the parent.
+        payload = self.create("late-piece", tags=("late",), parent="phase")
+        self.assertIn("done_parent", self.codes(payload))
+        self.run_cli("drop", "consumer")
+        gc, _ = self.run_cli("gc", "--dry-run")
+        self.assertEqual(gc["changes"], [])
+        status, _ = self.run_cli("status")
+        self.assertEqual(
+            [item["id"] for item in status["data"]["retained_done"]], ["prereq", "phase"]
+        )
+        why, _ = self.run_cli("why", "phase")
+        self.assertFalse(why["data"]["prunable"])
+
+    def test_removing_a_parent_moves_its_needed_done_children_up(self) -> None:
+        for command in ("drop", "replace", "close"):
+            with self.subTest(command=command):
+                self.setUp()
+                self.create("top", tags=("top",))
+                self.create("mid", tags=("mid",), parent="top")
+                self.create("done-piece", tags=("piece",), parent="mid")
+                self.create("user", tags=("user",), requires=("done-piece",))
+                self.fill_sections("done-piece")
+                self.run_cli("close", "done-piece")
+                args = {
+                    "drop": ("drop", "mid"),
+                    "replace": ("replace", "mid", "mid-v2", "--title", "Mid v2", "--tag", "v2"),
+                    "close": ("close", "mid", "--force"),
+                }[command]
+                payload, _ = self.run_cli(*args)
+                self.assertIn({"action": "relink", "plan": "done-piece"}, payload["changes"])
+                expected = "mid-v2" if command == "replace" else "top"
+                self.assertEqual(load_store(self.root).plans["done-piece"].parent, expected)
+                self.run_cli("doctor", "--structural-only")
+
+    def test_requires_from_a_kept_done_ancestor_refuses_removal(self) -> None:
+        self.create("base", tags=("base",))
+        self.create("phase", tags=("phase",), requires=("base",))
+        self.create("consumer", tags=("consumer",), requires=("phase",))
+        self.fill_sections("base")
+        self.fill_sections("phase")
+        self.run_cli("close", "base")
+        self.run_cli("close", "phase")
+        self.create("late-piece", tags=("late",), parent="phase")
+        self.run_cli("drop", "consumer")
+        refused, _ = self.run_cli("drop", "base", expect=1)
+        self.assertEqual(refused["diagnostics"][0]["code"], "active_dependents")
+        self.assertIn("phase", refused["diagnostics"][0]["message"])
+
+    def test_active_grandchild_under_done_child_still_holds_the_parent(self) -> None:
+        self.create("top", tags=("top",))
+        self.create("mid", tags=("mid",), parent="top")
+        self.create("low", tags=("low",), parent="mid")
+        self.set_metadata("mid", "status", "done")
+        status, _ = self.run_cli("status")
+        waiting = {item["id"]: item for item in status["data"]["waiting"]}
+        self.assertEqual(waiting["top"]["active_children"], ["low"])
+        failed, _ = self.run_cli("close", "top", expect=1)
+        self.assertEqual(failed["diagnostics"][0]["code"], "active_children")
+
+    def test_doctor_reports_dangling_parent_cycles_and_redundant_require(self) -> None:
+        self.create("alpha", tags=("alpha",))
+        self.create("beta", tags=("beta",), parent="alpha")
+        self.run_cli("update", "alpha", "--add-require", "beta")
+        warned, _ = self.run_cli("doctor", "--structural-only")
+        redundant = [d for d in warned["diagnostics"] if d["code"] == "redundant_parent_require"]
+        self.assertEqual([d["plan"] for d in redundant], ["alpha"])
+        self.run_cli("update", "alpha", "--remove-require", "beta")
+
+        self.set_metadata("beta", "parent", "ghost")
+        dangling, _ = self.run_cli("doctor", "--structural-only", expect=1)
+        self.assertIn("dangling_parent", self.codes(dangling, "error"))
+
+        self.set_metadata("beta", "parent", "beta")
+        selfish, _ = self.run_cli("doctor", "--structural-only", expect=1)
+        self.assertIn("parent_cycle", self.codes(selfish, "error"))
+
+        self.set_metadata("beta", "parent", "alpha")
+        self.set_metadata("alpha", "parent", "beta")
+        looped, _ = self.run_cli("doctor", "--structural-only", expect=1)
+        self.assertEqual(self.codes(looped, "error").count("parent_cycle"), 1)
+
+        # A child requiring its own ancestor waits for a plan that waits for it.
+        self.set_metadata("alpha", "parent", self.MISSING)
+        self.set_metadata("beta", "requires", ["alpha"])
+        deadlock, _ = self.run_cli("doctor", "--structural-only", expect=1)
+        cycle = [d for d in deadlock["diagnostics"] if d["code"] == "cycle"]
+        self.assertEqual(len(cycle), 1)
+        self.assertIn("parent", cycle[0]["message"])
+
+    def test_parent_child_scopes_are_not_an_overlap(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.create("checkout", scopes=("apps/checkout/**",), tags=("checkout",))
+        self.create(
+            "checkout-api", scopes=("apps/checkout/api/**",), tags=("checkout",), parent="checkout"
+        )
+        shared = self.root / "apps" / "checkout" / "api" / "x.py"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("x\n", encoding="utf-8")
+        doctor, _ = self.run_cli("doctor")
+        self.assertNotIn("scope_overlap", self.codes(doctor))
+        self.assertNotIn("possible_duplicate", self.codes(doctor))
+
+    def test_tree_lists_depth_readiness_and_unexpanded(self) -> None:
+        self.create("root-plan", tags=("root",))
+        self.create("first", tags=("first",), parent="root-plan")
+        self.create("second", tags=("second",), parent="root-plan", requires=("first",))
+        self.create("first-leaf", tags=("leaf",), parent="first")
+        self.create("other-root", tags=("other",))
+        self.fill_sections("first-leaf", "Implementation")
+        payload, _ = self.run_cli("tree")
+        nodes = payload["data"]["nodes"]
+        self.assertEqual(
+            [(node["id"], node["depth"]) for node in nodes],
+            [("other-root", 0), ("root-plan", 0), ("first", 1), ("first-leaf", 2), ("second", 1)],
+        )
+        by_id = {node["id"]: node for node in nodes}
+        self.assertEqual(by_id["root-plan"]["children"], ["first", "second"])
+        self.assertEqual(by_id["root-plan"]["readiness"], "waiting")
+        self.assertEqual(by_id["first-leaf"]["readiness"], "ready")
+        self.assertEqual(by_id["second"]["readiness"], "waiting")
+        unexpanded = {node["id"] for node in nodes if node["unexpanded"]}
+        self.assertEqual(unexpanded, {"second", "other-root"})
+        self.assertEqual(payload["data"]["counts"]["unexpanded"], 2)
+        sub, _ = self.run_cli("tree", "first")
+        self.assertEqual([node["id"] for node in sub["data"]["nodes"]], ["first", "first-leaf"])
+        self.assertEqual(sub["data"]["ancestors"], ["root-plan"])
+        text = self.run_text("tree")
+        self.assertIn("    - first: First [waiting]", text)
+        self.assertIn("      - first-leaf: First Leaf [ready]", text)
+        self.assertIn("    - second: Second [waiting, unexpanded]", text)
+        missing, _ = self.run_cli("tree", "ghost", expect=1)
+        self.assertEqual(missing["diagnostics"][0]["code"], "unknown_plan")
+
+    def test_tree_shows_detached_plans_of_a_broken_store(self) -> None:
+        self.create("root-plan", tags=("root",))
+        self.create("orphan", tags=("orphan",), parent="root-plan")
+        self.create("loop-a", tags=("a",))
+        self.create("loop-b", tags=("b",), parent="loop-a")
+        # Sorts before the cycle members, and must still print under its parent.
+        self.create("a-loop-piece", tags=("piece",), parent="loop-a")
+        self.set_metadata("orphan", "parent", "ghost")
+        self.set_metadata("loop-a", "parent", "loop-b")
+        payload, _ = self.run_cli("tree")
+        nodes = {node["id"]: node for node in payload["data"]["nodes"]}
+        detached = {plan_id: node.get("detached") for plan_id, node in nodes.items()}
+        self.assertEqual(detached["root-plan"], None)
+        self.assertEqual(detached["orphan"], "missing_parent")
+        self.assertEqual(
+            sorted(str(v) for k, v in detached.items() if "loop" in k),
+            ["None", "None", "parent_cycle"],
+        )
+        self.assertGreater(nodes["a-loop-piece"]["depth"], 0)
+        self.assertEqual(len(payload["data"]["nodes"]), 5)
+        self.assertIn("dangling_parent", self.codes(payload, "error"))
+        self.assertIn("parent_cycle", self.codes(payload, "error"))
+        self.assertIn("Detached (parent missing or on a parent cycle):", self.run_text("tree"))
+
+    def test_context_and_why_carry_the_ancestor_chain(self) -> None:
+        self.create("product", tags=("product",))
+        self.create("billing", tags=("billing",), parent="product")
+        self.create("invoice-export", tags=("invoice",), parent="billing")
+        self.create("invoice-mail", tags=("mail",), parent="billing")
+        context, _ = self.run_cli("context", "--plan", "invoice-export")
+        data = context["data"]
+        self.assertEqual(data["ancestors"], ["product", "billing"])
+        self.assertEqual(data["read_order"][:3], ["product", "billing", "invoice-export"])
+        roles = {item["id"]: item["role"] for item in data["decision_pack"]}
+        self.assertEqual(roles["product"], "ancestor")
+        self.assertEqual(roles["billing"], "ancestor")
+        self.assertIn("outcome", data["decision_pack"][0])
+        self.assertEqual(data["decision_pack"][2]["parent"], "billing")
+        self.assertIn("Ancestors: product -> billing", self.run_text("context", "--plan", "invoice-export"))
+        # A selected ancestor keeps its role and still reads first.
+        both, _ = self.run_cli("context", "--plan", "invoice-export", "--plan", "product")
+        self.assertEqual(both["data"]["ancestors"], ["billing"])
+        self.assertEqual(both["data"]["read_order"][:2], ["product", "billing"])
+
+        why, _ = self.run_cli("why", "billing")
+        self.assertEqual(why["data"]["parent"], "product")
+        self.assertEqual(why["data"]["ancestors"], ["product"])
+        self.assertEqual(why["data"]["children"], {"active": ["invoice-export", "invoice-mail"], "done": []})
+        self.assertEqual(why["data"]["readiness"], "waiting")
+        self.assertFalse(why["data"]["unexpanded"])
+        text = self.run_text("why", "billing")
+        self.assertIn("parent: product (ancestors: product)", text)
+        self.assertIn("active children: invoice-export, invoice-mail", text)
+        leaf, _ = self.run_cli("why", "invoice-mail")
+        self.assertTrue(leaf["data"]["unexpanded"])
+
+    def test_create_and_update_parent_validation(self) -> None:
+        self.create("top", tags=("top",))
+        self.create("mid", tags=("mid",), parent="top")
+        self.create("low", tags=("low",), parent="mid")
+        unknown, _ = self.run_cli(
+            "create", "stray", "--title", "Stray", "--tag", "x", "--parent", "ghost", expect=1
+        )
+        self.assertEqual(unknown["diagnostics"][0]["code"], "unknown_plan")
+        self.assertFalse(self.plan_file("stray").exists())
+        before = self.plan_file("top").read_bytes()
+        cycle, _ = self.run_cli("update", "top", "--parent", "low", expect=1)
+        self.assertEqual(cycle["diagnostics"][0]["code"], "parent_cycle")
+        self_cycle, _ = self.run_cli("update", "top", "--parent", "top", expect=1)
+        self.assertEqual(self_cycle["diagnostics"][0]["code"], "parent_cycle")
+        self.assertEqual(self.plan_file("top").read_bytes(), before)
+        bad, _ = self.run_cli("update", "low", "--parent", "ghost", expect=1)
+        self.assertEqual(bad["diagnostics"][0]["code"], "unknown_plan")
+        self.run_cli("update", "low", "--parent", "top")
+        self.assertEqual(load_store(self.root).plans["low"].parent, "top")
+        self.run_cli("update", "low", "--clear-parent")
+        self.assertNotIn('"parent"', self.plan_file("low").read_text(encoding="utf-8"))
+        same, _ = self.run_cli("update", "low", "--clear-parent", expect=1)
+        self.assertEqual(same["diagnostics"][0]["code"], "no_changes")
+        _, usage = self.run_cli_raw("update", "low", "--parent", "top", "--clear-parent")
+        self.assertEqual(usage.returncode, 2)
+
+    def run_cli_raw(self, *args: str) -> tuple[None, subprocess.CompletedProcess[str]]:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), *args, "--root", str(self.root), "--json"],
+            cwd=SKILL, capture_output=True, text=True, encoding="utf-8", timeout=20, check=False,
+        )
+        return None, result
+
+    def test_rename_relinks_children(self) -> None:
+        self.create("old-parent", tags=("parent",))
+        self.create("kid", tags=("kid",), parent="old-parent")
+        payload, _ = self.run_cli("rename", "old-parent", "new-parent")
+        self.assertIn({"action": "relink", "plan": "kid"}, payload["changes"])
+        self.assertEqual(load_store(self.root).plans["kid"].parent, "new-parent")
+        self.run_cli("doctor", "--structural-only")
+
+    def test_replace_without_subtree_refuses_active_children(self) -> None:
+        self.create("holder", tags=("holder",))
+        self.create("held", tags=("held",), parent="holder")
+        failed, _ = self.run_cli("replace", "holder", "fresh", "--title", "Fresh", "--tag", "f", expect=1)
+        self.assertEqual(failed["diagnostics"][0]["code"], "active_children")
+        self.assertIn("--subtree", failed["diagnostics"][0]["message"])
+
+    def test_replace_subtree_removes_descendants_and_takes_the_place(self) -> None:
+        self.create("root-plan", tags=("root",))
+        self.create("wrong", tags=("wrong",), parent="root-plan")
+        self.create("wrong-a", tags=("wa",), parent="wrong")
+        self.create("wrong-b", tags=("wb",), parent="wrong")
+        self.create("wrong-a-1", tags=("wa1",), parent="wrong-a", requires=("wrong-b",))
+        self.create("sibling", tags=("sibling",), parent="root-plan", requires=("wrong-a",))
+        refused, _ = self.run_cli(
+            "replace", "wrong", "right", "--title", "Right", "--tag", "right", "--subtree", expect=1
+        )
+        self.assertEqual(refused["diagnostics"][0]["code"], "active_dependents")
+        self.assertIn("sibling", refused["diagnostics"][0]["message"])
+        self.run_cli("update", "sibling", "--remove-require", "wrong-a")
+        originals = {
+            plan_id: self.plan_file(plan_id).read_bytes()
+            for plan_id in ("wrong", "wrong-a", "wrong-b", "wrong-a-1")
+        }
+        dry, _ = self.run_cli(
+            "replace", "wrong", "right", "--title", "Right", "--tag", "right", "--subtree", "--dry-run"
+        )
+        self.assertTrue(self.plan_file("wrong-a-1").exists())
+        payload, _ = self.run_cli(
+            "replace", "wrong", "right", "--title", "Right", "--tag", "right", "--subtree"
+        )
+        self.assertEqual(payload["changes"], dry["changes"])
+        self.assertEqual(payload["changes"][0], {"action": "replace", "from": "wrong", "to": "right"})
+        self.assertEqual(
+            sorted(c["plan"] for c in payload["changes"] if c["action"] == "drop"),
+            ["wrong-a", "wrong-a-1", "wrong-b"],
+        )
+        store = load_store(self.root)
+        self.assertEqual(set(store.plans), {"root-plan", "right", "sibling"})
+        self.assertEqual(store.plans["right"].parent, "root-plan")
+        self.assertEqual(store.plans["right"].replaces, ("wrong",))
+        recovery = Path(payload["data"]["recovery_directory"])
+        for plan_id, data in originals.items():
+            self.assertEqual((recovery / f"{plan_id}.md").read_bytes(), data)
+        self.run_cli("doctor", "--structural-only")
 
 
 class PlanGraphAlgorithmTests(unittest.TestCase):

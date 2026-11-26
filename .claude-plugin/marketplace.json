@@ -26,7 +26,7 @@
       "name": "plan-graph",
       "source": "./skills/plan-graph",
       "skills": ["."],
-      "version": "1.4.0",
+      "version": "1.5.0",
       "author": { "name": "555cider" },
       "license": "MIT",
       "description": "Plans and changed files across parallel git worktrees, read before anything lands, plus persistent plan context per repository: explicit prerequisites, replacement lineage, and pruning of closed plan trees through a transactional CLI.",

@@ -13,9 +13,10 @@ scripts/plan-graph.py      entry point (delegates to plan_graph.cli)
 scripts/plan_graph/
   model.py                 Plan/Diagnostic dataclasses, strict-JSON frontmatter,
                            section parsing, scope glob compiler
-  store.py                 load/validate/persist, requires-graph algorithms,
+  store.py                 load/validate/persist, requires and parent graph algorithms,
                            git integration, file lock, transactional writes
-  routing.py               query scoring, decision pack, readiness, critical path
+  routing.py               query scoring, decision pack, readiness, critical path,
+                           parent/child tree view
   advice.py                derived advisory signals: staleness, scope overlap,
                            near-duplicates, per-plan explanation (why)
   loose.py                 plan documents without frontmatter: title, status
@@ -37,8 +38,9 @@ scripts/plan_graph/
   `worktree_overlap.py` (one `status` and at most one `diff` per worktree);
   plan documents from each worktree's directory, so ignored ones count.
 - **Derive, never store.** Readiness, staleness, overlap, impact, and pruning
-  are computed on every read. Frontmatter holds exactly five keys
-  (`status`, `requires`, `replaces`, `scope`, `tags`); adding a key is a
+  are computed on every read. Frontmatter holds five required keys
+  (`status`, `requires`, `replaces`, `scope`, `tags`) and one optional key,
+  `parent`, whose absence means a top-level plan. A new required key is a
   format break, so advisory features must not require one.
 - **Strict JSON frontmatter.** Duplicate keys and non-standard constants are
   parse errors, not tolerated input.

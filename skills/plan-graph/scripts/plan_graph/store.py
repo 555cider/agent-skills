@@ -6,7 +6,7 @@ import os
 import secrets
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
@@ -391,7 +391,43 @@ def validate_graph(plans: dict[str, Plan]) -> list[Diagnostic]:
                 )
             replacement_owners[old_id] = plan_id
 
+    for plan_id, plan in sorted(plans.items()):
+        if plan.parent is None:
+            continue
+        if plan.parent not in plans:
+            diagnostics.append(
+                Diagnostic(
+                    "error",
+                    "dangling_parent",
+                    f"parent plan does not exist: {plan.parent}",
+                    plan_id,
+                )
+            )
+            continue
+        parent = plans[plan.parent]
+        if plan.parent != plan_id and plan_id in parent.requires:
+            diagnostics.append(
+                Diagnostic(
+                    "warning",
+                    "redundant_parent_require",
+                    f"{plan.parent} requires its own child {plan_id}; a parent already"
+                    " waits for its active children, so remove the requires edge",
+                    plan.parent,
+                )
+            )
+        if plan.status == "active" and parent.status == "done":
+            diagnostics.append(
+                Diagnostic(
+                    "warning",
+                    "done_parent",
+                    f"active plan sits under done parent {plan.parent}; reopen the parent"
+                    " or close this plan",
+                    plan_id,
+                )
+            )
+
     cycle = find_cycle(plans)
+    parent_cycle = find_parent_cycle(plans)
     if cycle:
         diagnostics.append(
             Diagnostic(
@@ -401,6 +437,28 @@ def validate_graph(plans: dict[str, Plan]) -> list[Diagnostic]:
                 cycle[0],
             )
         )
+    if parent_cycle:
+        diagnostics.append(
+            Diagnostic(
+                "error",
+                "parent_cycle",
+                "parent cycle detected (a plan is its own ancestor): "
+                + " -> ".join(parent_cycle),
+                parent_cycle[0],
+            )
+        )
+    if not cycle and not parent_cycle:
+        wait_cycle = find_wait_cycle(plans)
+        if wait_cycle:
+            diagnostics.append(
+                Diagnostic(
+                    "error",
+                    "cycle",
+                    "requires and parent edges form a cycle (a parent waits for its"
+                    " children): " + " -> ".join(wait_cycle),
+                    wait_cycle[0],
+                )
+            )
 
     for plan_id in sorted(prunable_done(plans)):
         diagnostics.append(
@@ -428,9 +486,22 @@ def validate_graph(plans: dict[str, Plan]) -> list[Diagnostic]:
 
 
 def find_cycle(plans: dict[str, Plan]) -> list[str]:
+    return _find_cycle({plan_id: plan.requires for plan_id, plan in plans.items()})
+
+
+def find_wait_cycle(plans: dict[str, Plan]) -> list[str]:
+    """A cycle of waits through `requires` and parent-waits-for-child edges."""
+    edges: dict[str, tuple[str, ...]] = {}
+    children = children_index(plans)
+    for plan_id, plan in plans.items():
+        edges[plan_id] = (*plan.requires, *children.get(plan_id, ()))
+    return _find_cycle(edges)
+
+
+def _find_cycle(edges: dict[str, tuple[str, ...]]) -> list[str]:
     white, gray, black = 0, 1, 2
     color: dict[str, int] = {}
-    for root in sorted(plans):
+    for root in sorted(edges):
         if color.get(root, white) != white:
             continue
         stack: list[tuple[str, int]] = [(root, 0)]
@@ -439,11 +510,11 @@ def find_cycle(plans: dict[str, Plan]) -> list[str]:
         color[root] = gray
         while stack:
             node_id, index = stack[-1]
-            bases = plans[node_id].requires
+            bases = edges[node_id]
             if index < len(bases):
                 stack[-1] = (node_id, index + 1)
                 base = bases[index]
-                if base not in plans:
+                if base not in edges:
                     continue
                 state = color.get(base, white)
                 if state == gray:
@@ -498,9 +569,120 @@ def reverse_dependents(plans: dict[str, Plan], seeds: Iterable[str], *, active_o
     return found
 
 
-def prunable_done(plans: dict[str, Plan]) -> set[str]:
+def children_index(plans: dict[str, Plan]) -> dict[str, tuple[str, ...]]:
+    """Child IDs per parent ID, sorted; parents that are missing still get an entry."""
+    index: dict[str, list[str]] = {}
+    for plan_id, plan in plans.items():
+        if plan.parent is not None:
+            index.setdefault(plan.parent, []).append(plan_id)
+    return {parent: tuple(sorted(ids)) for parent, ids in index.items()}
+
+
+def ancestors(plans: dict[str, Plan], plan_id: str) -> list[str]:
+    """Existing ancestors of `plan_id`, root first; stops at a missing parent or a cycle."""
+    chain: list[str] = []
+    seen = {plan_id}
+    current = plans[plan_id].parent if plan_id in plans else None
+    while current is not None and current in plans and current not in seen:
+        seen.add(current)
+        chain.append(current)
+        current = plans[current].parent
+    chain.reverse()
+    return chain
+
+
+def descendants(plans: dict[str, Plan], plan_id: str) -> set[str]:
+    children = children_index(plans)
+    found: set[str] = set()
+    stack = [plan_id]
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child not in found and child != plan_id:
+                found.add(child)
+                stack.append(child)
+    return found
+
+
+def active_children(plans: dict[str, Plan], plan_id: str) -> list[str]:
+    """Active plans anywhere below `plan_id`: a done child's active pieces still count."""
+    return sorted(
+        child_id for child_id in descendants(plans, plan_id) if plans[child_id].status == "active"
+    )
+
+
+def dependents_of(plans: dict[str, Plan], removed: set[str]) -> list[str]:
+    """Kept plans whose prerequisite closure reaches a plan about to be removed.
+
+    Active plans, plus done plans kept only as ancestors of active ones: those stay
+    after the removal, so a `requires` into it would dangle.
+    """
     active = {plan_id for plan_id, plan in plans.items() if plan.status == "active"}
-    retained = active | required_closure(plans, active)
+    tree_only = retained_closure(plans) - active - required_closure(plans, active)
+    return sorted(
+        plan_id
+        for plan_id in active | tree_only
+        if plan_id not in removed and required_closure(plans, [plan_id]) & removed
+    )
+
+
+def relink_children(
+    plans: dict[str, Plan], removed: set[str], new_parent: str | None
+) -> list[str]:
+    """Move the children of removed plans to `new_parent` in place; their IDs."""
+    moved: list[str] = []
+    for plan_id, plan in sorted(plans.items()):
+        if plan.parent in removed and plan_id not in removed and not plan.is_loose:
+            plans[plan_id] = replace(plan, parent=new_parent)
+            moved.append(plan_id)
+    return moved
+
+
+def find_parent_cycle(plans: dict[str, Plan]) -> list[str]:
+    """A plan that is its own ancestor, as the chain that returns to it."""
+    settled: set[str] = set()
+    for start in sorted(plans):
+        path: list[str] = []
+        positions: dict[str, int] = {}
+        current: str | None = start
+        while current is not None and current in plans and current not in settled:
+            if current in positions:
+                return path[positions[current]:] + [current]
+            positions[current] = len(path)
+            path.append(current)
+            current = plans[current].parent
+        settled.update(path)
+    return []
+
+
+def retained_closure(plans: dict[str, Plan]) -> set[str]:
+    """Active plans, their done descendants, and what those need to stay valid.
+
+    A tree stays whole while any ancestor is active: closed pieces remain under an
+    active parent (which would otherwise read as unexpanded again) until it closes.
+    Then closed under `requires` and `parent`, so pruning never leaves a dangling
+    link: a done ancestor kept for the tree keeps its own prerequisites too.
+    """
+    active = {plan_id for plan_id, plan in plans.items() if plan.status == "active"}
+    retained = set(active)
+    children = children_index(plans)
+    stack = list(active)
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child in plans and child not in retained:
+                retained.add(child)
+                stack.append(child)
+    stack = list(retained)
+    while stack:
+        plan = plans[stack.pop()]
+        for neighbor in (*plan.requires, *((plan.parent,) if plan.parent else ())):
+            if neighbor in plans and neighbor not in retained:
+                retained.add(neighbor)
+                stack.append(neighbor)
+    return retained
+
+
+def prunable_done(plans: dict[str, Plan]) -> set[str]:
+    retained = retained_closure(plans)
     return {
         plan_id
         for plan_id, plan in plans.items()

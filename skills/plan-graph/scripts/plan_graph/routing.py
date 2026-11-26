@@ -6,8 +6,16 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
 
-from .model import Plan, recover_command, scope_matches
-from .store import required_closure, reverse_dependents
+from .model import Plan, recover_command, scope_matches, unexpanded
+from .store import (
+    active_children,
+    ancestors,
+    children_index,
+    descendants,
+    required_closure,
+    retained_closure,
+    reverse_dependents,
+)
 
 
 STOP_WORDS = {
@@ -34,12 +42,18 @@ def tokens(value: str) -> set[str]:
     }
 
 
-def topological_order(plans: dict[str, Plan], subset: Iterable[str] | None = None) -> list[str]:
+def topological_order(
+    plans: dict[str, Plan],
+    subset: Iterable[str] | None = None,
+    bases_of: dict[str, tuple[str, ...]] | None = None,
+) -> list[str]:
+    """Prerequisites first; `bases_of` overrides each plan's `requires` as its bases."""
     allowed = set(plans) if subset is None else set(subset)
     indegree = {plan_id: 0 for plan_id in allowed}
     dependents: dict[str, set[str]] = {plan_id: set() for plan_id in allowed}
     for dependent in allowed:
-        for base in plans[dependent].requires:
+        bases = plans[dependent].requires if bases_of is None else bases_of[dependent]
+        for base in bases:
             if base in allowed:
                 indegree[dependent] += 1
                 dependents[base].add(dependent)
@@ -68,7 +82,10 @@ def readiness(plans: dict[str, Plan], plan_id: str) -> str:
     plan = plans[plan_id]
     if plan.status == "done":
         return "done"
-    return "waiting" if blockers(plans, plan_id) else "ready"
+    # Active children are implicit prerequisites: a parent is done when its pieces are.
+    if blockers(plans, plan_id) or active_children(plans, plan_id):
+        return "waiting"
+    return "ready"
 
 
 def _excerpt(value: str, limit: int = 1200) -> str:
@@ -144,6 +161,8 @@ def _plan_item(
         "kind": plan.kind,
         "readiness": readiness(plans, plan_id),
         "blockers": blockers(plans, plan_id),
+        "active_children": active_children(plans, plan_id),
+        "parent": plan.parent,
         "requires": list(plan.requires),
         "replaces": list(plan.replaces),
         "scope": list(plan.scope),
@@ -237,9 +256,19 @@ def build_context(
         if plan_id not in selected
     ]
 
-    required = required_closure(plans, selected) - selected
-    affected = reverse_dependents(plans, selected, active_only=True) - selected - required
-    included = selected | required | affected
+    # The chain above each selected plan is read first, root first: a child plan is a
+    # piece of its parent and is understood through it.
+    ancestor_order: list[str] = []
+    for plan_id in topological_order(plans, selected):
+        for ancestor in ancestors(plans, plan_id):
+            if ancestor not in ancestor_order:
+                ancestor_order.append(ancestor)
+    ancestor_set = set(ancestor_order) - selected
+    required = required_closure(plans, selected) - selected - ancestor_set
+    affected = (
+        reverse_dependents(plans, selected, active_only=True) - selected - required - ancestor_set
+    )
+    included = selected | required | affected | ancestor_set
     overlapping: set[str] = set()
     if index and selected:
         selected_files: set[str] = set()
@@ -248,8 +277,12 @@ def build_context(
             selected_files |= index.get(plan_id, set())
             if not plans[plan_id].is_loose:
                 graph_files |= index.get(plan_id, set())
+        # A parent's scope covers its pieces on purpose (see advice._in_line).
+        in_line: set[str] = set()
+        for plan_id in selected:
+            in_line |= set(ancestors(plans, plan_id)) | descendants(plans, plan_id)
         for plan_id, files in index.items():
-            if plan_id in included:
+            if plan_id in included or plan_id in in_line:
                 continue
             # Two loose documents never overlap: see advice.scope_overlaps.
             shared = files & (graph_files if plans[plan_id].is_loose else selected_files)
@@ -257,9 +290,11 @@ def build_context(
                 overlapping.add(plan_id)
                 for sample in sorted(shared)[:OVERLAP_SAMPLE_REASONS]:
                     match_reasons[plan_id].append(f"overlap:{sample}")
-    order = topological_order(plans, included)
+    order = [plan_id for plan_id in ancestor_order if plan_id in included]
+    order += [plan_id for plan_id in topological_order(plans, included) if plan_id not in order]
     overlap_order = sorted(overlapping)
     role_order = {
+        "ancestors": [plan_id for plan_id in ancestor_order if plan_id in ancestor_set],
         "required": [plan_id for plan_id in order if plan_id in required],
         "selected": [plan_id for plan_id in order if plan_id in selected],
         "affected": [plan_id for plan_id in order if plan_id in affected],
@@ -273,6 +308,8 @@ def build_context(
             role=(
                 "selected"
                 if plan_id in selected
+                else "ancestor"
+                if plan_id in ancestor_set
                 else "required"
                 if plan_id in required
                 else "affected"
@@ -314,6 +351,7 @@ def build_context(
             "query": query,
         },
         "selected": role_order["selected"],
+        "ancestors": role_order["ancestors"],
         "required": role_order["required"],
         "affected": role_order["affected"],
         "overlapping": role_order["overlapping"],
@@ -325,12 +363,19 @@ def build_context(
 
 
 def critical_path(plans: dict[str, Plan]) -> list[str]:
-    order = topological_order(plans)
+    # A parent waits for its children as for its prerequisites; a done child still
+    # passes on the depth of an active piece below it.
+    children = children_index(plans)
+    bases_of = {
+        plan_id: (*plan.requires, *(c for c in children.get(plan_id, ()) if c in plans))
+        for plan_id, plan in plans.items()
+    }
+    order = topological_order(plans, bases_of=bases_of)
     depth: dict[str, int] = {}
     tail: dict[str, str | None] = {}
     previous: dict[str, str | None] = {}
     for plan_id in order:
-        bases = [base for base in plans[plan_id].requires if base in depth]
+        bases = [base for base in bases_of[plan_id] if base in depth]
         best = (
             min(
                 bases,
@@ -367,8 +412,7 @@ def build_status(root: Path, plans: dict[str, Plan]) -> dict[str, object]:
     ordered = topological_order(plans)
     ready = [plan_id for plan_id in ordered if readiness(plans, plan_id) == "ready"]
     waiting = [plan_id for plan_id in ordered if readiness(plans, plan_id) == "waiting"]
-    active = {plan_id for plan_id, plan in plans.items() if plan.status == "active"}
-    retained = required_closure(plans, active)
+    retained = retained_closure(plans)
     retained_done = [
         plan_id
         for plan_id in ordered
@@ -394,4 +438,79 @@ def build_status(root: Path, plans: dict[str, Plan]) -> dict[str, object]:
             for base in plans[plan_id].requires
             if base in plans
         ],
+    }
+
+
+def build_tree(plans: dict[str, Plan], top: str | None = None) -> dict[str, object]:
+    """Plans as a parent/child forest, flattened in display order with a depth each.
+
+    Siblings follow `requires` order. A plan whose parent is missing, or that sits on a
+    parent cycle, is listed after the roots with `detached` set, so a broken link is
+    visible instead of silently dropped. With `top`, only that plan's subtree is listed.
+    """
+    order = {plan_id: index for index, plan_id in enumerate(topological_order(plans))}
+    children = {
+        parent: sorted(ids, key=lambda plan_id: order[plan_id])
+        for parent, ids in children_index(plans).items()
+    }
+    nodes: list[dict[str, object]] = []
+    visited: set[str] = set()
+
+    def walk(start: str, detached: str | None) -> None:
+        stack: list[tuple[str, int]] = [(start, 0)]
+        while stack:
+            plan_id, depth = stack.pop()
+            if plan_id in visited:
+                continue
+            visited.add(plan_id)
+            plan = plans[plan_id]
+            kids = [child for child in children.get(plan_id, []) if child in plans]
+            node: dict[str, object] = {
+                "id": plan_id,
+                "title": plan.title,
+                "status": plan.status,
+                "kind": plan.kind,
+                "readiness": readiness(plans, plan_id),
+                "unexpanded": unexpanded(plan, bool(kids)),
+                "depth": depth,
+                "parent": plan.parent,
+                "children": kids,
+            }
+            if detached and depth == 0:
+                node["detached"] = detached
+            nodes.append(node)
+            stack.extend((child, depth + 1) for child in reversed(kids))
+
+    if top is not None:
+        walk(top, None)
+    else:
+        roots = sorted((p for p, plan in plans.items() if plan.parent is None), key=order.get)
+        for plan_id in roots:
+            walk(plan_id, None)
+        missing = sorted(
+            (p for p, plan in plans.items() if plan.parent is not None and plan.parent not in plans),
+            key=order.get,
+        )
+        for plan_id in missing:
+            walk(plan_id, "missing_parent")
+        for plan_id in sorted(plans, key=order.get):
+            if plan_id in visited:
+                continue
+            # Everything left hangs below a parent cycle; start at a plan on the cycle
+            # so its other children stay under it.
+            seen: set[str] = set()
+            current = plan_id
+            while current not in seen:
+                seen.add(current)
+                current = str(plans[current].parent)
+            walk(current, "parent_cycle")
+    return {
+        "top": top,
+        "ancestors": ancestors(plans, top) if top is not None else [],
+        "nodes": nodes,
+        "counts": {
+            "plans": len(nodes),
+            "unexpanded": sum(bool(node["unexpanded"]) for node in nodes),
+            "detached": sum("detached" in node for node in nodes),
+        },
     }

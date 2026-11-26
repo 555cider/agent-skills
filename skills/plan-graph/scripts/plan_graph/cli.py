@@ -20,16 +20,19 @@ from .model import (
     replace_title,
     unfilled_sections,
 )
-from .routing import build_context, build_status, readiness
+from .routing import build_context, build_status, build_tree, readiness
 from .store import (
     Store,
+    active_children,
     apply_plan_set,
     assert_new_id,
+    dependents_of,
+    descendants,
     discover_root,
     git_worktree_paths,
     load_store,
     prunable_done,
-    required_closure,
+    relink_children,
     validate_graph,
     validate_plan_set,
 )
@@ -82,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("status", parents=[common], help="show ready, waiting, and retained plans")
 
+    tree = subparsers.add_parser(
+        "tree", parents=[common], help="show plans as a parent/child tree"
+    )
+    tree.add_argument("id", nargs="?", help="show only this plan's subtree")
+
     why = subparsers.add_parser(
         "why", parents=[common], help="explain every signal about one plan"
     )
@@ -105,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     create = subparsers.add_parser("create", parents=[common], help="create a plan template")
     create.add_argument("id")
     create.add_argument("--title", required=True)
+    create.add_argument("--parent", help="the plan this one is a piece of")
     _add_fresh_metadata_args(create)
     _add_dry_run(create)
 
@@ -114,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
     for flag in ("require", "replace", "scope", "tag"):
         update.add_argument(f"--add-{flag}", action="append", default=[])
         update.add_argument(f"--remove-{flag}", action="append", default=[])
+    parent_group = update.add_mutually_exclusive_group()
+    parent_group.add_argument("--parent", help="move the plan under this parent")
+    parent_group.add_argument(
+        "--clear-parent", action="store_true", help="make the plan top-level"
+    )
     _add_dry_run(update)
 
     rename = subparsers.add_parser("rename", parents=[common], help="rename an ID and its references")
@@ -128,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
     replace_cmd.add_argument("old")
     replace_cmd.add_argument("new")
     replace_cmd.add_argument("--title", required=True)
+    replace_cmd.add_argument(
+        "--subtree",
+        action="store_true",
+        help="also delete every descendant of OLD; NEW starts with no children",
+    )
     _add_fresh_metadata_args(replace_cmd)
     _add_dry_run(replace_cmd)
 
@@ -201,6 +220,8 @@ def _emit(
                 _print_context(data or {})
             elif command == "status":
                 _print_status(data or {})
+            elif command == "tree":
+                _print_tree(data or {})
             elif command == "why":
                 _print_why(data or {})
             elif command == "overlap":
@@ -234,6 +255,8 @@ def _print_context(data: dict[str, object]) -> None:
     overlapping = data.get("overlapping", [])
     print("Plan Context")
     print("  Selected: " + (", ".join(selected) if selected else "none"))
+    if data.get("ancestors"):
+        print("  Ancestors: " + " -> ".join(data["ancestors"]))
     print("  Required: " + (", ".join(required) if required else "none"))
     print("  Affected: " + (", ".join(affected) if affected else "none"))
     if overlapping:
@@ -330,6 +353,15 @@ def _print_why(data: dict[str, object]) -> None:
     blockers = data.get("blockers", [])
     if blockers:
         print("  blockers: " + ", ".join(blockers))
+    if data.get("parent"):
+        line = " -> ".join(data.get("ancestors") or [data["parent"]])
+        print(f"  parent: {data['parent']} (ancestors: {line})")
+    children = data.get("children", {})
+    for kind in ("active", "done"):
+        if children.get(kind):
+            print(f"  {kind} children: " + ", ".join(children[kind]))
+    if data.get("unexpanded"):
+        print("  unexpanded: no children and Implementation is TBD")
     dependents = data.get("dependents", {})
     for kind in ("active", "done"):
         if dependents.get(kind):
@@ -358,6 +390,8 @@ def _print_status(data: dict[str, object]) -> None:
             print("  none")
         for item in items:
             suffix = f"; blockers={','.join(item['blockers'])}" if item.get("blockers") else ""
+            if item.get("active_children"):
+                suffix += f"; children={','.join(item['active_children'])}"
             if item.get("kind") == "loose":
                 line = str(item.get("status_line") or "")
                 line = line if len(line) <= 80 else line[:79] + "…"
@@ -366,6 +400,29 @@ def _print_status(data: dict[str, object]) -> None:
     path = data.get("critical_path", [])
     if path:
         print("\nCritical path: " + " -> ".join(path))
+
+
+def _print_tree(data: dict[str, object]) -> None:
+    top = data.get("top")
+    print(f"Plan Tree: {top}" if top else "Plan Tree")
+    if data.get("ancestors"):
+        print("  under: " + " -> ".join(data["ancestors"]))
+    nodes = data.get("nodes", [])
+    if not nodes:
+        print("  none")
+    heading_printed = False
+    for node in nodes:
+        if node.get("detached") and not heading_printed:
+            print("\nDetached (parent missing or on a parent cycle):")
+            heading_printed = True
+        state = node["status"] if node["status"] == "done" else node["readiness"]
+        marks = [state]
+        if node.get("unexpanded"):
+            marks.append("unexpanded")
+        if node.get("detached"):
+            marks.append(f"{node['detached']}: {node.get('parent')}")
+        indent = "  " * (int(node["depth"]) + 1)
+        print(f"{indent}- {node['id']}: {node['title']} [{', '.join(marks)}]")
 
 
 def _error_diagnostic(exc: Exception) -> Diagnostic:
@@ -450,11 +507,42 @@ def _validated_title(value: str) -> str:
 
 
 def _active_dependents(plans: dict[str, Plan], target: str) -> list[str]:
-    return sorted(
-        plan_id
-        for plan_id, plan in plans.items()
-        if plan.status == "active" and target in required_closure(plans, [plan_id])
-    )
+    return dependents_of(plans, {target})
+
+
+def _remove_plans(
+    plans: dict[str, Plan], removed: set[str], new_parent: str | None
+) -> tuple[dict[str, Plan], list[dict[str, object]]]:
+    """`plans` without `removed`, their remaining children moved to `new_parent`, pruned.
+
+    Children move before pruning, so a done child nobody needs is pruned and one still
+    required keeps a live parent.
+    """
+    after = {plan_id: plan for plan_id, plan in plans.items() if plan_id not in removed}
+    moved = relink_children(after, removed, new_parent)
+    pruned = sorted(prunable_done(after))
+    for plan_id in pruned:
+        after.pop(plan_id)
+    changes: list[dict[str, object]] = [
+        {"action": "relink", "plan": plan_id} for plan_id in moved if plan_id in after
+    ]
+    changes.extend({"action": "prune", "plan": plan_id} for plan_id in pruned)
+    return after, changes
+
+
+def _refuse_active_children(plans: dict[str, Plan], target: str, verb: str, hint: str) -> None:
+    """A plan with active pieces below it cannot be finished, abandoned, or removed alone."""
+    active = active_children(plans, target)
+    if active:
+        raise PlanGraphError(
+            f"cannot {verb} {target}; active children: {', '.join(active)}. {hint}",
+            code="active_children",
+        )
+
+
+def _existing_parent(store: Store, parent: str) -> None:
+    if parent not in store.plans:
+        raise PlanGraphError(f"unknown parent plan: {parent}", code="unknown_plan")
 
 
 def _finish_mutation(
@@ -585,6 +673,8 @@ def _handle_create(args: argparse.Namespace, root: Path, store: Store) -> int:
     unknown = sorted(set(args.require) - set(store.plans))
     if unknown:
         raise PlanGraphError("unknown required plans: " + ", ".join(unknown), code="unknown_plan")
+    if args.parent is not None:
+        _existing_parent(store, args.parent)
     plan = make_plan(
         root=root,
         plan_id=args.id,
@@ -593,6 +683,7 @@ def _handle_create(args: argparse.Namespace, root: Path, store: Store) -> int:
         scope=args.scope,
         tags=args.tag,
         directory=store.dirs.write,
+        parent=args.parent,
     )
     after = {**store.plans, args.id: plan}
     return _finish_mutation(
@@ -642,6 +733,11 @@ def _handle_update(args: argparse.Namespace, root: Path, store: Store) -> int:
             updated,
             **{field: _apply_list_changes(getattr(updated, field), additions, removals)},
         )
+    if args.parent is not None:
+        _existing_parent(store, args.parent)
+        updated = replace(updated, parent=args.parent)
+    elif args.clear_parent:
+        updated = replace(updated, parent=None)
     if updated == plan:
         raise PlanGraphError("update contains no effective changes", code="no_changes")
     after = {**store.plans, args.id: updated}
@@ -665,14 +761,25 @@ def _handle_rename(args: argparse.Namespace, root: Path, store: Store) -> int:
         renamed = replace_title(renamed, _validated_title(args.title))
     after = {plan_id: plan for plan_id, plan in store.plans.items() if plan_id != args.old}
     after[args.new] = renamed
+    if renamed.parent == args.old:
+        renamed = replace(renamed, parent=args.new)  # a self-parent stays a cycle
+        after[args.new] = renamed
     relinked: list[str] = []
     for plan_id, plan in list(after.items()):
+        relinked_plan = plan
         if args.old in plan.requires:
-            after[plan_id] = replace(
-                plan,
+            relinked_plan = replace(
+                relinked_plan,
                 requires=tuple(args.new if base == args.old else base for base in plan.requires),
             )
-            relinked.append(plan_id)
+        if plan.parent == args.old:
+            relinked_plan = replace(relinked_plan, parent=args.new)
+        if relinked_plan != plan:
+            if plan.is_loose:
+                continue  # never rewritten; doctor reports the dangling link
+            after[plan_id] = relinked_plan
+            if plan_id != args.new:
+                relinked.append(plan_id)
     changes: list[dict[str, object]] = [
         {"action": "rename", "from": args.old, "to": args.new}
     ]
@@ -695,16 +802,28 @@ def _handle_replace(args: argparse.Namespace, root: Path, store: Store) -> int:
     # directory where the old file's history is.
     directory = PurePosixPath(old_plan.path.parent.relative_to(root).as_posix())
     title = _validated_title(args.title)
-    dependents = _active_dependents(store.plans, args.old)
+    removed = {args.old}
+    if args.subtree:
+        removed |= descendants(store.plans, args.old)
+    else:
+        _refuse_active_children(
+            store.plans,
+            args.old,
+            "replace",
+            "Use --subtree to replace the plan together with everything under it.",
+        )
+    dependents = dependents_of(store.plans, removed)
     if dependents:
+        target = f"the subtree of {args.old}" if args.subtree else args.old
         raise PlanGraphError(
-            f"cannot replace {args.old}; active dependents require review: {', '.join(dependents)}",
+            f"cannot replace {target}; active dependents require review: {', '.join(dependents)}",
             code="active_dependents",
         )
     id_warnings = assert_new_id(root, store.plans, args.new, (directory, *store.dirs.read))
-    unknown = sorted(set(args.require) - (set(store.plans) - {args.old}))
+    unknown = sorted(set(args.require) - (set(store.plans) - removed))
     if unknown:
         raise PlanGraphError("unknown required plans: " + ", ".join(unknown), code="unknown_plan")
+    # The replacement takes the old plan's place in the tree.
     replacement = make_plan(
         root=root,
         plan_id=args.new,
@@ -714,16 +833,17 @@ def _handle_replace(args: argparse.Namespace, root: Path, store: Store) -> int:
         scope=args.scope,
         tags=args.tag,
         directory=directory,
+        parent=old_plan.parent,
     )
-    after = {plan_id: plan for plan_id, plan in store.plans.items() if plan_id != args.old}
-    after[args.new] = replacement
-    pruned = sorted(prunable_done(after))
-    for plan_id in pruned:
-        after.pop(plan_id)
+    # Done children left under OLD (without --subtree) move to its replacement.
+    after, tail = _remove_plans({**store.plans, args.new: replacement}, removed, args.new)
     changes: list[dict[str, object]] = [
         {"action": "replace", "from": args.old, "to": args.new}
     ]
-    changes.extend({"action": "prune", "plan": plan_id} for plan_id in pruned)
+    changes.extend(
+        {"action": "drop", "plan": plan_id} for plan_id in sorted(removed - {args.old})
+    )
+    changes.extend(tail)
     return _finish_mutation(
         command="replace",
         root=root,
@@ -759,6 +879,12 @@ def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
             f"{args.id} is already done; it is retained for its active dependents",
             code="no_changes",
         )
+    _refuse_active_children(
+        store.plans,
+        args.id,
+        "abandon" if args.force else "close",
+        "Close or drop them first, or replace the plan with --subtree.",
+    )
     if args.force:
         dependents = _active_dependents(store.plans, args.id)
         if dependents:
@@ -767,14 +893,10 @@ def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
                 " Revise their prerequisites explicitly before abandoning this work.",
                 code="active_dependents",
             )
-        after = {key: value for key, value in store.plans.items() if key != args.id}
-        pruned = sorted(prunable_done(after))
-        for key in pruned:
-            after.pop(key)
+        after, tail = _remove_plans(store.plans, {args.id}, plan.parent)
         return _finish_mutation(
             command="close", root=root, before=store.plans, after=after,
-            changes=[{"action": "abandon", "plan": args.id},
-                     *({"action": "prune", "plan": key} for key in pruned)],
+            changes=[{"action": "abandon", "plan": args.id}, *tail],
             dry_run=args.dry_run, json_mode=args.json,
             data={"abandoned": True, "unblocked": [], "retained": False},
             extra_diagnostics=[Diagnostic("warning", "forced_close", "abandoned without completing", args.id)],
@@ -827,19 +949,22 @@ def _handle_close(args: argparse.Namespace, root: Path, store: Store) -> int:
 
 
 def _handle_drop(args: argparse.Namespace, root: Path, store: Store) -> int:
-    _require_graph_plan(store, args.id)
+    plan = _require_graph_plan(store, args.id)
+    _refuse_active_children(
+        store.plans,
+        args.id,
+        "drop",
+        "Drop or move them first, or replace the plan with --subtree.",
+    )
     dependents = _active_dependents(store.plans, args.id)
     if dependents:
         raise PlanGraphError(
             f"cannot drop {args.id}; active dependents: {', '.join(dependents)}",
             code="active_dependents",
         )
-    after = {plan_id: plan for plan_id, plan in store.plans.items() if plan_id != args.id}
-    pruned = sorted(prunable_done(after))
-    for plan_id in pruned:
-        after.pop(plan_id)
-    changes: list[dict[str, object]] = [{"action": "drop", "plan": args.id}]
-    changes.extend({"action": "prune", "plan": plan_id} for plan_id in pruned)
+    # Done children still needed move up to the dropped plan's parent.
+    after, tail = _remove_plans(store.plans, {args.id}, plan.parent)
+    changes: list[dict[str, object]] = [{"action": "drop", "plan": args.id}, *tail]
     return _finish_mutation(
         command="drop",
         root=root,
@@ -905,6 +1030,21 @@ def run(args: argparse.Namespace) -> int:
                 "dirs": [item.as_posix() for item in store.dirs.read],
             },
             diagnostics=[*store.diagnostics, *advisory],
+            json_mode=args.json,
+        )
+
+    if args.command == "tree":
+        # A view, so it renders a broken store too: a missing parent or a parent
+        # cycle shows up as a detached branch next to the store's own errors.
+        store = load_store(root)
+        if args.id is not None:
+            _require_plan(store, args.id)
+        return _emit(
+            ok=True,
+            command="tree",
+            root=root,
+            data=build_tree(store.plans, args.id),
+            diagnostics=store.diagnostics,
             json_mode=args.json,
         )
 
